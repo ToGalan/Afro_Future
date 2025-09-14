@@ -32,9 +32,11 @@ export const PetIcon: Record<string, string> = {
 
 export const fallbackPortrait = p('/assets/characters/male_default.svg');
 
-// Raw image assets (PNG) placed under src/assets/img (bundled by Vite). Using import.meta.url style absolute paths not needed;
-// we reference via relative path from src since Vite handles them. Centralizing for consistency.
-// Naming: <Name>_<Gender?>_<Faction?>.png etc.
+// Raw PNG image assets are now served from the public folder: public/assets/img/* so they are reachable at
+//   /assets/img/<FileName>.png
+// This avoids the need to import them so they are not hashed and can be CDN cached aggressively by path.
+// If you later want cache‑busting, switch to importing (Option B) instead of public static hosting.
+// Naming convention: <Name>_<Gender?>_<Faction?>.png etc.
 export const ImageAssets = {
   faction: {
     PAA: p('/assets/img/PAA_Icon.png'),
