@@ -473,10 +473,7 @@ function AuthGate({ onSignedIn }: { onSignedIn: (token:string)=>void }) {
     <div className="w-screen h-screen flex items-center justify-center bg-[#0b0e13] text-gray-100">
       <div className="w-full max-w-md p-8 rounded-2xl bg-[#12171f]/90 border border-white/10 shadow-xl flex flex-col items-center">
         <h1 className="text-3xl font-semibold tracking-wide mb-4">Afro‑Future Rising</h1>
-        {!clientId && (
-          <div className="text-[11px] opacity-60 text-center">Set VITE_GOOGLE_CLIENT_ID in .env to enable sign-in</div>
-        )}
-        {clientId && mode==='idle' && (
+        {mode==='idle' && (
           <button onClick={startGoogle} className="w-full text-sm font-medium tracking-wide flex items-center justify-center gap-2 px-4 py-3 rounded-lg bg-gradient-to-r from-emerald-600 to-sky-600 hover:from-emerald-500 hover:to-sky-500 transition shadow-lg shadow-emerald-900/30 border border-white/10">
             <span>Sign in with Google</span>
           </button>
