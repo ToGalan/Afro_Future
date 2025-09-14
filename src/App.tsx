@@ -1,8 +1,11 @@
 import React, { useEffect, useState } from 'react';
+import { useSkillStore, availablePoints } from './store/skillStore';
 import { GROUP_ORDER, getVariantsByGroup } from './assets/threeParts';
 import AvatarScene from './components/AvatarScene';
 import SnowflakeSkillTree from './components/SnowflakeSkillTree';
 import VariantPreview from './components/VariantPreview';
+import { SharedVariantPreviewProvider, useSharedPreview } from './components/SharedVariantPreviewProvider';
+import WebGLContextBanner from './components/WebGLContextBanner';
 import { Archetype, CharacterLoadout, Faction, PetType, uid, now } from './types/loadout';
 import { CharacterPortrait, FactionIcon, ImageAssets, getCharacterPortrait, PetIcon } from './assets/assetPaths';
 
@@ -400,6 +403,7 @@ function FirstTimeFlow({ faction, archetype, pet, onFaction, onArchetype, onPet,
 function MainMenu({ playerName, accountLevel, loadout, onCustomize, heroLocked, view, onChangeView }: { playerName: string; accountLevel: number; loadout: CharacterLoadout; onCustomize: () => void; heroLocked: boolean; view: 'dashboard' | 'skills'; onChangeView: (v: 'dashboard' | 'skills') => void; }) {
   return (
     <div className="h-full w-full bg-[#0f1218] text-gray-100 grid grid-rows-[64px_1fr]" style={{gridTemplateColumns:'minmax(260px,20%) 1fr minmax(260px,20%)'}}>
+      <WebGLContextBanner />
       <TopNav view={view} onChangeView={onChangeView} />
       <LeftPlayerPanel className="row-start-2" playerName={playerName} accountLevel={accountLevel} loadout={loadout} onCustomize={onCustomize} heroLocked={heroLocked} />
       <CenterHub className="row-start-2" loadout={loadout} view={view} />
@@ -441,6 +445,23 @@ function TopNav({ view, onChangeView }: { view: 'dashboard' | 'skills'; onChange
 }
 
 function LeftPlayerPanel({ className = '', playerName, accountLevel, loadout, onCustomize, heroLocked }: { className?: string; playerName: string; accountLevel: number; loadout: CharacterLoadout; onCustomize: () => void; heroLocked: boolean; }) {
+  // Skill / stat integration
+  const skillUnlocked = useSkillStore(s=>s.unlocked);
+  const skillSpent = useSkillStore(s=>s.spent);
+  const skillLevel = useSkillStore(s=>s.level);
+  const attack = useSkillStore(s=>s.attack);
+  const defense = useSkillStore(s=>s.defense);
+  const utility = useSkillStore(s=>s.utility);
+  const primaryBranch = useSkillStore(s=>s.primaryBranch);
+  const primaryType = useSkillStore(s=>s.primaryType);
+  const traitTags = useSkillStore(s=>s.traitTags);
+  const pointsLeft = availablePoints(useSkillStore.getState());
+  // Derived HP / EP formulas (placeholder: base + scaling)
+  const baseHP = 100; const hpPerLevel = 12; const hpPerDefense = 4;
+  const baseEP = 60; const epPerLevel = 6; const epPerUtility = 3;
+  const HP = baseHP + (skillLevel-1)*hpPerLevel + defense*hpPerDefense;
+  const EP = baseEP + (skillLevel-1)*epPerLevel + utility*epPerUtility;
+  function statDots(v:number){ const capped = Math.min(10, Math.round(v/2)); return Array.from({length:5}).map((_,i)=> i < Math.ceil(capped/2) ? '●' : '○').join(''); }
   return (
     <aside className={`col-start-1 h-full ${className} bg-[#0f1218] border-r border-black/40 shadow-inner flex flex-col`}>      
       <div className="px-4 py-4 border-b border-white/10 flex flex-col items-center">
@@ -459,6 +480,7 @@ function LeftPlayerPanel({ className = '', playerName, accountLevel, loadout, on
               cameraPosition={[1.65,1.4,2.15]}
               cameraFov={33}
               target={[0,1.05,0]}
+              modelOffset={[0,-0.35,0]}
               autoFrame
               frameMargin={0.14}
             />
@@ -483,19 +505,47 @@ function LeftPlayerPanel({ className = '', playerName, accountLevel, loadout, on
         </div>
         {/* Stat row under card */}
         <div className="mt-4 grid grid-cols-3 gap-3 w-full">
-          {[
-            { label: 'Attack', value: '●●●○○' },
-            { label: 'Defense', value: '●●○○○' },
-            { label: 'Utility', value: '●●●●○' },
-          ].map(s => (
-            <div key={s.label} className="rounded-2xl border border-white/10 bg-white/5 p-3 h-24 flex flex-col items-center justify-center text-[11px] text-center">
-              <div className="opacity-70 mb-1">{s.label}</div>
-              <div className="font-semibold tracking-wider">{s.value}</div>
-            </div>
-          ))}
+          <div className="rounded-2xl border border-white/10 bg-white/5 p-3 h-24 flex flex-col items-center justify-center text-[11px] text-center">
+            <div className="opacity-70 mb-1">Attack</div>
+            <div className="font-semibold tracking-wider">{statDots(attack)}</div>
+            <div className="text-[9px] opacity-60 mt-1">{attack}</div>
+          </div>
+            <div className="rounded-2xl border border-white/10 bg-white/5 p-3 h-24 flex flex-col items-center justify-center text-[11px] text-center">
+            <div className="opacity-70 mb-1">Defense</div>
+            <div className="font-semibold tracking-wider">{statDots(defense)}</div>
+            <div className="text-[9px] opacity-60 mt-1">{defense}</div>
+          </div>
+          <div className="rounded-2xl border border-white/10 bg-white/5 p-3 h-24 flex flex-col items-center justify-center text-[11px] text-center">
+            <div className="opacity-70 mb-1">Utility</div>
+            <div className="font-semibold tracking-wider">{statDots(utility)}</div>
+            <div className="text-[9px] opacity-60 mt-1">{utility}</div>
+          </div>
+        </div>
+        {/* HP / EP & Skill Tokens */}
+        <div className="mt-4 w-full grid grid-cols-2 gap-3">
+          <div className="rounded-2xl border border-white/10 bg-gradient-to-br from-emerald-500/10 to-sky-500/10 p-3 flex flex-col text-[10px]">
+            <div className="flex justify-between"><span className="opacity-70">HP</span><span className="font-semibold">{HP}</span></div>
+            <div className="flex justify-between mt-1"><span className="opacity-70">EP</span><span className="font-semibold">{EP}</span></div>
+            <div className="flex justify-between mt-1"><span className="opacity-70">Skill Lv</span><span className="font-semibold">{skillLevel}</span></div>
+          </div>
+          <div className="rounded-2xl border border-white/10 bg-white/5 p-3 flex flex-col text-[10px]">
+            <div className="flex justify-between"><span className="opacity-70">Tokens Spent</span><span className="font-semibold">{skillSpent}</span></div>
+            <div className="flex justify-between mt-1"><span className="opacity-70">Tokens Left</span><span className="font-semibold text-emerald-300">{pointsLeft}</span></div>
+            <div className="flex justify-between mt-1"><span className="opacity-70">Unlocked</span><span className="font-semibold">{skillUnlocked.length}</span></div>
+          </div>
         </div>
         <div className="mt-4 w-full flex items-center justify-center">
           <Button className="w-[160px]" onClick={onCustomize}>Customize</Button>
+        </div>
+        {/* Traits summary */}
+        <div className="mt-4 w-full rounded-2xl border border-white/10 bg-white/5 p-3 text-[10px] flex flex-col gap-1">
+          <div className="flex justify-between"><span className="opacity-70">Primary Path</span><span className="font-semibold">{primaryBranch || '—'}</span></div>
+          <div className="flex justify-between"><span className="opacity-70">Primary Type</span><span className="font-semibold">{primaryType || '—'}</span></div>
+          <div className="mt-1 flex flex-wrap gap-1">
+            {traitTags.length ? traitTags.map(t => <span key={t} className="px-2 py-0.5 rounded-full bg-white/10 border border-white/10 text-[9px] tracking-wide">{t}</span>) : (
+              <span className="opacity-50">Earn traits by investing tokens</span>
+            )}
+          </div>
         </div>
       </div>
       <div className="px-4 py-6 flex flex-col items-center gap-4">
@@ -743,19 +793,21 @@ function CharacterCreator({ onSave, onBack, initial, locked }: { onSave: (payloa
                 </div>
               </div>
             ) : (
-              <div className="flex gap-4 flex-wrap justify-center max-w-6xl">
-                {getVariantsByGroup(tab as any).map((v, idx) => {
-                  const active = picked[tab] === v.id;
-                  return (
-                    <VariantCard
-                      key={v.id}
-                      v={v}
-                      active={active}
-                      onSelect={() => selectVariant(tab, v.id)}
-                      eager={idx < 6}
-                    />
-                  );
-                })}
+              <div className="flex gap-4 overflow-x-auto no-scrollbar py-2 px-1 items-stretch">
+                <SharedVariantPreviewProvider>
+                  {getVariantsByGroup(tab as any).map((v, idx) => {
+                    const active = picked[tab] === v.id;
+                    return (
+                      <VariantCard
+                        key={v.id}
+                        v={v}
+                        active={active}
+                        onSelect={() => selectVariant(tab, v.id)}
+                        eager={idx < 6}
+                      />
+                    );
+                  })}
+                </SharedVariantPreviewProvider>
                 {getVariantsByGroup(tab as any).length === 0 && (
                   <div className="text-xs opacity-50 px-4 py-6">No variants for {tab}</div>
                 )}
@@ -782,18 +834,32 @@ function VariantCard({ v, active, onSelect, eager }: VariantCardProps) {
   const [hover, setHover] = React.useState(false);
   // Only mount 3D when eager (first few) or hovered/active to reduce WebGL contexts.
   const show3D = eager || hover || active;
+  const shared = true; // feature flag: shared preview canvas enabled
+  const ref = React.useRef<HTMLDivElement>(null);
+  const sharedApi = (() => { try { return useSharedPreview(); } catch { return null; } })();
   return (
     <button
       onClick={onSelect}
       title={v.label}
-      onMouseEnter={()=>setHover(true)}
-      onMouseLeave={()=>setHover(false)}
+      onMouseEnter={() => {
+        setHover(true);
+        if (shared && sharedApi && ref.current) sharedApi.setCardPreview(v.file, ref.current, active);
+      }}
+      onMouseLeave={() => {
+        setHover(false);
+        if (shared && sharedApi) sharedApi.clearIfTransient(v.file);
+      }}
       className={`w-24 h-24 rounded-xl border transition flex flex-col items-center justify-center gap-1 px-1 text-[11px]
         ${active ? 'bg-emerald-600/30 border-emerald-500/60 text-emerald-200 shadow-inner' : 'bg-white/5 border-white/10 hover:bg-white/10 text-gray-300'}`}
     >
-      <div className="relative w-full h-full flex items-center justify-center">
-        {show3D ? <VariantPreview file={v.file} /> : (
+      <div ref={ref} data-variant-card data-file={v.file} className="relative w-full h-full flex items-center justify-center">
+        {!shared && show3D ? <VariantPreview file={v.file} /> : (!shared && (
           <div className="w-10 h-10 rounded-lg bg-gradient-to-br from-white/10 to-white/5 flex items-center justify-center text-[10px] opacity-60">
+            GLB
+          </div>
+        ))}
+        {shared && (
+          <div className="w-10 h-10 rounded-lg bg-gradient-to-br from-white/10 to-white/5 flex items-center justify-center text-[10px] opacity-50">
             GLB
           </div>
         )}

@@ -5,6 +5,7 @@ import { AvatarPartsLoader, BaseBody } from './AvatarPartsLoader';
 import { AvatarAnimator } from './AvatarAnimator';
 import * as THREE from 'three';
 import { useCreatorStore } from '../store/creatorStore';
+import { useWebGLStore } from '../store/webglStore';
 
 // Central token mapping: each color channel -> array of material name substrings to match
 // To extend: add new channel key (e.g. "emissive") and update AvatarSceneProps.colors + tintHierarchy logic.
@@ -152,6 +153,8 @@ export function AvatarScene({ parts, colors, debugTint, animPaused, animSpeed, r
   const rootRef = useRef<THREE.Group>(null);
   const groupColors = useCreatorStore(s => s.groupColors);
   const skinMaterial = useCreatorStore(s => s.skinMaterial);
+  const markLost = useWebGLStore(s => s.markLost);
+  const markRestored = useWebGLStore(s => s.markRestored);
   // Re-apply tint when parts mount, group colors change, or skin color changes
   useEffect(() => {
     if (rootRef.current) {
@@ -170,7 +173,23 @@ export function AvatarScene({ parts, colors, debugTint, animPaused, animSpeed, r
   const autoDataRef = useRef<{ scale:number; offset:[number,number,number]; ready:boolean }|null>(null);
 
   return (
-    <Canvas shadows camera={{ position: camPos as any, fov }} dpr={[1, 1.75]}>
+    <Canvas shadows camera={{ position: camPos as any, fov }} dpr={[1, 1.75]} onCreated={({ gl }) => {
+      const canvas = gl.domElement;
+      const handleLost = (e: Event) => {
+        e.preventDefault();
+        markLost();
+      };
+      const handleRestored = () => {
+        markRestored();
+      };
+      canvas.addEventListener('webglcontextlost', handleLost as any, false);
+      canvas.addEventListener('webglcontextrestored', handleRestored as any, false);
+      // Cleanup on unmount
+      (gl as any).__afCleanup = () => {
+        canvas.removeEventListener('webglcontextlost', handleLost as any);
+        canvas.removeEventListener('webglcontextrestored', handleRestored as any);
+      };
+    }}>
       <color attach="background" args={["#12171f"]} />
       <ambientLight intensity={0.4} />
       <directionalLight position={[5,5,5]} intensity={1.1} castShadow shadow-mapSize-width={1024} shadow-mapSize-height={1024} />
