@@ -26,22 +26,25 @@ export function loadGoogleIdentity() {
         }
         // If already present
         if (window.google?.accounts?.id) {
+            console.log('[gis] google.accounts.id already present – skipping script injection');
             resolve(window.google);
             return;
         }
         const existing = document.getElementById('gis-sdk');
         if (existing) {
+            console.log('[gis] existing script tag found, waiting for load event');
             existing.addEventListener('load', () => resolve(window.google));
             existing.addEventListener('error', () => reject(new Error('Google script failed')));
             return;
         }
+        console.log('[gis] injecting google identity script');
         const s = document.createElement('script');
         s.id = 'gis-sdk';
         s.src = 'https://accounts.google.com/gsi/client';
         s.async = true;
         s.defer = true;
-        s.onload = () => resolve(window.google);
-        s.onerror = () => reject(new Error('Failed to load Google Identity script'));
+        s.onload = () => { console.log('[gis] script loaded'); resolve(window.google); };
+        s.onerror = () => { console.warn('[gis] script load error'); reject(new Error('Failed to load Google Identity script')); };
         document.head.appendChild(s);
     });
     return _loadPromise;
@@ -49,24 +52,34 @@ export function loadGoogleIdentity() {
 export async function initGoogleIdentity(clientId, callback) {
     if (!clientId)
         throw new Error('Missing google client id');
+    console.log('[gis] initGoogleIdentity start', clientId);
     const g = await loadGoogleIdentity();
     // @ts-ignore
-    g.accounts.id.initialize({ client_id: clientId, callback });
+    g.accounts.id.initialize({ client_id: clientId, callback: (resp) => {
+            console.log('[gis] credential callback received', resp?.select_by);
+            callback(resp);
+        } });
+    console.log('[gis] initialize call completed');
     return g;
 }
 export async function renderGoogleButton(target, options = {}) {
     if (!target)
         return;
+    console.log('[gis] renderGoogleButton target present', target.id || target.className);
     const g = await loadGoogleIdentity();
     // @ts-ignore
     g.accounts.id.renderButton(target, { theme: 'outline', size: 'large', width: 280, text: 'signin_with', ...options });
+    console.log('[gis] renderButton call issued');
 }
 export function promptOneTap() {
     const g = window.google;
     if (g?.accounts?.id) {
         try {
+            console.log('[gis] promptOneTap');
             g.accounts.id.prompt();
         }
-        catch { }
+        catch {
+            console.warn('[gis] promptOneTap failed');
+        }
     }
 }

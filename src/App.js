@@ -480,13 +480,20 @@ function AuthGate({ onSignedIn }) {
                 if (resp.credential)
                     onSignedIn(resp.credential);
             });
-            if (buttonContainerRef.current) {
+            // Wait for container to exist (retry up to ~500ms)
+            let attempts = 0;
+            while (!buttonContainerRef.current && attempts < 10) {
+                attempts++;
+                await new Promise(r => setTimeout(r, 50));
+            }
+            if (!buttonContainerRef.current) {
+                console.warn('[auth] button container missing after retries');
+            }
+            else {
+                console.log('[auth] button container ready after attempts', attempts);
                 buttonContainerRef.current.innerHTML = '';
                 await renderGoogleButton(buttonContainerRef.current, {});
                 console.log('[auth] GIS button rendered into container');
-            }
-            else {
-                console.log('[auth] buttonContainerRef empty, cannot render GIS button');
             }
             setMode('ready');
             // Removed synthetic auto-click to avoid race conditions with container mounting in production.
@@ -496,7 +503,9 @@ function AuthGate({ onSignedIn }) {
             setMode('error');
         }
     }
-    return (_jsx("div", { className: "w-screen h-screen flex items-center justify-center bg-[#0b0e13] text-gray-100", children: _jsxs("div", { className: "w-full max-w-md p-8 rounded-2xl bg-[#12171f]/90 border border-white/10 shadow-xl flex flex-col items-center", children: [_jsx("h1", { className: "text-3xl font-semibold tracking-wide mb-4", children: "Afro\u2011Future Rising" }), mode === 'idle' && (_jsx("button", { onClick: startGoogle, className: "w-full text-sm font-medium tracking-wide flex items-center justify-center gap-2 px-4 py-3 rounded-lg bg-gradient-to-r from-emerald-600 to-sky-600 hover:from-emerald-500 hover:to-sky-500 transition shadow-lg shadow-emerald-900/30 border border-white/10", children: _jsx("span", { children: "Sign in with Google" }) })), clientId && (mode === 'loading') && (_jsxs("div", { className: "flex flex-col items-center gap-3 py-6", children: [_jsx("div", { className: "w-8 h-8 border-2 border-emerald-400 border-t-transparent rounded-full animate-spin" }), _jsx("div", { className: "text-[11px] opacity-70", children: "Loading Google Sign-In\u2026" })] })), clientId && (_jsxs("div", { className: "w-full flex flex-col items-center", children: [_jsx("div", { ref: buttonContainerRef, className: "mt-2" }), mode === 'ready' && !buttonContainerRef.current && (_jsx("div", { className: "text-[10px] text-amber-400 mt-2", children: "Button container not mounted" }))] })), clientId && mode === 'error' && (_jsxs("div", { className: "mt-4 text-[11px] text-rose-300", children: ["Failed to load Google Sign-In. Retry?", _jsx("div", { className: "mt-2", children: _jsx("button", { onClick: startGoogle, className: "px-3 py-1 rounded bg-rose-600/30 border border-rose-500/40 text-rose-200 text-xs", children: "Retry" }) })] }))] }) }));
+    return (_jsx("div", { className: "w-screen h-screen flex items-center justify-center bg-[#0b0e13] text-gray-100", children: _jsxs("div", { className: "w-full max-w-md p-8 rounded-2xl bg-[#12171f]/90 border border-white/10 shadow-xl flex flex-col items-center", children: [_jsx("h1", { className: "text-3xl font-semibold tracking-wide mb-4", children: "Afro\u2011Future Rising" }), mode === 'idle' && (_jsx("button", { onClick: startGoogle, className: "w-full text-sm font-medium tracking-wide flex items-center justify-center gap-2 px-4 py-3 rounded-lg bg-gradient-to-r from-emerald-600 to-sky-600 hover:from-emerald-500 hover:to-sky-500 transition shadow-lg shadow-emerald-900/30 border border-white/10", children: _jsx("span", { children: "Sign in with Google" }) })), clientId && (_jsxs(_Fragment, { children: [mode === 'loading' && (_jsxs("div", { className: "flex flex-col items-center gap-3 py-6", children: [_jsx("div", { className: "w-8 h-8 border-2 border-emerald-400 border-t-transparent rounded-full animate-spin" }), _jsx("div", { className: "text-[11px] opacity-70", children: "Loading Google Sign-In\u2026" })] })), _jsxs("div", { className: "w-full flex flex-col items-center", children: [_jsx("div", { ref: (el) => { if (!buttonContainerRef.current && el) {
+                                        console.log('[auth] button container ref attached');
+                                    } buttonContainerRef.current = el; }, className: "mt-2" }), mode === 'ready' && !buttonContainerRef.current && (_jsx("div", { className: "text-[10px] text-amber-400 mt-2", children: "Button container not mounted" }))] })] })), clientId && mode === 'error' && (_jsxs("div", { className: "mt-4 text-[11px] text-rose-300", children: ["Failed to load Google Sign-In. Retry?", _jsx("div", { className: "mt-2", children: _jsx("button", { onClick: startGoogle, className: "px-3 py-1 rounded bg-rose-600/30 border border-rose-500/40 text-rose-200 text-xs", children: "Retry" }) })] }))] }) }));
 }
 function FirstTimeFlow({ faction, archetype, pet, onFaction, onArchetype, onPet, onContinue }) {
     const [step, setStep] = useState(0);
