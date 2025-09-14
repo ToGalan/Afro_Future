@@ -71,3 +71,76 @@ The `@tailwind` directives in `src/styles.css` are processed by Vite + PostCSS. 
 
 ---
 MIT License (placeholder)
+
+## Realtime / Snapshot Server
+
+A minimal Express + WebSocket signaling + snapshot server is included (`server.js`). It provides:
+
+Endpoints:
+- `POST /snapshots/:world` (auth required) – store a gzipped CRDT snapshot (`latest.txt` pointer updated)
+- `GET /snapshots/:world/latest` – fetch latest gzipped snapshot
+- WebSocket upgrade `/signal` – simple room-based relay for SDP / ICE messages (WebRTC data channel signaling)
+
+Run backend alone:
+```powershell
+node server.js
+```
+
+Run frontend + backend together:
+```powershell
+npm run dev:full
+```
+
+Snapshots stored under: `./snapshots/<world>/<timestamp>.yjs.gz`.
+
+### Auth (Google Identity Services)
+
+Environment variables (add to `.env` or export in shell):
+```
+VITE_GOOGLE_CLIENT_ID=YOUR_GOOGLE_OAUTH_WEB_CLIENT_ID
+GOOGLE_CLIENT_ID=YOUR_GOOGLE_OAUTH_WEB_CLIENT_ID  # server (can reuse same value)
+```
+The dev server (Vite) only exposes `VITE_` prefixed variables to the client bundle. The backend loads both via `dotenv` (`server.js` imports `dotenv/config`).
+
+Flow:
+1. `AuthGate` renders a reusable `GoogleSignInButton` (in `src/components/auth/GoogleSignInButton.tsx`).
+2. On credential, ID token stored at `localStorage.afrofuture.idToken` and the app transitions to boot.
+3. The token payload (JWT) is decoded client‑side (no trust decisions) to populate a lightweight profile (name/email/picture/sub).
+4. Server performs REAL verification with `google-auth-library` (`verifyIdToken`) for snapshot endpoints and WebSocket join.
+
+WebSocket join now requires `{ type:'join', roomId, idToken }`. Invalid or missing tokens result in an error and forced close.
+
+Room selector: Top navigation includes a dropdown + Change button. Current + recent rooms (max 5) persist in:
+```
+localStorage.afrofuture.room
+localStorage.afrofuture.recentRooms
+```
+Switching rooms cleanly tears down the prior RTCPeerConnection and re‑authenticates join.
+
+Security Notes:
+* Do NOT trust decoded client JWT claims—always rely on server verification.
+* Add rate limiting and TURN (coturn) in production.
+* Consider exp claim enforcement + token refresh if sessions lengthen.
+* For multi‑tenant or per‑resource ACLs, map `sub` to internal user id & permissions.
+
+### Client Helpers
+
+`src/services/realtimeClient.ts` exports:
+- `loadSnapshot(world, idToken?)`
+- `saveSnapshot(world, update, idToken?, alreadyGzip=false)`
+- `joinRoom(roomId, { onMessage })` returning `{ ws, pc, dc }`
+- `getStoredIdToken()` / `setStoredIdToken()`
+
+Wire CRDT (e.g. Yjs):
+```ts
+doc.on('update', u => dc?.readyState === 'open' && dc.send(u));
+// incoming: onMessage -> Y.applyUpdate(doc, updateBytes)
+```
+
+### Hardening TODO
+- ~~Real Google ID token verification~~ (implemented)
+- Rate limiting & per‑world authorization
+- Replace disk snapshots with S3 / R2
+- TURN servers for tougher NATs
+- Room presence / heartbeats
+- Chunked large snapshot uploads (if needed)

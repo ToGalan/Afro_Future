@@ -7,6 +7,8 @@ import SnowflakeSkillTree from './components/SnowflakeSkillTree';
 import VariantPreview from './components/VariantPreview';
 import { uid, now } from './types/loadout';
 import { CharacterPortrait, FactionIcon, ImageAssets, getCharacterPortrait, PetIcon } from './assets/assetPaths';
+import { joinRoom } from './services/realtimeClient';
+import GoogleSignInButton from './components/auth/GoogleSignInButton';
 const defaultLoadout = {
     id: uid('char'),
     name: 'Nia',
@@ -28,7 +30,20 @@ const defaultLoadout = {
     updatedAt: now(),
 };
 export default function App() {
-    const [phase, setPhase] = useState('boot');
+    // Authentication gating: require Google sign-in before proceeding to normal boot sequence.
+    const [idToken, setIdToken] = useState(() => localStorage.getItem('afrofuture.idToken'));
+    const [phase, setPhase] = useState(!localStorage.getItem('afrofuture.idToken') ? 'auth' : 'boot');
+    const [rtc, setRtc] = useState(null);
+    const [roomId, setRoomId] = useState(() => localStorage.getItem('afrofuture.room') || 'lobby');
+    const [recentRooms, setRecentRooms] = useState(() => {
+        try {
+            return JSON.parse(localStorage.getItem('afrofuture.recentRooms') || '[]');
+        }
+        catch {
+            return [];
+        }
+    });
+    const [profile, setProfile] = useState(null);
     const [mainView, setMainView] = useState('dashboard');
     const [progress, setProgress] = useState(0);
     const [playerName] = useState('PlayerOne');
@@ -71,6 +86,81 @@ export default function App() {
         }, 300);
         return () => clearInterval(id);
     }, [phase, activeLoadout]);
+    function handleSignedIn(token) {
+        setIdToken(token);
+        localStorage.setItem('afrofuture.idToken', token);
+        setPhase('boot');
+        try {
+            const payload = JSON.parse(atob(token.split('.')[1] || 'e30='));
+            setProfile({ sub: payload.sub, name: payload.name, email: payload.email, picture: payload.picture });
+        }
+        catch { }
+        // Join a default room (e.g., 'lobby') for demonstration
+        try {
+            const room = joinRoom(roomId, {}, token);
+            setRtc(room);
+        }
+        catch (e) {
+            console.warn('[rtc] join failed', e);
+        }
+    }
+    function handleSignOut() {
+        localStorage.removeItem('afrofuture.idToken');
+        setIdToken(null);
+        setPhase('auth');
+        setProfile(null);
+        if (rtc) {
+            try {
+                rtc.dc.close();
+            }
+            catch { }
+            try {
+                rtc.pc.close();
+            }
+            catch { }
+            try {
+                rtc.ws.close();
+            }
+            catch { }
+            setRtc(null);
+        }
+    }
+    function switchRoom(newRoom) {
+        if (newRoom === roomId)
+            return;
+        setRoomId(newRoom);
+        localStorage.setItem('afrofuture.room', newRoom);
+        setRecentRooms(rs => {
+            const next = [newRoom, ...rs.filter(r => r !== newRoom)].slice(0, 5);
+            localStorage.setItem('afrofuture.recentRooms', JSON.stringify(next));
+            return next;
+        });
+        // Reconnect
+        if (rtc) {
+            try {
+                rtc.dc.close();
+            }
+            catch { }
+            try {
+                rtc.pc.close();
+            }
+            catch { }
+            try {
+                rtc.ws.close();
+            }
+            catch { }
+            setRtc(null);
+        }
+        if (idToken) {
+            try {
+                const room = joinRoom(newRoom, {}, idToken);
+                setRtc(room);
+            }
+            catch (e) {
+                console.warn('[rtc] room switch failed', e);
+            }
+        }
+    }
     function startCreator() {
         if (heroLocked)
             return; // cannot create a new hero once locked
@@ -99,8 +189,10 @@ export default function App() {
         }
         setPhase('main');
     }
+    if (phase === 'auth')
+        return _jsx(GameViewport, { mode: "fit", children: _jsx(AuthGate, { onSignedIn: handleSignedIn }) });
     if (phase === 'boot')
-        return _jsx(GameViewport, { mode: "fit", children: _jsx(WelcomeScreen, { progress: progress, build: "v0.2.3 demo \u2022 UE5" }) });
+        return _jsx(GameViewport, { mode: "fit", children: _jsx(WelcomeScreen, { progress: progress, build: "v0.2.3 demo \u2022 UE5", onSignOut: handleSignOut }) });
     if (phase === 'onboard')
         return (_jsx(GameViewport, { mode: "fit", children: _jsx(FirstTimeFlow, { faction: setupFaction, archetype: setupArchetype, pet: setupPet, onFaction: setSetupFaction, onArchetype: setSetupArchetype, onPet: setSetupPet, onContinue: startCreator }) }));
     if (phase === 'creating')
@@ -125,7 +217,7 @@ export default function App() {
                         return getCharacterPortrait(f, a);
                     })(),
                 }, locked: heroLocked, onBack: () => heroLocked ? setPhase('main') : setPhase('onboard'), onSave: handleCreatorSave }) }));
-    return (_jsx(GameViewport, { mode: "fit", children: _jsx(MainMenu, { playerName: playerName, accountLevel: accountLevel, loadout: activeLoadout ?? defaultLoadout, onCustomize: () => setPhase('creating'), heroLocked: heroLocked, view: mainView, onChangeView: setMainView }) }));
+    return (_jsx(GameViewport, { mode: "fit", children: _jsx(MainMenu, { playerName: playerName, accountLevel: accountLevel, loadout: activeLoadout ?? defaultLoadout, onCustomize: () => setPhase('creating'), heroLocked: heroLocked, view: mainView, onChangeView: setMainView, profile: profile, onSignOut: handleSignOut, roomId: roomId, onChangeRoom: switchRoom, recentRooms: recentRooms }) }));
 }
 function GameViewport({ children, mode = 'fixed', allowUpscale = true, minScale = 0.5, maxScale = 2, designWidth = 1920, designHeight = 1080 }) {
     const DESIGN_W = designWidth;
@@ -162,8 +254,64 @@ function GameViewport({ children, mode = 'fixed', allowUpscale = true, minScale 
                         ? _jsxs(_Fragment, { children: ["fit mode \u2022 win ", viewport.w, "\u00D7", viewport.h] })
                         : _jsxs(_Fragment, { children: ["fixed ", DESIGN_W, "\u00D7", DESIGN_H, " \u2022 win ", viewport.w, "\u00D7", viewport.h, " \u2022 scale ", scale.toFixed(3)] }) })] }) }));
 }
-function WelcomeScreen({ progress, build }) {
-    return (_jsxs("div", { className: "w-screen h-screen bg-[#0b0e13] relative text-gray-100 overflow-hidden", children: [_jsx("div", { className: "absolute inset-0 bg-[radial-gradient(circle_at_30%_30%,rgba(16,185,129,0.15),transparent_60%)]" }), _jsx("div", { className: "absolute inset-0 bg-[radial-gradient(circle_at_70%_70%,rgba(56,189,248,0.12),transparent_65%)]" }), _jsxs("div", { className: "relative h-full grid place-items-center p-6", children: [_jsxs("div", { className: "w-full max-w-4xl rounded-2xl bg-[#12171f]/90 backdrop-blur border border-white/10 p-10 shadow-2xl", children: [_jsx("h1", { className: "text-5xl font-bold tracking-wide text-center bg-gradient-to-r from-emerald-300 via-teal-200 to-sky-300 bg-clip-text text-transparent", children: "Afro\u2011Future Rising" }), _jsx("p", { className: "mt-2 opacity-70 text-center text-sm tracking-wide", children: "Preparing Outposts\u2026" }), _jsx("div", { className: "mt-8 h-2 w-full rounded-full bg-white/5 overflow-hidden", children: _jsx("div", { className: "h-full bg-gradient-to-r from-emerald-500 via-teal-400 to-sky-500 transition-all", style: { width: `${progress}%` } }) }), _jsxs("div", { className: "mt-2 text-xs opacity-60 text-center", children: [progress, "%"] })] }), _jsx("div", { className: "absolute bottom-4 right-6 text-[10px] opacity-60", children: build }), _jsxs("div", { className: "absolute bottom-4 left-6 text-[10px] flex gap-4 opacity-60", children: [_jsx("a", { className: "hover:opacity-90 transition", href: "#", children: "EULA" }), _jsx("a", { className: "hover:opacity-90 transition", href: "#", children: "Privacy" }), _jsx("button", { className: "hover:opacity-90 transition", children: "Accessibility" })] })] })] }));
+function WelcomeScreen({ progress, build, onSignOut }) {
+    const idToken = localStorage.getItem('afrofuture.idToken');
+    function signOut() {
+        localStorage.removeItem('afrofuture.idToken');
+        onSignOut?.();
+    }
+    return (_jsxs("div", { className: "w-screen h-screen bg-[#0b0e13] relative text-gray-100 overflow-hidden", children: [_jsx("div", { className: "absolute inset-0 bg-[radial-gradient(circle_at_30%_30%,rgba(16,185,129,0.15),transparent_60%)]" }), _jsx("div", { className: "absolute inset-0 bg-[radial-gradient(circle_at_70%_70%,rgba(56,189,248,0.12),transparent_65%)]" }), _jsxs("div", { className: "relative h-full grid place-items-center p-6", children: [_jsxs("div", { className: "w-full max-w-4xl rounded-2xl bg-[#12171f]/90 backdrop-blur border border-white/10 p-10 shadow-2xl", children: [_jsx("h1", { className: "text-5xl font-bold tracking-wide text-center bg-gradient-to-r from-emerald-300 via-teal-200 to-sky-300 bg-clip-text text-transparent", children: "Afro\u2011Future Rising" }), _jsx("p", { className: "mt-2 opacity-70 text-center text-sm tracking-wide", children: "Preparing Outposts\u2026" }), _jsx("div", { className: "mt-8 h-2 w-full rounded-full bg-white/5 overflow-hidden", children: _jsx("div", { className: "h-full bg-gradient-to-r from-emerald-500 via-teal-400 to-sky-500 transition-all", style: { width: `${progress}%` } }) }), _jsxs("div", { className: "mt-2 text-xs opacity-60 text-center", children: [progress, "%"] }), _jsx("div", { className: "mt-6 flex flex-col items-center gap-3", children: import.meta.env.VITE_GOOGLE_CLIENT_ID ? (idToken ? (_jsxs(_Fragment, { children: [_jsx("div", { className: "text-xs text-emerald-300", children: "Signed in" }), _jsx("button", { onClick: signOut, className: "text-[11px] px-3 py-1 rounded bg-white/10 hover:bg-white/20 border border-white/10", children: "Sign Out" })] })) : (_jsx(GoogleSignInButton, { onCredential: () => window.location.reload() }))) : (_jsx("div", { className: "text-[11px] opacity-60", children: "Set VITE_GOOGLE_CLIENT_ID to enable sign-in" })) })] }), _jsx("div", { className: "absolute bottom-4 right-6 text-[10px] opacity-60", children: build }), _jsxs("div", { className: "absolute bottom-4 left-6 text-[10px] flex gap-4 opacity-60", children: [_jsx("a", { className: "hover:opacity-90 transition", href: "#", children: "EULA" }), _jsx("a", { className: "hover:opacity-90 transition", href: "#", children: "Privacy" }), _jsx("button", { className: "hover:opacity-90 transition", children: "Accessibility" })] })] })] }));
+}
+// AuthGate: first step – requires Google sign-in then notifies parent.
+function AuthGate({ onSignedIn }) {
+    const idToken = localStorage.getItem('afrofuture.idToken');
+    const [mode, setMode] = React.useState('idle');
+    const [scriptLoaded, setScriptLoaded] = React.useState(false);
+    const buttonContainerRef = React.useRef(null);
+    const clientId = import.meta.env.VITE_GOOGLE_CLIENT_ID;
+    React.useEffect(() => { if (idToken)
+        onSignedIn(idToken); }, [idToken, onSignedIn]);
+    // When script loaded and mode wants ready, render GIS button manually (without reusable component to auto trigger)
+    React.useEffect(() => {
+        if (mode !== 'ready' || !clientId || !scriptLoaded || !buttonContainerRef.current)
+            return;
+        // @ts-ignore
+        if (window.google?.accounts?.id) {
+            // @ts-ignore
+            window.google.accounts.id.initialize({ client_id: clientId, callback: (resp) => { if (resp.credential) {
+                    onSignedIn(resp.credential);
+                } } });
+            buttonContainerRef.current.innerHTML = '';
+            // @ts-ignore
+            window.google.accounts.id.renderButton(buttonContainerRef.current, { theme: 'outline', size: 'large', width: 280, text: 'signin_with' });
+            // Programmatic UX: focus container
+            setTimeout(() => { buttonContainerRef.current?.querySelector('div[role=button]')?.dispatchEvent(new Event('click')); }, 50);
+        }
+    }, [mode, scriptLoaded, clientId, onSignedIn]);
+    function startGoogle() {
+        if (!clientId) {
+            return;
+        }
+        if (scriptLoaded) {
+            setMode('ready');
+            return;
+        }
+        setMode('loading');
+        if (document.getElementById('gis-sdk')) {
+            setScriptLoaded(true);
+            setMode('ready');
+            return;
+        }
+        const s = document.createElement('script');
+        s.id = 'gis-sdk';
+        s.src = 'https://accounts.google.com/gsi/client';
+        s.async = true;
+        s.defer = true;
+        s.onload = () => { setScriptLoaded(true); setMode('ready'); };
+        s.onerror = () => { setMode('idle'); alert('Failed to load Google Sign-In. Check network.'); };
+        document.head.appendChild(s);
+    }
+    return (_jsx("div", { className: "w-screen h-screen flex items-center justify-center bg-[#0b0e13] text-gray-100", children: _jsxs("div", { className: "w-full max-w-md p-8 rounded-2xl bg-[#12171f]/90 border border-white/10 shadow-xl flex flex-col items-center", children: [_jsx("h1", { className: "text-3xl font-semibold tracking-wide mb-4", children: "Afro\u2011Future Rising" }), !clientId && (_jsx("div", { className: "text-[11px] opacity-60 text-center", children: "Set VITE_GOOGLE_CLIENT_ID in .env to enable sign-in" })), clientId && mode === 'idle' && (_jsx("button", { onClick: startGoogle, className: "w-full text-sm font-medium tracking-wide flex items-center justify-center gap-2 px-4 py-3 rounded-lg bg-gradient-to-r from-emerald-600 to-sky-600 hover:from-emerald-500 hover:to-sky-500 transition shadow-lg shadow-emerald-900/30 border border-white/10", children: _jsx("span", { children: "Sign in with Google" }) })), clientId && mode === 'loading' && (_jsxs("div", { className: "flex flex-col items-center gap-3 py-6", children: [_jsx("div", { className: "w-8 h-8 border-2 border-emerald-400 border-t-transparent rounded-full animate-spin" }), _jsx("div", { className: "text-[11px] opacity-70", children: "Loading Google Sign-In\u2026" })] })), clientId && mode === 'ready' && (_jsx("div", { ref: buttonContainerRef, className: "mt-2" }))] }) }));
 }
 function FirstTimeFlow({ faction, archetype, pet, onFaction, onArchetype, onPet, onContinue }) {
     const [step, setStep] = useState(0);
@@ -228,37 +376,42 @@ function FirstTimeFlow({ faction, archetype, pet, onFaction, onArchetype, onPet,
                         ${active ? 'bg-emerald-600/30 border-emerald-500/60 shadow-inner' : 'bg-white/5 border-white/10 hover:bg-white/10'}`, children: [_jsx("div", { className: "w-full aspect-square rounded-xl bg-white/5 flex items-center justify-center overflow-hidden ring-1 ring-white/5 relative", children: _jsx("img", { src: img, alt: p, className: "absolute inset-0 w-full h-full object-cover drop-shadow" }) }), _jsx("span", { className: "font-medium tracking-wide", children: p === 'CYBER_DOG' ? 'Cyber‑Dog' : 'Cyber‑Cat' })] }, p));
                             }) }), _jsx("div", { className: "mt-4 rounded-xl border border-white/10 bg-white/5 p-4 text-lg h-60 flex flex-col overflow-hidden", children: petInfo ? (_jsxs("div", { className: "flex flex-col overflow-auto pr-1 custom-scrollbar", children: [_jsx("div", { className: "font-semibold text-base mb-2", children: "Cyber Companion" }), _jsxs("div", { children: [_jsx("span", { className: "text-emerald-300 font-medium", children: "Role:" }), " ", petInfo.role] }), _jsxs("div", { className: "mt-2", children: [_jsx("span", { className: "text-emerald-300 font-medium", children: "Abilities:" }), " ", petInfo.abilities.join(', ')] }), _jsxs("div", { className: "mt-2 space-y-1", children: [_jsx("div", { className: "text-emerald-300 font-medium", children: "Lore:" }), _jsx("div", { className: "opacity-80 text-[17px] leading-snug whitespace-pre-line", children: petInfo.lore })] })] })) : (_jsx("div", { className: "opacity-60", children: "Select a pet to see details." })) }), _jsxs("div", { className: "mt-6 flex justify-between", children: [_jsx(Button, { variant: "ghost", onClick: () => setStep(1), children: "Previous" }), _jsx(Button, { onClick: onContinue, disabled: !pet, children: "Continue" })] })] }))] }) }));
 }
-function MainMenu({ playerName, accountLevel, loadout, onCustomize, heroLocked, view, onChangeView }) {
-    return (_jsxs("div", { className: "h-full w-full bg-[#0f1218] text-gray-100 grid grid-rows-[64px_1fr]", style: { gridTemplateColumns: 'minmax(260px,20%) 1fr minmax(260px,20%)' }, children: [_jsx(TopNav, { view: view, onChangeView: onChangeView }), _jsx(LeftPlayerPanel, { className: "row-start-2", playerName: playerName, accountLevel: accountLevel, loadout: loadout, heroLocked: heroLocked }), _jsx(CenterHub, { className: "row-start-2", loadout: loadout, view: view }), _jsx(RightPlayerPanel, { className: "row-start-2", loadout: loadout, onCustomize: onCustomize })] }));
+function MainMenu({ playerName, accountLevel, loadout, onCustomize, heroLocked, view, onChangeView, profile, onSignOut, roomId, onChangeRoom, recentRooms }) {
+    return (_jsxs("div", { className: "h-full w-full bg-[#0f1218] text-gray-100 grid grid-rows-[64px_1fr]", style: { gridTemplateColumns: 'minmax(260px,20%) 1fr minmax(260px,20%)' }, children: [_jsx(TopNav, { view: view, onChangeView: onChangeView, profile: profile, onSignOut: onSignOut, roomId: roomId, onChangeRoom: onChangeRoom, recentRooms: recentRooms }), _jsx(LeftPlayerPanel, { className: "row-start-2", playerName: playerName, accountLevel: accountLevel, loadout: loadout, heroLocked: heroLocked }), _jsx(CenterHub, { className: "row-start-2", loadout: loadout, view: view }), _jsx(RightPlayerPanel, { className: "row-start-2", loadout: loadout, onCustomize: onCustomize })] }));
 }
-function TopNav({ view, onChangeView }) {
-    return (_jsxs("div", { className: "col-span-3 grid grid-cols-3 items-center px-6 bg-[#141924] border-b border-white/10 h-16", children: [_jsx("div", { className: "flex items-center", children: _jsxs("button", { onClick: () => onChangeView('dashboard'), className: "flex items-center gap-2 group", title: "Home", children: [_jsx("div", { className: "w-9 h-9 rounded-lg bg-gradient-to-br from-emerald-500/30 to-sky-500/30 border border-white/10 flex items-center justify-center font-bold text-sm tracking-wide text-emerald-200 group-hover:from-emerald-500/50 group-hover:to-sky-500/50 transition", children: "AF" }), _jsx("span", { className: "text-sm font-semibold tracking-wide bg-gradient-to-r from-emerald-300 to-sky-300 bg-clip-text text-transparent hidden xl:inline-block", children: "Afro\u2011Future" })] }) }), _jsxs("div", { className: "flex items-center justify-center gap-8", children: [_jsx("button", { className: `opacity-80 hover:opacity-100 transition ${view === 'dashboard' ? 'text-emerald-400' : ''}`, onClick: () => onChangeView('dashboard'), children: "Dashboard" }), _jsx("button", { className: `opacity-80 hover:opacity-100 transition ${view === 'skills' ? 'text-emerald-400' : ''}`, onClick: () => onChangeView('skills'), children: "Skills" }), _jsx("button", { className: `opacity-80 hover:opacity-100 transition ${view === 'store' ? 'text-emerald-400' : ''}`, onClick: () => onChangeView('store'), children: "Store" }), _jsx("button", { className: `opacity-80 hover:opacity-100 transition ${view === 'help' ? 'text-emerald-400' : ''}`, onClick: () => onChangeView('help'), children: "Help" })] }), _jsxs("div", { className: "ml-auto flex items-center justify-end gap-4", children: [_jsxs(Chip, { children: ["1,458 ", _jsx("span", { className: "opacity-70", children: "shards" })] }), _jsx(IconButton, { label: "Notifications", children: "\uD83D\uDD14" }), _jsx(IconButton, { label: "Mail", children: "\u2709\uFE0F" }), _jsx("img", { className: "w-9 h-9 rounded object-cover border border-white/10", src: "https://images.unsplash.com/photo-1546527868-ccb7ee7dfa6a?q=80&w=200&auto=format&fit=crop", alt: "avatar" }), _jsx(Button, { size: "sm", children: "Profile" })] })] }));
+function TopNav({ view, onChangeView, profile, onSignOut, roomId, onChangeRoom, recentRooms }) {
+    return (_jsxs("div", { className: "col-span-3 grid grid-cols-3 items-center px-6 bg-[#141924] border-b border-white/10 h-16", children: [_jsx("div", { className: "flex items-center", children: _jsxs("button", { onClick: () => onChangeView('dashboard'), className: "flex items-center gap-2 group", title: "Home", children: [_jsx("div", { className: "w-9 h-9 rounded-lg bg-gradient-to-br from-emerald-500/30 to-sky-500/30 border border-white/10 flex items-center justify-center font-bold text-sm tracking-wide text-emerald-200 group-hover:from-emerald-500/50 group-hover:to-sky-500/50 transition", children: "AF" }), _jsx("span", { className: "text-sm font-semibold tracking-wide bg-gradient-to-r from-emerald-300 to-sky-300 bg-clip-text text-transparent hidden xl:inline-block", children: "Afro\u2011Future" })] }) }), _jsxs("div", { className: "flex items-center justify-center gap-6", children: [_jsx("button", { className: `opacity-80 hover:opacity-100 transition ${view === 'dashboard' ? 'text-emerald-400' : ''}`, onClick: () => onChangeView('dashboard'), children: "Dashboard" }), _jsx("button", { className: `opacity-80 hover:opacity-100 transition ${view === 'skills' ? 'text-emerald-400' : ''}`, onClick: () => onChangeView('skills'), children: "Skills" }), _jsx("button", { className: `opacity-80 hover:opacity-100 transition ${view === 'store' ? 'text-emerald-400' : ''}`, onClick: () => onChangeView('store'), children: "Store" }), _jsx("button", { className: `opacity-80 hover:opacity-100 transition ${view === 'help' ? 'text-emerald-400' : ''}`, onClick: () => onChangeView('help'), children: "Help" }), _jsxs("div", { className: "flex items-center gap-2 ml-4", children: [_jsx("select", { value: roomId, onChange: e => onChangeRoom(e.target.value), className: "bg-[#1b222c] border border-white/10 rounded px-2 py-1 text-xs focus:outline-none focus:ring-1 focus:ring-emerald-400", children: [roomId, ...recentRooms.filter(r => r !== roomId)].map(r => _jsx("option", { value: r, children: r }, r)) }), _jsx("button", { onClick: () => {
+                                    const newRoom = prompt('Enter room id (alphanumeric, 2-24 chars)', 'lobby');
+                                    if (!newRoom)
+                                        return;
+                                    const trimmed = newRoom.trim();
+                                    if (!/^[a-zA-Z0-9_-]{2,24}$/.test(trimmed)) {
+                                        alert('Invalid room id');
+                                        return;
+                                    }
+                                    onChangeRoom(trimmed);
+                                }, className: "text-[11px] px-2 py-1 rounded bg-white/5 hover:bg-white/10 border border-white/10", children: "Change" })] })] }), _jsxs("div", { className: "ml-auto flex items-center justify-end gap-4", children: [_jsxs(Chip, { children: ["1,458 ", _jsx("span", { className: "opacity-70", children: "shards" })] }), _jsx(IconButton, { label: "Notifications", children: "\uD83D\uDD14" }), _jsx(IconButton, { label: "Mail", children: "\u2709\uFE0F" }), profile ? (_jsxs("div", { className: "flex items-center gap-2", children: [profile.picture ? _jsx("img", { className: "w-9 h-9 rounded object-cover border border-white/10", src: profile.picture, alt: profile.name || 'avatar' }) : (_jsx("div", { className: "w-9 h-9 rounded-lg bg-white/10 border border-white/10 flex items-center justify-center text-xs font-semibold", children: (profile.name || profile.email || 'U').slice(0, 1).toUpperCase() })), _jsxs("div", { className: "hidden md:flex flex-col leading-tight", children: [_jsx("span", { className: "text-xs font-medium", children: profile.name || 'User' }), profile.email && _jsx("span", { className: "text-[10px] opacity-60", children: profile.email })] }), _jsx(Button, { size: "sm", variant: "ghost", onClick: onSignOut, children: "Sign Out" })] })) : (_jsx("div", { className: "text-[11px] opacity-60", children: "Not signed in" }))] })] }));
 }
 function LeftPlayerPanel({ className = '', playerName, accountLevel, loadout, heroLocked }) {
     // Skill / stat integration
     const skillUnlocked = useSkillStore(s => s.unlocked);
     const skillSpent = useSkillStore(s => s.spent);
     const skillLevel = useSkillStore(s => s.level);
-    const attack = useSkillStore(s => s.attack);
-    const defense = useSkillStore(s => s.defense);
-    const utility = useSkillStore(s => s.utility);
+    // Removed Attack/Defense/Utility stat cards per UI cleanup request.
     const primaryBranch = useSkillStore(s => s.primaryBranch);
     const primaryType = useSkillStore(s => s.primaryType);
     const traitTags = useSkillStore(s => s.traitTags);
     const respec = useSkillStore(s => s.respec);
     const unlockOrder = useSkillStore(s => s.unlockOrder);
     const pointsLeft = availablePoints(useSkillStore.getState());
-    // Derived HP / EP formulas (placeholder: base + scaling)
+    // Simplified HP / EP formulas now decoupled from removed defense/utility stats.
     const baseHP = 100;
     const hpPerLevel = 12;
-    const hpPerDefense = 4;
     const baseEP = 60;
     const epPerLevel = 6;
-    const epPerUtility = 3;
-    const HP = baseHP + (skillLevel - 1) * hpPerLevel + defense * hpPerDefense;
-    const EP = baseEP + (skillLevel - 1) * epPerLevel + utility * epPerUtility;
-    function statDots(v) { const capped = Math.min(10, Math.round(v / 2)); return Array.from({ length: 5 }).map((_, i) => i < Math.ceil(capped / 2) ? '●' : '○').join(''); }
-    return (_jsxs("aside", { className: `col-start-1 h-full ${className} bg-[#0f1218] border-r border-black/40 shadow-inner flex flex-col`, children: [_jsxs("div", { className: "px-4 py-4 border-b border-white/10 flex flex-col items-center", children: [_jsxs("div", { className: "w-[240px] h-[180px] rounded-3xl border border-white/10 bg-[#12171f] overflow-hidden relative flex flex-col items-center justify-center", children: [_jsx("img", { className: "w-32 h-32 object-cover rounded-2xl border border-white/10 shadow-lg", src: loadout.portraitUrl, alt: "portrait" }), _jsxs("div", { className: "mt-2 flex flex-col items-center text-center", children: [_jsxs("div", { className: "flex items-center gap-2", children: [_jsx("img", { src: FactionIcon[loadout.faction], alt: loadout.faction, className: "w-5 h-5 drop-shadow" }), _jsx("span", { className: "font-semibold text-white text-sm leading-tight tracking-wide", children: loadout.name })] }), _jsxs("div", { className: "mt-1 text-[10px] text-gray-300 flex items-center gap-2", children: [_jsxs("span", { className: "px-2 py-0.5 rounded-full bg-white/5 border border-white/10 tracking-wide", children: ["Lv ", loadout.level] }), _jsx("span", { children: loadout.archetype === 'MALE' ? 'Male' : 'Female' })] })] }), _jsxs("span", { className: "absolute top-2 left-2 px-2 py-1 rounded-lg bg-black/50 border border-white/10 text-[10px] tracking-wide flex items-center gap-1", children: [_jsx("img", { src: FactionIcon[loadout.faction], alt: "faction", className: "w-3.5 h-3.5" }), loadout.faction] })] }), _jsxs("div", { className: "mt-4 grid grid-cols-3 gap-3 w-full", children: [_jsxs("div", { className: "rounded-2xl border border-white/10 bg-white/5 p-3 h-24 flex flex-col items-center justify-center text-[11px] text-center", children: [_jsx("div", { className: "opacity-70 mb-1", children: "Attack" }), _jsx("div", { className: "font-semibold tracking-wider", children: statDots(attack) }), _jsx("div", { className: "text-[9px] opacity-60 mt-1", children: attack })] }), _jsxs("div", { className: "rounded-2xl border border-white/10 bg-white/5 p-3 h-24 flex flex-col items-center justify-center text-[11px] text-center", children: [_jsx("div", { className: "opacity-70 mb-1", children: "Defense" }), _jsx("div", { className: "font-semibold tracking-wider", children: statDots(defense) }), _jsx("div", { className: "text-[9px] opacity-60 mt-1", children: defense })] }), _jsxs("div", { className: "rounded-2xl border border-white/10 bg-white/5 p-3 h-24 flex flex-col items-center justify-center text-[11px] text-center", children: [_jsx("div", { className: "opacity-70 mb-1", children: "Utility" }), _jsx("div", { className: "font-semibold tracking-wider", children: statDots(utility) }), _jsx("div", { className: "text-[9px] opacity-60 mt-1", children: utility })] })] }), _jsxs("div", { className: "mt-4 w-full grid grid-cols-2 gap-3", children: [_jsxs("div", { className: "rounded-2xl border border-white/10 bg-gradient-to-br from-emerald-500/10 to-sky-500/10 p-3 flex flex-col text-[10px]", children: [_jsxs("div", { className: "flex justify-between", children: [_jsx("span", { className: "opacity-70", children: "HP" }), _jsx("span", { className: "font-semibold", children: HP })] }), _jsxs("div", { className: "flex justify-between mt-1", children: [_jsx("span", { className: "opacity-70", children: "EP" }), _jsx("span", { className: "font-semibold", children: EP })] }), _jsxs("div", { className: "flex justify-between mt-1", children: [_jsx("span", { className: "opacity-70", children: "Skill Lv" }), _jsx("span", { className: "font-semibold", children: skillLevel })] })] }), _jsxs("div", { className: "rounded-2xl border border-white/10 bg-white/5 p-3 flex flex-col text-[10px]", children: [_jsxs("div", { className: "flex justify-between", children: [_jsx("span", { className: "opacity-70", children: "Tokens Spent" }), _jsx("span", { className: "font-semibold", children: skillSpent })] }), _jsxs("div", { className: "flex justify-between mt-1", children: [_jsx("span", { className: "opacity-70", children: "Tokens Left" }), _jsx("span", { className: "font-semibold text-emerald-300", children: pointsLeft })] }), _jsxs("div", { className: "flex justify-between mt-1", children: [_jsx("span", { className: "opacity-70", children: "Unlocked" }), _jsx("span", { className: "font-semibold", children: skillUnlocked.length })] })] })] }), _jsxs("div", { className: "mt-4 w-full rounded-2xl border border-white/10 bg-gradient-to-br from-white/5 to-white/[0.02] p-3 text-[10px] flex flex-col gap-1", children: [_jsxs("div", { className: "flex justify-between", children: [_jsx("span", { className: "opacity-70", children: "Primary Path" }), _jsx("span", { className: "font-semibold text-emerald-300", children: primaryBranch || '—' })] }), _jsxs("div", { className: "flex justify-between", children: [_jsx("span", { className: "opacity-70", children: "Primary Type" }), _jsx("span", { className: "font-semibold text-sky-300", children: primaryType || '—' })] }), _jsx("div", { className: "mt-1 flex flex-wrap gap-1", children: traitTags.length ? traitTags.map(t => _jsx(TraitTag, { tag: t }, t)) : (_jsx("span", { className: "opacity-50", children: "Earn traits by investing tokens" })) }), _jsx("div", { className: "mt-2 flex justify-end", children: _jsx("button", { disabled: !unlockOrder.length, onClick: () => { if (!unlockOrder.length)
+    const HP = baseHP + (skillLevel - 1) * hpPerLevel;
+    const EP = baseEP + (skillLevel - 1) * epPerLevel;
+    return (_jsxs("aside", { className: `col-start-1 h-full ${className} bg-[#0f1218] border-r border-black/40 shadow-inner flex flex-col`, children: [_jsxs("div", { className: "px-4 py-4 border-b border-white/10 flex flex-col items-center", children: [_jsxs("div", { className: "w-[240px] h-[180px] rounded-3xl border border-white/10 bg-[#12171f] overflow-hidden relative flex flex-col items-center justify-center", children: [_jsx("img", { className: "w-32 h-32 object-cover rounded-2xl border border-white/10 shadow-lg", src: loadout.portraitUrl, alt: "portrait" }), _jsxs("div", { className: "mt-2 flex flex-col items-center text-center", children: [_jsxs("div", { className: "flex items-center gap-2", children: [_jsx("img", { src: FactionIcon[loadout.faction], alt: loadout.faction, className: "w-5 h-5 drop-shadow" }), _jsx("span", { className: "font-semibold text-white text-sm leading-tight tracking-wide", children: loadout.name })] }), _jsxs("div", { className: "mt-1 text-[10px] text-gray-300 flex items-center gap-2", children: [_jsxs("span", { className: "px-2 py-0.5 rounded-full bg-white/5 border border-white/10 tracking-wide", children: ["Lv ", loadout.level] }), _jsx("span", { children: loadout.archetype === 'MALE' ? 'Male' : 'Female' })] })] }), _jsxs("span", { className: "absolute top-2 left-2 px-2 py-1 rounded-lg bg-black/50 border border-white/10 text-[10px] tracking-wide flex items-center gap-1", children: [_jsx("img", { src: FactionIcon[loadout.faction], alt: "faction", className: "w-3.5 h-3.5" }), loadout.faction] })] }), _jsxs("div", { className: "mt-4 w-full grid grid-cols-2 gap-3", children: [_jsxs("div", { className: "rounded-2xl border border-white/10 bg-gradient-to-br from-emerald-500/10 to-sky-500/10 p-3 flex flex-col text-[10px]", children: [_jsxs("div", { className: "flex justify-between", children: [_jsx("span", { className: "opacity-70", children: "HP" }), _jsx("span", { className: "font-semibold", children: HP })] }), _jsxs("div", { className: "flex justify-between mt-1", children: [_jsx("span", { className: "opacity-70", children: "EP" }), _jsx("span", { className: "font-semibold", children: EP })] }), _jsxs("div", { className: "flex justify-between mt-1", children: [_jsx("span", { className: "opacity-70", children: "Skill Lv" }), _jsx("span", { className: "font-semibold", children: skillLevel })] })] }), _jsxs("div", { className: "rounded-2xl border border-white/10 bg-white/5 p-3 flex flex-col text-[10px]", children: [_jsxs("div", { className: "flex justify-between", children: [_jsx("span", { className: "opacity-70", children: "Tokens Spent" }), _jsx("span", { className: "font-semibold", children: skillSpent })] }), _jsxs("div", { className: "flex justify-between mt-1", children: [_jsx("span", { className: "opacity-70", children: "Tokens Left" }), _jsx("span", { className: "font-semibold text-emerald-300", children: pointsLeft })] }), _jsxs("div", { className: "flex justify-between mt-1", children: [_jsx("span", { className: "opacity-70", children: "Unlocked" }), _jsx("span", { className: "font-semibold", children: skillUnlocked.length })] })] })] }), _jsxs("div", { className: "mt-4 w-full rounded-2xl border border-white/10 bg-gradient-to-br from-white/5 to-white/[0.02] p-3 text-[10px] flex flex-col gap-1", children: [_jsxs("div", { className: "flex justify-between", children: [_jsx("span", { className: "opacity-70", children: "Primary Path" }), _jsx("span", { className: "font-semibold text-emerald-300", children: primaryBranch || '—' })] }), _jsxs("div", { className: "flex justify-between", children: [_jsx("span", { className: "opacity-70", children: "Primary Type" }), _jsx("span", { className: "font-semibold text-sky-300", children: primaryType || '—' })] }), _jsx("div", { className: "mt-1 flex flex-wrap gap-1", children: traitTags.length ? traitTags.map(t => _jsx(TraitTag, { tag: t }, t)) : (_jsx("span", { className: "opacity-50", children: "Earn traits by investing tokens" })) }), _jsx("div", { className: "mt-2 flex justify-end", children: _jsx("button", { disabled: !unlockOrder.length, onClick: () => { if (!unlockOrder.length)
                                         return; if (confirm('Respec will refund all spent tokens. Proceed?'))
                                         respec(); }, className: "px-2.5 py-1 rounded-lg border text-[10px] tracking-wide disabled:opacity-40 disabled:cursor-not-allowed bg-white/5 border-white/10 hover:bg-white/10", children: "Respec" }) })] })] }), _jsxs("div", { className: "px-4 py-6 flex flex-col items-center gap-4", children: [_jsxs("div", { className: "w-[240px] h-[240px] rounded-3xl border border-white/10 bg-white/5 overflow-hidden relative flex flex-col items-center justify-center p-4", children: [_jsx("div", { className: "absolute inset-0 bg-gradient-to-tr from-[#0b0e13]/80 via-transparent to-[#0b0e13]/50" }), _jsx("img", { className: "relative z-10 w-28 h-28 object-contain drop-shadow", src: PetIcon[loadout.pet.type], alt: "pet" }), _jsxs("div", { className: "relative z-10 mt-3 flex flex-col items-center text-center", children: [_jsx("div", { className: "font-semibold text-white text-base leading-tight", children: loadout.pet.type === 'CYBER_DOG' ? 'Cyber-Dog' : 'Cyber-Cat' }), _jsxs("div", { className: "mt-1 text-[11px] text-gray-300 flex items-center gap-2", children: [_jsxs("span", { className: "px-2 py-0.5 rounded-full bg-white/5 border border-white/10 tracking-wide", children: ["Lv ", loadout.pet.level] }), _jsx("span", { children: loadout.pet.role })] })] })] }), _jsx("div", { className: "grid grid-cols-3 gap-3 w-full", children: [
                             { label: 'Attack', value: '●●○○○' },

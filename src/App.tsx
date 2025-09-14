@@ -6,6 +6,8 @@ import SnowflakeSkillTree from './components/SnowflakeSkillTree';
 import VariantPreview from './components/VariantPreview';
 import { Archetype, CharacterLoadout, Faction, PetType, uid, now } from './types/loadout';
 import { CharacterPortrait, FactionIcon, ImageAssets, getCharacterPortrait, PetIcon } from './assets/assetPaths';
+import { joinRoom } from './services/realtimeClient';
+import GoogleSignInButton from './components/auth/GoogleSignInButton';
 
 const defaultLoadout: CharacterLoadout = {
   id: uid('char'),
@@ -29,7 +31,15 @@ const defaultLoadout: CharacterLoadout = {
 };
 
 export default function App() {
-  const [phase, setPhase] = useState<'boot' | 'onboard' | 'creating' | 'main'>('boot');
+  // Authentication gating: require Google sign-in before proceeding to normal boot sequence.
+  const [idToken, setIdToken] = useState<string | null>(() => localStorage.getItem('afrofuture.idToken'));
+  const [phase, setPhase] = useState<'auth' | 'boot' | 'onboard' | 'creating' | 'main'>(!localStorage.getItem('afrofuture.idToken') ? 'auth' : 'boot');
+  const [rtc, setRtc] = useState<{ ws: WebSocket; pc: RTCPeerConnection; dc: RTCDataChannel } | null>(null);
+  const [roomId, setRoomId] = useState<string>(() => localStorage.getItem('afrofuture.room') || 'lobby');
+  const [recentRooms, setRecentRooms] = useState<string[]>(() => {
+    try { return JSON.parse(localStorage.getItem('afrofuture.recentRooms')||'[]'); } catch { return []; }
+  });
+  const [profile, setProfile] = useState<{ sub: string; name?: string; email?: string; picture?: string } | null>(null);
   const [mainView, setMainView] = useState<'dashboard' | 'skills' | 'store' | 'help'>('dashboard');
   const [progress, setProgress] = useState(0);
   const [playerName] = useState('PlayerOne');
@@ -70,6 +80,56 @@ export default function App() {
     return () => clearInterval(id);
   }, [phase, activeLoadout]);
 
+  function handleSignedIn(token: string){
+    setIdToken(token);
+    localStorage.setItem('afrofuture.idToken', token);
+    setPhase('boot');
+    try {
+      const payload = JSON.parse(atob(token.split('.')[1] || 'e30='));
+      setProfile({ sub: payload.sub, name: payload.name, email: payload.email, picture: payload.picture });
+    } catch {}
+    // Join a default room (e.g., 'lobby') for demonstration
+    try {
+      const room = joinRoom(roomId, {}, token);
+      setRtc(room);
+    } catch (e) { console.warn('[rtc] join failed', e); }
+  }
+  function handleSignOut(){
+    localStorage.removeItem('afrofuture.idToken');
+    setIdToken(null);
+    setPhase('auth');
+    setProfile(null);
+    if(rtc){
+      try { rtc.dc.close(); } catch {}
+      try { rtc.pc.close(); } catch {}
+      try { rtc.ws.close(); } catch {}
+      setRtc(null);
+    }
+  }
+  function switchRoom(newRoom: string){
+    if(newRoom === roomId) return;
+    setRoomId(newRoom);
+    localStorage.setItem('afrofuture.room', newRoom);
+    setRecentRooms(rs => {
+      const next = [newRoom, ...rs.filter(r=>r!==newRoom)].slice(0,5);
+      localStorage.setItem('afrofuture.recentRooms', JSON.stringify(next));
+      return next;
+    });
+    // Reconnect
+    if(rtc){
+      try { rtc.dc.close(); } catch {}
+      try { rtc.pc.close(); } catch {}
+      try { rtc.ws.close(); } catch {}
+      setRtc(null);
+    }
+    if(idToken){
+      try {
+        const room = joinRoom(newRoom, {}, idToken);
+        setRtc(room);
+      } catch(e){ console.warn('[rtc] room switch failed', e); }
+    }
+  }
+
   function startCreator() {
     if (heroLocked) return; // cannot create a new hero once locked
     setPhase('creating');
@@ -88,7 +148,8 @@ export default function App() {
     setPhase('main');
   }
 
-  if (phase === 'boot') return <GameViewport mode="fit"><WelcomeScreen progress={progress} build="v0.2.3 demo • UE5" /></GameViewport>;
+  if (phase === 'auth') return <GameViewport mode="fit"><AuthGate onSignedIn={handleSignedIn} /></GameViewport>;
+  if (phase === 'boot') return <GameViewport mode="fit"><WelcomeScreen progress={progress} build="v0.2.3 demo • UE5" onSignOut={handleSignOut} /></GameViewport>;
 
   if (phase === 'onboard') return (
     <GameViewport mode="fit">
@@ -145,6 +206,11 @@ export default function App() {
         heroLocked={heroLocked}
         view={mainView}
         onChangeView={setMainView}
+        profile={profile}
+        onSignOut={handleSignOut}
+        roomId={roomId}
+        onChangeRoom={switchRoom}
+        recentRooms={recentRooms}
       />
     </GameViewport>
   );
@@ -202,7 +268,13 @@ function GameViewport({ children, mode = 'fixed', allowUpscale = true, minScale 
   );
 }
 
-function WelcomeScreen({ progress, build }: { progress: number; build: string }) {
+function WelcomeScreen({ progress, build, onSignOut }: { progress: number; build: string; onSignOut?: () => void }) {
+  const idToken = localStorage.getItem('afrofuture.idToken');
+  function signOut(){
+    localStorage.removeItem('afrofuture.idToken');
+    onSignOut?.();
+  }
+
   return (
     <div className="w-screen h-screen bg-[#0b0e13] relative text-gray-100 overflow-hidden">
       <div className="absolute inset-0 bg-[radial-gradient(circle_at_30%_30%,rgba(16,185,129,0.15),transparent_60%)]" />
@@ -215,6 +287,20 @@ function WelcomeScreen({ progress, build }: { progress: number; build: string })
             <div className="h-full bg-gradient-to-r from-emerald-500 via-teal-400 to-sky-500 transition-all" style={{ width: `${progress}%` }} />
           </div>
           <div className="mt-2 text-xs opacity-60 text-center">{progress}%</div>
+          <div className="mt-6 flex flex-col items-center gap-3">
+            {import.meta.env.VITE_GOOGLE_CLIENT_ID ? (
+              idToken ? (
+                <>
+                  <div className="text-xs text-emerald-300">Signed in</div>
+                  <button onClick={signOut} className="text-[11px] px-3 py-1 rounded bg-white/10 hover:bg-white/20 border border-white/10">Sign Out</button>
+                </>
+              ) : (
+                <GoogleSignInButton onCredential={() => window.location.reload()} />
+              )
+            ) : (
+              <div className="text-[11px] opacity-60">Set VITE_GOOGLE_CLIENT_ID to enable sign-in</div>
+            )}
+          </div>
         </div>
         <div className="absolute bottom-4 right-6 text-[10px] opacity-60">{build}</div>
         <div className="absolute bottom-4 left-6 text-[10px] flex gap-4 opacity-60">
@@ -222,6 +308,71 @@ function WelcomeScreen({ progress, build }: { progress: number; build: string })
           <a className="hover:opacity-90 transition" href="#">Privacy</a>
           <button className="hover:opacity-90 transition">Accessibility</button>
         </div>
+      </div>
+    </div>
+  );
+}
+
+// AuthGate: first step – requires Google sign-in then notifies parent.
+function AuthGate({ onSignedIn }: { onSignedIn: (token:string)=>void }) {
+  const idToken = localStorage.getItem('afrofuture.idToken');
+  const [mode, setMode] = React.useState<'idle' | 'loading' | 'ready'>('idle');
+  const [scriptLoaded, setScriptLoaded] = React.useState(false);
+  const buttonContainerRef = React.useRef<HTMLDivElement | null>(null);
+  const clientId = import.meta.env.VITE_GOOGLE_CLIENT_ID;
+
+  React.useEffect(()=>{ if(idToken) onSignedIn(idToken); },[idToken,onSignedIn]);
+
+  // When script loaded and mode wants ready, render GIS button manually (without reusable component to auto trigger)
+  React.useEffect(()=>{
+    if(mode !== 'ready' || !clientId || !scriptLoaded || !buttonContainerRef.current) return;
+    // @ts-ignore
+    if(window.google?.accounts?.id){
+      // @ts-ignore
+      window.google.accounts.id.initialize({ client_id: clientId, callback:(resp:any)=>{ if(resp.credential){ onSignedIn(resp.credential);} } });
+      buttonContainerRef.current.innerHTML = '';
+      // @ts-ignore
+      window.google.accounts.id.renderButton(buttonContainerRef.current, { theme:'outline', size:'large', width:280, text:'signin_with' });
+      // Programmatic UX: focus container
+      setTimeout(()=>{ buttonContainerRef.current?.querySelector('div[role=button]')?.dispatchEvent(new Event('click')); }, 50);
+    }
+  },[mode, scriptLoaded, clientId, onSignedIn]);
+
+  function startGoogle(){
+    if(!clientId){ return; }
+    if(scriptLoaded){ setMode('ready'); return; }
+    setMode('loading');
+    if(document.getElementById('gis-sdk')){
+      setScriptLoaded(true); setMode('ready'); return;
+    }
+    const s = document.createElement('script');
+    s.id='gis-sdk'; s.src='https://accounts.google.com/gsi/client'; s.async=true; s.defer=true;
+    s.onload=()=>{ setScriptLoaded(true); setMode('ready'); };
+    s.onerror=()=>{ setMode('idle'); alert('Failed to load Google Sign-In. Check network.'); };
+    document.head.appendChild(s);
+  }
+
+  return (
+    <div className="w-screen h-screen flex items-center justify-center bg-[#0b0e13] text-gray-100">
+      <div className="w-full max-w-md p-8 rounded-2xl bg-[#12171f]/90 border border-white/10 shadow-xl flex flex-col items-center">
+        <h1 className="text-3xl font-semibold tracking-wide mb-4">Afro‑Future Rising</h1>
+        {!clientId && (
+          <div className="text-[11px] opacity-60 text-center">Set VITE_GOOGLE_CLIENT_ID in .env to enable sign-in</div>
+        )}
+        {clientId && mode==='idle' && (
+          <button onClick={startGoogle} className="w-full text-sm font-medium tracking-wide flex items-center justify-center gap-2 px-4 py-3 rounded-lg bg-gradient-to-r from-emerald-600 to-sky-600 hover:from-emerald-500 hover:to-sky-500 transition shadow-lg shadow-emerald-900/30 border border-white/10">
+            <span>Sign in with Google</span>
+          </button>
+        )}
+        {clientId && mode==='loading' && (
+          <div className="flex flex-col items-center gap-3 py-6">
+            <div className="w-8 h-8 border-2 border-emerald-400 border-t-transparent rounded-full animate-spin" />
+            <div className="text-[11px] opacity-70">Loading Google Sign-In…</div>
+          </div>
+        )}
+        {clientId && mode==='ready' && (
+          <div ref={buttonContainerRef} className="mt-2" />
+        )}
       </div>
     </div>
   );
@@ -416,10 +567,10 @@ function FirstTimeFlow({ faction, archetype, pet, onFaction, onArchetype, onPet,
   );
 }
 
-function MainMenu({ playerName, accountLevel, loadout, onCustomize, heroLocked, view, onChangeView }: { playerName: string; accountLevel: number; loadout: CharacterLoadout; onCustomize: () => void; heroLocked: boolean; view: 'dashboard' | 'skills' | 'store' | 'help'; onChangeView: (v: 'dashboard' | 'skills' | 'store' | 'help') => void; }) {
+function MainMenu({ playerName, accountLevel, loadout, onCustomize, heroLocked, view, onChangeView, profile, onSignOut, roomId, onChangeRoom, recentRooms }: { playerName: string; accountLevel: number; loadout: CharacterLoadout; onCustomize: () => void; heroLocked: boolean; view: 'dashboard' | 'skills' | 'store' | 'help'; onChangeView: (v: 'dashboard' | 'skills' | 'store' | 'help') => void; profile?: { sub: string; name?: string; email?: string; picture?: string } | null; onSignOut?: () => void; roomId: string; onChangeRoom: (r:string)=>void; recentRooms: string[]; }) {
   return (
     <div className="h-full w-full bg-[#0f1218] text-gray-100 grid grid-rows-[64px_1fr]" style={{gridTemplateColumns:'minmax(260px,20%) 1fr minmax(260px,20%)'}}>
-      <TopNav view={view} onChangeView={onChangeView} />
+      <TopNav view={view} onChangeView={onChangeView} profile={profile} onSignOut={onSignOut} roomId={roomId} onChangeRoom={onChangeRoom} recentRooms={recentRooms} />
       <LeftPlayerPanel className="row-start-2" playerName={playerName} accountLevel={accountLevel} loadout={loadout} heroLocked={heroLocked} />
       <CenterHub className="row-start-2" loadout={loadout} view={view} />
       <RightPlayerPanel className="row-start-2" loadout={loadout} onCustomize={onCustomize} />
@@ -427,7 +578,7 @@ function MainMenu({ playerName, accountLevel, loadout, onCustomize, heroLocked, 
   );
 }
 
-function TopNav({ view, onChangeView }: { view: 'dashboard' | 'skills' | 'store' | 'help'; onChangeView: (v: 'dashboard' | 'skills' | 'store' | 'help') => void }) {
+function TopNav({ view, onChangeView, profile, onSignOut, roomId, onChangeRoom, recentRooms }: { view: 'dashboard' | 'skills' | 'store' | 'help'; onChangeView: (v: 'dashboard' | 'skills' | 'store' | 'help') => void; profile?: { sub: string; name?: string; email?: string; picture?: string } | null; onSignOut?: () => void; roomId: string; onChangeRoom: (r:string)=>void; recentRooms: string[]; }) {
   return (
     <div className="col-span-3 grid grid-cols-3 items-center px-6 bg-[#141924] border-b border-white/10 h-16">
       <div className="flex items-center">
@@ -442,18 +593,46 @@ function TopNav({ view, onChangeView }: { view: 'dashboard' | 'skills' | 'store'
           <span className="text-sm font-semibold tracking-wide bg-gradient-to-r from-emerald-300 to-sky-300 bg-clip-text text-transparent hidden xl:inline-block">Afro‑Future</span>
         </button>
       </div>
-      <div className="flex items-center justify-center gap-8">
+      <div className="flex items-center justify-center gap-6">
         <button className={`opacity-80 hover:opacity-100 transition ${view==='dashboard' ? 'text-emerald-400' : ''}`} onClick={()=>onChangeView('dashboard')}>Dashboard</button>
         <button className={`opacity-80 hover:opacity-100 transition ${view==='skills' ? 'text-emerald-400' : ''}`} onClick={()=>onChangeView('skills')}>Skills</button>
         <button className={`opacity-80 hover:opacity-100 transition ${view==='store' ? 'text-emerald-400' : ''}`} onClick={()=>onChangeView('store')}>Store</button>
         <button className={`opacity-80 hover:opacity-100 transition ${view==='help' ? 'text-emerald-400' : ''}`} onClick={()=>onChangeView('help')}>Help</button>
+        {/* Room selector */}
+        <div className="flex items-center gap-2 ml-4">
+          <select value={roomId} onChange={e=>onChangeRoom(e.target.value)} className="bg-[#1b222c] border border-white/10 rounded px-2 py-1 text-xs focus:outline-none focus:ring-1 focus:ring-emerald-400">
+            {[roomId, ...recentRooms.filter(r=>r!==roomId)].map(r => <option key={r} value={r}>{r}</option>)}
+          </select>
+          <button
+            onClick={()=>{
+              const newRoom = prompt('Enter room id (alphanumeric, 2-24 chars)', 'lobby');
+              if(!newRoom) return;
+              const trimmed = newRoom.trim();
+              if(!/^[a-zA-Z0-9_-]{2,24}$/.test(trimmed)){ alert('Invalid room id'); return; }
+              onChangeRoom(trimmed);
+            }}
+            className="text-[11px] px-2 py-1 rounded bg-white/5 hover:bg-white/10 border border-white/10"
+          >Change</button>
+        </div>
       </div>
       <div className="ml-auto flex items-center justify-end gap-4">
         <Chip>1,458 <span className="opacity-70">shards</span></Chip>
         <IconButton label="Notifications">🔔</IconButton>
         <IconButton label="Mail">✉️</IconButton>
-        <img className="w-9 h-9 rounded object-cover border border-white/10" src="https://images.unsplash.com/photo-1546527868-ccb7ee7dfa6a?q=80&w=200&auto=format&fit=crop" alt="avatar" />
-        <Button size="sm">Profile</Button>
+        {profile ? (
+          <div className="flex items-center gap-2">
+            {profile.picture ? <img className="w-9 h-9 rounded object-cover border border-white/10" src={profile.picture} alt={profile.name || 'avatar'} /> : (
+              <div className="w-9 h-9 rounded-lg bg-white/10 border border-white/10 flex items-center justify-center text-xs font-semibold">{(profile.name||profile.email||'U').slice(0,1).toUpperCase()}</div>
+            )}
+            <div className="hidden md:flex flex-col leading-tight">
+              <span className="text-xs font-medium">{profile.name || 'User'}</span>
+              {profile.email && <span className="text-[10px] opacity-60">{profile.email}</span>}
+            </div>
+            <Button size="sm" variant="ghost" onClick={onSignOut}>Sign Out</Button>
+          </div>
+        ) : (
+          <div className="text-[11px] opacity-60">Not signed in</div>
+        )}
       </div>
     </div>
   );
@@ -464,21 +643,18 @@ function LeftPlayerPanel({ className = '', playerName, accountLevel, loadout, he
   const skillUnlocked = useSkillStore(s=>s.unlocked);
   const skillSpent = useSkillStore(s=>s.spent);
   const skillLevel = useSkillStore(s=>s.level);
-  const attack = useSkillStore(s=>s.attack);
-  const defense = useSkillStore(s=>s.defense);
-  const utility = useSkillStore(s=>s.utility);
+  // Removed Attack/Defense/Utility stat cards per UI cleanup request.
   const primaryBranch = useSkillStore(s=>s.primaryBranch);
   const primaryType = useSkillStore(s=>s.primaryType);
   const traitTags = useSkillStore(s=>s.traitTags);
   const respec = useSkillStore(s=>s.respec);
   const unlockOrder = useSkillStore(s=>s.unlockOrder);
   const pointsLeft = availablePoints(useSkillStore.getState());
-  // Derived HP / EP formulas (placeholder: base + scaling)
-  const baseHP = 100; const hpPerLevel = 12; const hpPerDefense = 4;
-  const baseEP = 60; const epPerLevel = 6; const epPerUtility = 3;
-  const HP = baseHP + (skillLevel-1)*hpPerLevel + defense*hpPerDefense;
-  const EP = baseEP + (skillLevel-1)*epPerLevel + utility*epPerUtility;
-  function statDots(v:number){ const capped = Math.min(10, Math.round(v/2)); return Array.from({length:5}).map((_,i)=> i < Math.ceil(capped/2) ? '●' : '○').join(''); }
+  // Simplified HP / EP formulas now decoupled from removed defense/utility stats.
+  const baseHP = 100; const hpPerLevel = 12;
+  const baseEP = 60; const epPerLevel = 6;
+  const HP = baseHP + (skillLevel-1)*hpPerLevel;
+  const EP = baseEP + (skillLevel-1)*epPerLevel;
   return (
     <aside className={`col-start-1 h-full ${className} bg-[#0f1218] border-r border-black/40 shadow-inner flex flex-col`}>      
       <div className="px-4 py-4 border-b border-white/10 flex flex-col items-center">
@@ -501,24 +677,7 @@ function LeftPlayerPanel({ className = '', playerName, accountLevel, loadout, he
             {loadout.faction}
           </span>
         </div>
-        {/* Stat row under card */}
-        <div className="mt-4 grid grid-cols-3 gap-3 w-full">
-          <div className="rounded-2xl border border-white/10 bg-white/5 p-3 h-24 flex flex-col items-center justify-center text-[11px] text-center">
-            <div className="opacity-70 mb-1">Attack</div>
-            <div className="font-semibold tracking-wider">{statDots(attack)}</div>
-            <div className="text-[9px] opacity-60 mt-1">{attack}</div>
-          </div>
-            <div className="rounded-2xl border border-white/10 bg-white/5 p-3 h-24 flex flex-col items-center justify-center text-[11px] text-center">
-            <div className="opacity-70 mb-1">Defense</div>
-            <div className="font-semibold tracking-wider">{statDots(defense)}</div>
-            <div className="text-[9px] opacity-60 mt-1">{defense}</div>
-          </div>
-          <div className="rounded-2xl border border-white/10 bg-white/5 p-3 h-24 flex flex-col items-center justify-center text-[11px] text-center">
-            <div className="opacity-70 mb-1">Utility</div>
-            <div className="font-semibold tracking-wider">{statDots(utility)}</div>
-            <div className="text-[9px] opacity-60 mt-1">{utility}</div>
-          </div>
-        </div>
+        {/* Removed Attack / Defense / Utility stat cards */}
         {/* HP / EP & Skill Tokens */}
         <div className="mt-4 w-full grid grid-cols-2 gap-3">
           <div className="rounded-2xl border border-white/10 bg-gradient-to-br from-emerald-500/10 to-sky-500/10 p-3 flex flex-col text-[10px]">
