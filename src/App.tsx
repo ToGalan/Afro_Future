@@ -449,18 +449,34 @@ function AuthGate({ onSignedIn }: { onSignedIn: (token:string)=>void }) {
 
   React.useEffect(()=>{ if(idToken) onSignedIn(idToken); },[idToken,onSignedIn]);
   async function startGoogle(){
+    console.log('[auth] user clicked primary Sign in with Google button');
     const cid = clientId || await getGoogleClientId();
-    if(!cid){ setMode('error'); return; }
+    if(!cid){ console.warn('[auth] no client id resolved'); setMode('error'); return; }
     setMode('loading');
     try {
-      await initGoogleIdentity(cid, (resp:any)=>{ if(resp.credential) onSignedIn(resp.credential); });
+      console.log('[auth] initializing GIS with client id', cid);
+      await initGoogleIdentity(cid, (resp:any)=>{ 
+        console.log('[auth] credential callback fired', resp?.select_by);
+        if(resp.credential) onSignedIn(resp.credential); 
+      });
       if(buttonContainerRef.current){
         buttonContainerRef.current.innerHTML='';
         await renderGoogleButton(buttonContainerRef.current, {});
+        console.log('[auth] GIS button rendered into container');
+      } else {
+        console.log('[auth] buttonContainerRef empty, cannot render GIS button');
       }
       setMode('ready');
-      // Auto-click for faster flow (optional)
-      setTimeout(()=>{ buttonContainerRef.current?.querySelector('div[role=button]')?.dispatchEvent(new Event('click')); }, 60);
+      // Auto-click for faster flow (optional synthetic click)
+      setTimeout(()=>{ 
+        const btn = buttonContainerRef.current?.querySelector('div[role=button]');
+        if(btn){
+          console.log('[auth] dispatching synthetic click to rendered GIS button');
+          btn.dispatchEvent(new Event('click')); 
+        } else {
+          console.log('[auth] GIS rendered button not found for synthetic click');
+        }
+      }, 60);
     } catch(e){
       console.warn('[gis] init failed', e);
       setMode('error');
