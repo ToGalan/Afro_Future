@@ -23,6 +23,11 @@ export interface CharacterLoadout {
   pet: PetLoadout;
   createdAt: number;
   updatedAt: number;
+  // Optional 3D configuration placeholder (parts etc.)
+  threeConfig?: {
+    parts?: Record<string, string | undefined>;
+    colors?: Record<string,string>;
+  };
 }
 
 export function uid(prefix = 'id'): string {

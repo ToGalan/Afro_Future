@@ -1,4 +1,6 @@
 import React, { useEffect, useState } from 'react';
+import { GROUP_ORDER, getVariantsByGroup } from './assets/threeParts';
+import AvatarScene from './components/AvatarScene';
 import { Archetype, CharacterLoadout, Faction, PetType, uid, now } from './types/loadout';
 import { CharacterPortrait, FactionIcon, ImageAssets, getCharacterPortrait, PetIcon } from './assets/assetPaths';
 
@@ -552,13 +554,40 @@ function RightStartPanel({ className = '' }: { className?: string }) {
 // RightStartPanel removed – functionality merged into LeftPlayerPanel
 
 function CharacterCreator({ onSave, onBack, initial, locked }: { onSave: (payload: CharacterLoadout) => void; onBack: () => void; initial?: CharacterLoadout; locked?: boolean; }) {
-  const [tab, setTab] = useState('Head');
-  const tabs = ['Head', 'Hair', 'Face', 'Eyes', 'Eyebrows', 'Nose', 'Facial Hair', 'Glasses', 'Hat', 'Top', 'Bottom', 'Shoes', 'Accessories'];
+  // Dynamic tabs derived from 3D asset mapping
+  const [tab, setTab] = useState<string>(GROUP_ORDER[0]);
+  const tabs: string[] = [...GROUP_ORDER, 'Colors'];
+  // Store picked variant id per group locally (could be moved to zustand later)
+  const [picked, setPicked] = useState<Record<string,string|undefined>>({});
+  const [colorState, setColorState] = useState<{primary:string;secondary:string;skin:string}>(
+    { primary: '#00A37A', secondary: '#F5F5F5', skin: '#c58b66' }
+  );
+  // Animation preview controls
+  const [animPaused, setAnimPaused] = useState(false);
+  const [animSpeed, setAnimSpeed] = useState(1);
+
+  function selectVariant(group: string, id: string) {
+    setPicked(p => {
+      const currentlyActive = p[group] === id;
+      let next = { ...p, [group]: currentlyActive ? undefined : id };
+      // Outfit mutual exclusion logic: selecting an Outfit clears Top & Bottom, selecting Top/Bottom clears Outfit
+      if (!currentlyActive) {
+        if (group === 'Outfit') {
+          next.Top = undefined;
+          next.Bottom = undefined;
+        } else if (group === 'Top' || group === 'Bottom') {
+          next.Outfit = undefined;
+        }
+      }
+      return next;
+    });
+  }
   function exportPayload() {
     const base = (initial ?? defaultLoadout);
+    const threeConfig = { parts: { ...picked }, colors: { ...colorState } } as any; // extended config
     const payload: CharacterLoadout = locked ?
-      { ...base, updatedAt: now() } :
-      { ...base, id: uid('char'), createdAt: base.createdAt, updatedAt: now() };
+      { ...base, threeConfig, updatedAt: now() } :
+      { ...base, threeConfig, id: uid('char'), createdAt: base.createdAt, updatedAt: now() };
     onSave(payload);
   }
   return (
@@ -570,9 +599,30 @@ function CharacterCreator({ onSave, onBack, initial, locked }: { onSave: (payloa
       <div className="flex-1 flex flex-col">
         <div className="flex-1 flex items-center justify-center px-8 py-8">
           <div className="relative w-full h-full max-h-[55vh] rounded-[32px] bg-[#12171f] border border-white/10 shadow-2xl overflow-hidden flex items-center justify-center">
-            <div className="absolute inset-0 bg-gradient-to-tr from-emerald-500/5 via-transparent to-sky-500/5" />
-            <img className="h-[60%] object-contain relative z-10 drop-shadow-xl" src={initial?.portraitUrl || '/assets/chibi-default.png'} alt="preview" />
-            <div className="absolute bottom-4 right-4 text-[11px] px-2 py-1 rounded bg-white/5 border border-white/10 uppercase tracking-wide">Preview</div>
+            <div className="absolute inset-0 bg-gradient-to-tr from-emerald-500/5 via-transparent to-sky-500/5 pointer-events-none" />
+            <div className="absolute inset-0">
+              <AvatarScene parts={picked} colors={colorState} debugTint={false} animPaused={animPaused} animSpeed={animSpeed} />
+              <div className="absolute top-3 left-3 flex items-center gap-2 bg-black/40 backdrop-blur-sm px-3 py-2 rounded-xl border border-white/10 text-[11px]">
+                <button
+                  onClick={() => setAnimPaused(p=>!p)}
+                  className="px-2 py-1 rounded bg-white/10 hover:bg-white/15 border border-white/10"
+                >{animPaused ? 'Play' : 'Pause'}</button>
+                <div className="flex items-center gap-1">
+                  <span className="opacity-60">Speed</span>
+                  <input
+                    type="range"
+                    min={0.25}
+                    max={1.5}
+                    step={0.05}
+                    value={animSpeed}
+                    onChange={e => setAnimSpeed(parseFloat(e.target.value))}
+                    className="w-24"
+                  />
+                  <span className="tabular-nums w-8 text-right">{animSpeed.toFixed(2)}x</span>
+                </div>
+              </div>
+            </div>
+            <div className="absolute bottom-4 right-4 text-[11px] px-2 py-1 rounded bg-white/5 border border-white/10 uppercase tracking-wide">Preview 3D</div>
           </div>
         </div>
         {/* Items/config panel full width */}
@@ -588,15 +638,48 @@ function CharacterCreator({ onSave, onBack, initial, locked }: { onSave: (payloa
             ))}
           </div>
           {/* Single centered row of limited items (no scroll) */}
-          <div className="flex-1 px-8 pt-6 pb-20 flex items-start justify-center">
-            <div className="flex gap-4 flex-wrap justify-center max-w-6xl">
-              {Array.from({ length: 14 }).map((_, i) => (
-                <button
-                  key={i}
-                  className="w-20 h-20 rounded-xl border border-white/10 bg-white/5 hover:bg-white/10 transition grid place-items-center text-[11px] text-gray-300"
-                >{i === 0 ? '×' : ''}</button>
-              ))}
-            </div>
+          <div className="flex-1 px-8 pt-6 pb-20 flex items-start justify-center w-full">
+            {tab === 'Colors' ? (
+              <div className="grid grid-cols-3 gap-6 w-full max-w-4xl">
+                {([
+                  { key: 'primary', label: 'Primary' },
+                  { key: 'secondary', label: 'Secondary' },
+                  { key: 'skin', label: 'Skin Tone' },
+                ] as const).map(c => (
+                  <div key={c.key} className="rounded-2xl border border-white/10 bg-white/5 p-4 flex flex-col items-center gap-3">
+                    <div className="text-sm font-medium tracking-wide">{c.label}</div>
+                    <input
+                      type="color"
+                      value={colorState[c.key]}
+                      onChange={e => setColorState(s => ({ ...s, [c.key]: e.target.value }))}
+                      className="w-20 h-20 rounded-xl cursor-pointer border border-white/20 bg-[#12171f] p-1"
+                    />
+                    <div className="text-[11px] opacity-70 font-mono">{colorState[c.key]}</div>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <div className="flex gap-4 flex-wrap justify-center max-w-6xl">
+                {getVariantsByGroup(tab as any).map(v => {
+                  const active = picked[tab] === v.id;
+                  return (
+                    <button
+                      key={v.id}
+                      onClick={() => selectVariant(tab, v.id)}
+                      title={v.label}
+                      className={`w-24 h-24 rounded-xl border transition flex flex-col items-center justify-center gap-1 px-1 text-[11px]
+                        ${active ? 'bg-emerald-600/30 border-emerald-500/60 text-emerald-200 shadow-inner' : 'bg-white/5 border-white/10 hover:bg-white/10 text-gray-300'}`}
+                    >
+                      <span className="truncate max-w-[88px]">{v.label}</span>
+                      {active && <span className="text-[9px] uppercase tracking-wide">Selected</span>}
+                    </button>
+                  );
+                })}
+                {getVariantsByGroup(tab as any).length === 0 && (
+                  <div className="text-xs opacity-50 px-4 py-6">No variants for {tab}</div>
+                )}
+              </div>
+            )}
           </div>
           {/* Sticky action bar */}
           <div className="px-8 py-5 flex justify-end gap-3 border-t border-white/10 bg-[#12171f]/95 sticky bottom-0">
