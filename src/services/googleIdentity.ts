@@ -1,0 +1,66 @@
+// Centralized Google Identity Services loader & initializer.
+// This wraps loading the GIS script on demand so we keep index.html clean and control timing.
+// Netlify / Vite env: ensure VITE_GOOGLE_CLIENT_ID is defined at build (or runtime with Netlify inject).
+
+export interface RenderButtonOptions { [key: string]: any }
+export interface GoogleCredentialResponse { credential: string; select_by?: string }
+
+// Minimal ambient type for window.google.accounts.id usage
+interface GoogleAccountsId {
+  initialize(config: { client_id: string; callback: (resp: GoogleCredentialResponse) => void }): void;
+  renderButton(el: HTMLElement, options: any): void;
+  prompt(): void;
+}
+interface GoogleGlobal {
+  accounts: { id: GoogleAccountsId };
+}
+
+let _loadPromise: Promise<GoogleGlobal> | null = null;
+
+export function loadGoogleIdentity(): Promise<GoogleGlobal> {
+  if (_loadPromise) return _loadPromise;
+  _loadPromise = new Promise((resolve, reject) => {
+    if (typeof window === 'undefined') { reject(new Error('No window')); return; }
+    // If already present
+    if ((window as any).google?.accounts?.id) {
+      resolve((window as any).google as GoogleGlobal);
+      return;
+    }
+    const existing = document.getElementById('gis-sdk');
+    if (existing) {
+      existing.addEventListener('load', () => resolve((window as any).google));
+      existing.addEventListener('error', () => reject(new Error('Google script failed')));
+      return;
+    }
+    const s = document.createElement('script');
+    s.id = 'gis-sdk';
+    s.src = 'https://accounts.google.com/gsi/client';
+    s.async = true; s.defer = true;
+  s.onload = () => resolve((window as any).google as GoogleGlobal);
+    s.onerror = () => reject(new Error('Failed to load Google Identity script'));
+    document.head.appendChild(s);
+  });
+  return _loadPromise;
+}
+
+export async function initGoogleIdentity(clientId: string, callback: (resp: GoogleCredentialResponse) => void) {
+  if (!clientId) throw new Error('Missing VITE_GOOGLE_CLIENT_ID');
+  const g = await loadGoogleIdentity();
+  // @ts-ignore
+  g.accounts.id.initialize({ client_id: clientId, callback });
+  return g;
+}
+
+export async function renderGoogleButton(target: HTMLElement | null, options: RenderButtonOptions = {}) {
+  if (!target) return;
+  const g = await loadGoogleIdentity();
+  // @ts-ignore
+  g.accounts.id.renderButton(target, { theme: 'outline', size: 'large', width: 280, text: 'signin_with', ...options });
+}
+
+export function promptOneTap() {
+  const g: any = (window as any).google;
+  if (g?.accounts?.id) {
+    try { g.accounts.id.prompt(); } catch {}
+  }
+}

@@ -9,6 +9,7 @@ import { Archetype, CharacterLoadout, Faction, PetType, uid, now } from './types
 import { CharacterPortrait, FactionIcon, ImageAssets, getCharacterPortrait, PetIcon } from './assets/assetPaths';
 import { joinRoom } from './services/realtimeClient';
 import { useCreatorStore } from './store/creatorStore';
+import { initGoogleIdentity, renderGoogleButton } from './services/googleIdentity';
 import GoogleSignInButton from './components/auth/GoogleSignInButton';
 
 const defaultLoadout: CharacterLoadout = {
@@ -445,40 +446,27 @@ function WelcomeScreen({ progress, build, onSignOut }: { progress: number; build
 // AuthGate: first step – requires Google sign-in then notifies parent.
 function AuthGate({ onSignedIn }: { onSignedIn: (token:string)=>void }) {
   const idToken = localStorage.getItem('afrofuture.idToken');
-  const [mode, setMode] = React.useState<'idle' | 'loading' | 'ready'>('idle');
-  const [scriptLoaded, setScriptLoaded] = React.useState(false);
+  const [mode, setMode] = React.useState<'idle' | 'loading' | 'ready' | 'error'>('idle');
   const buttonContainerRef = React.useRef<HTMLDivElement | null>(null);
   const clientId = import.meta.env.VITE_GOOGLE_CLIENT_ID;
 
   React.useEffect(()=>{ if(idToken) onSignedIn(idToken); },[idToken,onSignedIn]);
-
-  // When script loaded and mode wants ready, render GIS button manually (without reusable component to auto trigger)
-  React.useEffect(()=>{
-    if(mode !== 'ready' || !clientId || !scriptLoaded || !buttonContainerRef.current) return;
-    // @ts-ignore
-    if(window.google?.accounts?.id){
-      // @ts-ignore
-      window.google.accounts.id.initialize({ client_id: clientId, callback:(resp:any)=>{ if(resp.credential){ onSignedIn(resp.credential);} } });
-      buttonContainerRef.current.innerHTML = '';
-      // @ts-ignore
-      window.google.accounts.id.renderButton(buttonContainerRef.current, { theme:'outline', size:'large', width:280, text:'signin_with' });
-      // Programmatic UX: focus container
-      setTimeout(()=>{ buttonContainerRef.current?.querySelector('div[role=button]')?.dispatchEvent(new Event('click')); }, 50);
-    }
-  },[mode, scriptLoaded, clientId, onSignedIn]);
-
-  function startGoogle(){
+  async function startGoogle(){
     if(!clientId){ return; }
-    if(scriptLoaded){ setMode('ready'); return; }
     setMode('loading');
-    if(document.getElementById('gis-sdk')){
-      setScriptLoaded(true); setMode('ready'); return;
+    try {
+      await initGoogleIdentity(clientId, (resp:any)=>{ if(resp.credential) onSignedIn(resp.credential); });
+      if(buttonContainerRef.current){
+        buttonContainerRef.current.innerHTML='';
+        await renderGoogleButton(buttonContainerRef.current, {});
+      }
+      setMode('ready');
+      // Auto-click for faster flow (optional)
+      setTimeout(()=>{ buttonContainerRef.current?.querySelector('div[role=button]')?.dispatchEvent(new Event('click')); }, 60);
+    } catch(e){
+      console.warn('[gis] init failed', e);
+      setMode('error');
     }
-    const s = document.createElement('script');
-    s.id='gis-sdk'; s.src='https://accounts.google.com/gsi/client'; s.async=true; s.defer=true;
-    s.onload=()=>{ setScriptLoaded(true); setMode('ready'); };
-    s.onerror=()=>{ setMode('idle'); alert('Failed to load Google Sign-In. Check network.'); };
-    document.head.appendChild(s);
   }
 
   return (
@@ -501,6 +489,13 @@ function AuthGate({ onSignedIn }: { onSignedIn: (token:string)=>void }) {
         )}
         {clientId && mode==='ready' && (
           <div ref={buttonContainerRef} className="mt-2" />
+        )}
+        {clientId && mode==='error' && (
+          <div className="mt-4 text-[11px] text-rose-300">Failed to load Google Sign-In. Retry?
+            <div className="mt-2">
+              <button onClick={startGoogle} className="px-3 py-1 rounded bg-rose-600/30 border border-rose-500/40 text-rose-200 text-xs">Retry</button>
+            </div>
+          </div>
         )}
       </div>
     </div>
