@@ -33,7 +33,27 @@ export const GoogleSignInButton: React.FC<GoogleSignInButtonProps> = ({
 
   React.useEffect(() => {
     if (disabled) return;
-    if (!clientId) return;
+    
+    // If no clientId, show a fallback message
+    if (!clientId) {
+      if (divRef.current) {
+        divRef.current.innerHTML = `
+          <div style="
+            padding: 12px 16px; 
+            border: 1px solid rgba(255,255,255,0.1); 
+            border-radius: 8px; 
+            background: rgba(255,255,255,0.05); 
+            color: rgba(255,255,255,0.7); 
+            font-size: 11px; 
+            text-align: center;
+          ">
+            Google Sign-In not configured.<br/>
+            <small>Missing VITE_GOOGLE_CLIENT_ID in build environment.</small>
+          </div>
+        `;
+      }
+      return;
+    }
 
     function init() {
       if (!divRef.current) return;
