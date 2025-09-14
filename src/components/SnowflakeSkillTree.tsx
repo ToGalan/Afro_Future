@@ -75,7 +75,43 @@ export default function SnowflakeSkillTree({ initialLevel = 1, onClose }: Snowfl
   const traits = deriveTraits(unlocked, nodes);
   const [hoverId, setHoverId] = useState<string | null>(null);
   const [lastUnlocked, setLastUnlocked] = useState<string | null>(null);
-  function onUnlock(id:string){ const reason = unlockReason(id); const st = useSkillStore.getState(); const avail = availablePoints(st); console.debug('[SnowflakeSkillTree.onUnlock] attempt', { id, reason, avail, unlockedCount: st.unlocked.length }); if(reason!=='Unlockable') return; unlockGlobal(id); setLastUnlocked(id); }
+  
+  function onUnlock(id:string){ 
+    const reason = unlockReason(id); 
+    const st = useSkillStore.getState(); 
+    const avail = availablePoints(st); 
+    const nodeName = nodes.find(n => n.id === id)?.label || id;
+    
+    console.log('[UNLOCK ATTEMPT]', { 
+      nodeId: id, 
+      nodeName, 
+      reason, 
+      availablePoints: avail, 
+      currentSpent: st.spent,
+      currentUnlocked: st.unlocked.length 
+    });
+    
+    if(reason!=='Unlockable') {
+      console.warn('[UNLOCK FAILED]', { nodeId: id, reason });
+      return;
+    }
+    
+    // Execute unlock
+    unlockGlobal(id); 
+    setLastUnlocked(id);
+    
+    // Echo success with updated state
+    const updatedState = useSkillStore.getState();
+    console.log('[UNLOCK SUCCESS]', { 
+      nodeId: id, 
+      nodeName,
+      tokenSpent: true,
+      newSpentCount: updatedState.spent,
+      newAvailablePoints: availablePoints(updatedState),
+      totalUnlocked: updatedState.unlocked.length,
+      newTraits: updatedState.traitTags
+    });
+  }
   // Hold-to-unlock state
   const HOLD_DURATION = 4000; // ms
   const [holdTarget, setHoldTarget] = useState<string | null>(null);
@@ -104,36 +140,71 @@ export default function SnowflakeSkillTree({ initialLevel = 1, onClose }: Snowfl
 
   // Reset hold if conditions change
   useEffect(()=>{
-    if(!hoverId || holdTarget && hoverId !== holdTarget){
+    if(!hoverId || (holdTarget && hoverId !== holdTarget)){
       // if moved away from target
-      holdingRef.current = false; holdStartRef.current = null; setHoldTarget(null); setHoldProgress(0);
+      holdingRef.current = false; 
+      holdStartRef.current = null; 
+      setHoldTarget(null); 
+      setHoldProgress(0);
       if(rafRef.current) cancelAnimationFrame(rafRef.current);
     }
-    if(hoverId && unlockReason(hoverId) !== 'Unlockable'){
-      holdingRef.current = false; holdStartRef.current = null; setHoldTarget(null); setHoldProgress(0);
+    if(hoverId && !unlocked.includes(hoverId) && unlockReason(hoverId) !== 'Unlockable'){
+      holdingRef.current = false; 
+      holdStartRef.current = null; 
+      setHoldTarget(null); 
+      setHoldProgress(0);
       if(rafRef.current) cancelAnimationFrame(rafRef.current);
     }
-  },[hoverId, unlocked, ptsLeft]);
+  },[hoverId, holdTarget]); // Removed unlocked and ptsLeft to prevent premature resets
 
   // Key handling for hold-to-unlock
   useEffect(()=>{
     function step(){
-      if(!holdingRef.current || !holdStartRef.current || !holdTarget){ return; }
+      if(!holdingRef.current || !holdStartRef.current || !holdTarget){ 
+        return; 
+      }
       const elapsed = performance.now() - holdStartRef.current;
       const prog = Math.min(1, elapsed / HOLD_DURATION);
       setHoldProgress(prog);
+      
+      console.log('[HOLD PROGRESS]', { 
+        elapsed: elapsed.toFixed(0), 
+        progress: (prog * 100).toFixed(1) + '%', 
+        target: holdTarget 
+      });
+      
       if(prog >= 1){
-        onUnlock(holdTarget);
-        holdingRef.current = false; holdStartRef.current = null; setHoldTarget(null); setHoldProgress(0);
+        console.log('[HOLD COMPLETE] Triggering unlock for', holdTarget);
+        
+        // Reset hold state first to prevent interference
+        holdingRef.current = false; 
+        holdStartRef.current = null; 
+        setHoldProgress(0);
+        const targetToUnlock = holdTarget;
+        setHoldTarget(null);
+        
+        // Then trigger unlock
+        onUnlock(targetToUnlock);
         return;
       }
       rafRef.current = requestAnimationFrame(step);
     }
+    
     function keyDown(e:KeyboardEvent){
       if(e.key.toLowerCase() === 'u'){
-        if(!hoverId) return;
-        if(unlockReason(hoverId) !== 'Unlockable') return;
+        console.log('[KEY DOWN] U pressed, hoverId:', hoverId);
+        if(!hoverId) {
+          console.log('[KEY DOWN] No hover target');
+          return;
+        }
+        const reason = unlockReason(hoverId);
+        console.log('[KEY DOWN] Unlock reason:', reason);
+        if(reason !== 'Unlockable') {
+          console.log('[KEY DOWN] Cannot unlock:', reason);
+          return;
+        }
         if(!holdingRef.current){
+          console.log('[KEY DOWN] Starting hold for', hoverId);
           holdingRef.current = true;
           holdStartRef.current = performance.now();
           setHoldTarget(hoverId);
@@ -142,30 +213,47 @@ export default function SnowflakeSkillTree({ initialLevel = 1, onClose }: Snowfl
         }
       }
     }
+    
     function keyUp(e:KeyboardEvent){
       if(e.key.toLowerCase() === 'u'){
-        holdingRef.current = false; holdStartRef.current = null; setHoldTarget(null); setHoldProgress(0);
+        console.log('[KEY UP] U released, resetting hold');
+        holdingRef.current = false; 
+        holdStartRef.current = null; 
+        setHoldTarget(null); 
+        setHoldProgress(0);
         if(rafRef.current) cancelAnimationFrame(rafRef.current);
       }
     }
+    
     window.addEventListener('keydown', keyDown);
     window.addEventListener('keyup', keyUp);
-    return ()=>{ window.removeEventListener('keydown', keyDown); window.removeEventListener('keyup', keyUp); if(rafRef.current) cancelAnimationFrame(rafRef.current); };
+    return ()=>{ 
+      window.removeEventListener('keydown', keyDown); 
+      window.removeEventListener('keyup', keyUp); 
+      if(rafRef.current) cancelAnimationFrame(rafRef.current); 
+    };
   },[hoverId]);
 
   return (
     <div className="w-full h-full bg-[#0f1218] text-gray-100 p-4 overflow-hidden relative">
-      <div className="absolute top-2 right-2 bg-black/50 border border-white/10 rounded-md px-3 py-2 text-[10px] leading-tight space-y-1 pointer-events-none z-40">
-        <div className="font-semibold text-emerald-300">Unlock Debug</div>
-        <div>Last: <span className="text-emerald-200">{lastUnlocked ?? '—'}</span></div>
-        <div>Spent: {spent} / Avail: {availablePoints(useSkillStore.getState())}</div>
-        <div>Unlocked: {unlocked.length}</div>
-        <div>Atk/Def/Util: {attackStat}/{defenseStat}/{utilityStat}</div>
-        <div className="flex flex-wrap gap-1 max-w-[160px]">{traitTags.slice(0,6).map(t=> <span key={t} className="px-1 py-0.5 bg-white/10 rounded">{t}</span>)}</div>
+      <div className="absolute top-2 right-2 bg-black/70 border border-emerald-500/30 rounded-lg px-3 py-2 text-[10px] leading-tight space-y-1 pointer-events-none z-40 backdrop-blur-sm">
+        <div className="font-semibold text-emerald-300">Token Tracker</div>
+        <div className="text-emerald-200">Last Unlocked: <span className="font-mono">{lastUnlocked ?? '—'}</span></div>
+        <div className="text-yellow-300">Tokens Spent: <span className="font-mono font-bold">{spent}</span></div>
+        <div className="text-blue-300">Available: <span className="font-mono font-bold">{availablePoints(useSkillStore.getState())}</span></div>
+        <div className="text-gray-300">Total Unlocked: <span className="font-mono">{unlocked.length}</span></div>
+        <div className="text-purple-300">Stats: {attackStat}/{defenseStat}/{utilityStat}</div>
+        <div className="flex flex-wrap gap-1 max-w-[160px]">
+          {traitTags.slice(0,4).map(t=> <span key={t} className="px-1 py-0.5 bg-emerald-600/20 border border-emerald-500/40 rounded text-emerald-200">{t}</span>)}
+        </div>
+        {holdTarget && (
+          <div className="text-amber-300">
+            Unlocking: {laid.find(n=>n.id===holdTarget)?.label}
+          </div>
+        )}
       </div>
       <div className="flex items-center justify-between mb-3">
         <div className="text-xl font-semibold">Skill Snowflake</div>
-  <div className="text-sm opacity-80">Spent: {spent} • Points Left: {ptsLeft}</div>
       </div>
       <div className="grid grid-cols-12 gap-4">
         <div className="col-span-9">
@@ -185,16 +273,42 @@ export default function SnowflakeSkillTree({ initialLevel = 1, onClose }: Snowfl
                   <line key={i} x1={l.from.x} y1={l.from.y} x2={l.to.x} y2={l.to.y} stroke={unlocked.includes(l.to.id) ? branchColor(l.to.type) : '#6b7280'} strokeWidth={2} />
                 ))}
                 {laid.map(n=>{
-                  const color = branchColor(n.type); const isUnlocked = unlocked.includes(n.id); const r = n.id==='root'?22: n.tier===1?14:11;
+                  const color = branchColor(n.type); 
+                  const isUnlocked = unlocked.includes(n.id); 
+                  const r = n.id==='root'?22: n.tier===1?14:11;
                   const isCoreHighlight = nextCores.includes(n.id);
                   const isHoldingThis = holdTarget === n.id && holdingRef.current;
+                  const isHovered = hoverId === n.id;
+                  
                   return (
                     <g key={n.id} data-id={n.id} transform={`translate(${n.x},${n.y})`} onMouseEnter={()=>setHoverId(n.id)} onMouseLeave={()=>setHoverId(h=> h===n.id? null : h)} style={{ pointerEvents:'all' }}>
                       <circle r={r+5} fill="#0b1220" stroke="#1f2937" strokeWidth={2} />
-                      <circle r={r} fill={isUnlocked?color:'#111827'} stroke={isUnlocked?color:'#374151'} strokeWidth={isUnlocked?3:2} filter={isUnlocked? 'url(#glow)': undefined} style={{ cursor: canUnlock(n.id)?'pointer':'not-allowed', boxShadow: isCoreHighlight? '0 0 0 4px rgba(16,185,129,0.6)': undefined }} />
-                      {(!isUnlocked && isHoldingThis) && (()=>{ const pr = holdProgress; const rr = r + 6; const circ = 2*Math.PI*rr; return (
-                        <circle r={rr} fill="none" stroke="#10b981" strokeWidth={4} strokeLinecap="round" strokeDasharray={circ} strokeDashoffset={circ - circ*pr} />
-                      )})()}
+                      <circle 
+                        r={r} 
+                        fill={isUnlocked?color:'#111827'} 
+                        stroke={isUnlocked?color:'#374151'} 
+                        strokeWidth={isUnlocked?3:2} 
+                        filter={isUnlocked? 'url(#glow)': undefined} 
+                        style={{ cursor: canUnlock(n.id)?'pointer':'not-allowed' }}
+                      />
+                      {/* Progress ring around the node while holding U */}
+                      {(!isUnlocked && isHoldingThis && holdProgress > 0) && (()=>{ 
+                        const pr = holdProgress; 
+                        const rr = r + 6; 
+                        const circ = 2*Math.PI*rr; 
+                        return (
+                          <circle 
+                            r={rr} 
+                            fill="none" 
+                            stroke="#10b981" 
+                            strokeWidth={4} 
+                            strokeLinecap="round" 
+                            strokeDasharray={circ} 
+                            strokeDashoffset={circ - circ*pr}
+                            style={{ transition: 'stroke-dashoffset 0.1s linear' }}
+                          />
+                        );
+                      })()}
                       {/* Invisible larger hit area to make clicks easier */}
                       <circle r={r+10} fill="transparent" stroke="none" style={{ cursor: canUnlock(n.id)?'pointer':'not-allowed' }} />
                       {isCoreHighlight && !isUnlocked && (
@@ -231,23 +345,59 @@ export default function SnowflakeSkillTree({ initialLevel = 1, onClose }: Snowfl
                 {unlockReason(hoverId)==='Unlockable' && !unlocked.includes(hoverId) && (
                   <div className="flex items-center gap-3">
                     <div className="flex flex-col gap-1">
-                      <span className="text-emerald-300">Hold key 'U' to Unlock</span>
-                      <span className="opacity-50">{( (HOLD_DURATION/1000) * (1-holdProgress) ).toFixed(1)}s remaining</span>
-                      <div className="h-1 w-full bg-white/10 rounded overflow-hidden">
-                        <div className="h-full bg-emerald-500" style={{ width: `${(holdProgress*100).toFixed(1)}%`, transition:'width 0.1s linear' }} />
+                      <span className="text-emerald-300 font-semibold">Hold key 'U' to Unlock</span>
+                      <span className="opacity-70">{holdTarget === hoverId ? `${((HOLD_DURATION/1000) * (1-holdProgress)).toFixed(1)}s remaining` : `${(HOLD_DURATION/1000).toFixed(1)}s required`}</span>
+                      <div className="h-2 w-full bg-white/10 rounded-full overflow-hidden">
+                        <div 
+                          className="h-full bg-emerald-500 transition-all duration-100 ease-linear" 
+                          style={{ 
+                            width: `${(holdProgress*100).toFixed(1)}%`,
+                            backgroundColor: holdProgress > 0.8 ? '#22c55e' : '#10b981'
+                          }} 
+                        />
                       </div>
                       <span className="opacity-60 text-[10px]">Points after unlock: {ptsLeft-1 >= 0 ? ptsLeft-1 : 0}</span>
                     </div>
-                    <div className="relative w-10 h-10 flex items-center justify-center">
-                      <svg width={40} height={40} className="block">
-                        {(()=>{ const r=16; const c=2*Math.PI*r; return (
-                          <g transform="translate(20,20)">
-                            <circle r={r} fill="#111827" stroke="#374151" strokeWidth={4} />
-                            <circle r={r} fill="none" stroke="#10b981" strokeWidth={4} strokeLinecap="round" strokeDasharray={c} strokeDashoffset={c - c*holdProgress} style={{ transition: holdingRef.current? 'stroke-dashoffset 0.1s linear':'stroke-dashoffset 0.25s ease' }} />
-                          </g>
-                        ); })()}
+                    <div className="relative w-12 h-12 flex items-center justify-center">
+                      <svg width={48} height={48} className="block">
+                        {(()=>{ 
+                          const r=18; 
+                          const c=2*Math.PI*r; 
+                          const isActive = holdTarget === hoverId && holdProgress > 0;
+                          return (
+                            <g transform="translate(24,24)">
+                              {/* Background circle */}
+                              <circle r={r} fill="#111827" stroke="#374151" strokeWidth={3} />
+                              {/* Progress circle */}
+                              <circle 
+                                r={r} 
+                                fill="none" 
+                                stroke={isActive ? "#10b981" : "#374151"} 
+                                strokeWidth={3} 
+                                strokeLinecap="round" 
+                                strokeDasharray={c} 
+                                strokeDashoffset={c - c*holdProgress} 
+                                style={{ 
+                                  transition: isActive ? 'stroke-dashoffset 0.1s linear, stroke 0.2s ease' : 'stroke-dashoffset 0.25s ease, stroke 0.2s ease',
+                                  transform: 'rotate(-90deg)',
+                                  transformOrigin: 'center'
+                                }} 
+                              />
+                              {/* Glow effect when active */}
+                              {isActive && (
+                                <circle 
+                                  r={r+2} 
+                                  fill="none" 
+                                  stroke="#10b981" 
+                                  strokeWidth={1} 
+                                  opacity={0.5}
+                                />
+                              )}
+                            </g>
+                          );
+                        })()}
                       </svg>
-                      <span className="absolute text-xs font-semibold tracking-wide">U</span>
+                      <span className={`absolute text-sm font-bold tracking-wide transition-colors duration-200 ${holdTarget === hoverId && holdProgress > 0 ? 'text-emerald-300' : 'text-gray-300'}`}>U</span>
                     </div>
                   </div>
                 )}

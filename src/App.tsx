@@ -402,9 +402,9 @@ function MainMenu({ playerName, accountLevel, loadout, onCustomize, heroLocked, 
   return (
     <div className="h-full w-full bg-[#0f1218] text-gray-100 grid grid-rows-[64px_1fr]" style={{gridTemplateColumns:'minmax(260px,20%) 1fr minmax(260px,20%)'}}>
       <TopNav view={view} onChangeView={onChangeView} />
-      <LeftPlayerPanel className="row-start-2" playerName={playerName} accountLevel={accountLevel} loadout={loadout} onCustomize={onCustomize} heroLocked={heroLocked} />
+      <LeftPlayerPanel className="row-start-2" playerName={playerName} accountLevel={accountLevel} loadout={loadout} heroLocked={heroLocked} />
       <CenterHub className="row-start-2" loadout={loadout} view={view} />
-      <RightStartPanel className="row-start-2" />
+      <RightPlayerPanel className="row-start-2" loadout={loadout} onCustomize={onCustomize} />
     </div>
   );
 }
@@ -441,7 +441,7 @@ function TopNav({ view, onChangeView }: { view: 'dashboard' | 'skills' | 'store'
   );
 }
 
-function LeftPlayerPanel({ className = '', playerName, accountLevel, loadout, onCustomize, heroLocked }: { className?: string; playerName: string; accountLevel: number; loadout: CharacterLoadout; onCustomize: () => void; heroLocked: boolean; }) {
+function LeftPlayerPanel({ className = '', playerName, accountLevel, loadout, heroLocked }: { className?: string; playerName: string; accountLevel: number; loadout: CharacterLoadout; heroLocked: boolean; }) {
   // Skill / stat integration
   const skillUnlocked = useSkillStore(s=>s.unlocked);
   const skillSpent = useSkillStore(s=>s.spent);
@@ -464,35 +464,16 @@ function LeftPlayerPanel({ className = '', playerName, accountLevel, loadout, on
   return (
     <aside className={`col-start-1 h-full ${className} bg-[#0f1218] border-r border-black/40 shadow-inner flex flex-col`}>      
       <div className="px-4 py-4 border-b border-white/10 flex flex-col items-center">
-        {/* 240x240 Character Card */}
-        <div className="w-[240px] h-[260px] rounded-3xl border border-white/10 bg-[#12171f] overflow-hidden relative flex flex-col items-stretch">
-          {/* Large 3D avatar */}
-          <div className="absolute inset-0">
-            <AvatarScene
-              parts={(loadout as any).threeConfig?.parts}
-              colors={(loadout as any).threeConfig?.colors}
-              debugTint={false}
-              animPaused={false}
-              animSpeed={1}
-              rotateSpeed={0.08}
-              disableControls
-              cameraPosition={[1.65,1.4,2.15]}
-              cameraFov={33}
-              target={[0,1.05,0]}
-              modelOffset={[0,-0.35,0]}
-              autoFrame
-              frameMargin={0.14}
-            />
-            <div className="absolute inset-x-0 bottom-0 h-24 bg-gradient-to-t from-[#0b0e13] to-transparent" />
-          </div>
-          {/* Small portrait overlay */}
-          <img className="absolute top-2 right-2 w-16 h-16 object-cover rounded-xl border border-white/10 shadow-lg opacity-80" src={loadout.portraitUrl} alt="portrait" />
-          <div className="relative z-10 px-3 pb-3 pt-2 flex flex-col items-center text-center mt-auto">
-            <div className="flex items-center gap-2 mb-1">
+        {/* Character Portrait and Info */}
+        <div className="w-[240px] h-[180px] rounded-3xl border border-white/10 bg-[#12171f] overflow-hidden relative flex flex-col items-center justify-center">
+          {/* Portrait image instead of 3D */}
+          <img className="w-32 h-32 object-cover rounded-2xl border border-white/10 shadow-lg" src={loadout.portraitUrl} alt="portrait" />
+          <div className="mt-2 flex flex-col items-center text-center">
+            <div className="flex items-center gap-2">
               <img src={FactionIcon[loadout.faction]} alt={loadout.faction} className="w-5 h-5 drop-shadow" />
               <span className="font-semibold text-white text-sm leading-tight tracking-wide">{loadout.name}</span>
             </div>
-            <div className="text-[10px] text-gray-300 flex items-center gap-2">
+            <div className="mt-1 text-[10px] text-gray-300 flex items-center gap-2">
               <span className="px-2 py-0.5 rounded-full bg-white/5 border border-white/10 tracking-wide">Lv {loadout.level}</span>
               <span>{loadout.archetype === 'MALE' ? 'Male' : 'Female'}</span>
             </div>
@@ -532,9 +513,6 @@ function LeftPlayerPanel({ className = '', playerName, accountLevel, loadout, on
             <div className="flex justify-between mt-1"><span className="opacity-70">Tokens Left</span><span className="font-semibold text-emerald-300">{pointsLeft}</span></div>
             <div className="flex justify-between mt-1"><span className="opacity-70">Unlocked</span><span className="font-semibold">{skillUnlocked.length}</span></div>
           </div>
-        </div>
-        <div className="mt-4 w-full flex items-center justify-center">
-          <Button className="w-[160px]" onClick={onCustomize}>Customize</Button>
         </div>
         {/* Traits summary */}
         <div className="mt-4 w-full rounded-2xl border border-white/10 bg-gradient-to-br from-white/5 to-white/[0.02] p-3 text-[10px] flex flex-col gap-1">
@@ -580,6 +558,104 @@ function LeftPlayerPanel({ className = '', playerName, accountLevel, loadout, on
             </div>
           ))}
         </div>
+      </div>
+    </aside>
+  );
+}
+
+function RightPlayerPanel({ className = '', loadout, onCustomize }: { className?: string; loadout: CharacterLoadout; onCustomize: () => void }) {
+  const [mode, setMode] = useState<'single' | 'multi'>('single');
+  const [queue, setQueue] = useState<string | null>(null);
+  
+  function startMatch() {
+    if (mode !== 'single') return; // only single-player active right now
+    setQueue('~ Est. 0:25');
+    setTimeout(()=> setQueue('Searching…'), 1200);
+  }
+  
+  const modes: { key: 'single' | 'multi'; label: string; enabled: boolean }[] = [
+    { key: 'single', label: 'Single Player', enabled: true },
+    { key: 'multi', label: 'Multiplayer (Coming Soon)', enabled: false },
+  ];
+  
+  return (
+    <aside className={`col-start-3 h-full ${className} bg-[#0f1218] border-l border-black/40 shadow-inner flex flex-col`}>
+      {/* 3D Avatar Section */}
+      <div className="p-4 border-b border-white/10">
+        <div className="relative rounded-3xl border border-white/10 bg-gradient-to-br from-[#0b0e13] to-[#1a1e29] p-4 overflow-hidden" style={{height:'240px'}}>
+          <div className="absolute inset-0 bg-gradient-to-tr from-[#0b0e13]/80 via-transparent to-[#0b0e13]/50" />
+          <div className="relative z-10 h-full w-full">
+            <AvatarScene
+              parts={(loadout as any).threeConfig?.parts}
+              colors={(loadout as any).threeConfig?.colors}
+              debugTint={false}
+              animPaused={false}
+              animSpeed={1}
+              rotateSpeed={0.08}
+              disableControls
+              cameraPosition={[1.65,1.2,2.15]}
+              cameraFov={33}
+              target={[0,0.8,0]}
+              modelOffset={[0,-0.6,0]}
+              autoFrame
+              frameMargin={0.1}
+            />
+          </div>
+          <div className="absolute bottom-3 left-3 right-3 z-20">
+            <Button size="sm" className="w-full text-xs" onClick={onCustomize}>
+              Customize
+            </Button>
+          </div>
+        </div>
+      </div>
+      
+      {/* Game Modes Section */}
+      <div className="px-4 py-4 border-b border-white/10">
+        <div className="text-lg font-semibold mb-4">Game Modes</div>
+        <div className="grid gap-3">
+          {modes.map(m => (
+            <button
+              key={m.key}
+              disabled={!m.enabled}
+              onClick={() => m.enabled && setMode(m.key)}
+              className={`rounded-2xl px-4 py-4 text-left relative overflow-hidden border transition group
+                h-24 flex items-start
+                ${mode === m.key ? 'bg-emerald-600/30 border-emerald-500/60 shadow-inner' : 'bg-white/5 border-white/10 hover:bg-white/10'}
+                ${!m.enabled ? 'opacity-40 cursor-not-allowed' : ''}`}
+            >
+              <div className="flex flex-col">
+                <span className="font-medium text-sm tracking-wide mb-1">{m.label}</span>
+                <span className="text-[11px] opacity-60">{m.enabled ? (m.key === 'single' ? 'Solo mission queue' : 'Feature in development') : 'Unavailable'}</span>
+              </div>
+              {mode === m.key && <div className="absolute top-2 right-2 text-[10px] px-2 py-0.5 rounded bg-emerald-500/20 border border-emerald-400/40 text-emerald-200">Active</div>}
+            </button>
+          ))}
+        </div>
+      </div>
+      
+      {/* Future sections for Gifts/Battle Pass */}
+      <div className="px-4 py-4 border-b border-white/10">
+        <div className="text-lg font-semibold mb-4">Rewards</div>
+        <div className="grid gap-3">
+          <div className="rounded-2xl px-4 py-4 text-left relative overflow-hidden border border-white/10 bg-white/5 opacity-60">
+            <div className="flex flex-col">
+              <span className="font-medium text-sm tracking-wide mb-1">Gifts</span>
+              <span className="text-[11px] opacity-60">Coming Soon</span>
+            </div>
+          </div>
+          <div className="rounded-2xl px-4 py-4 text-left relative overflow-hidden border border-white/10 bg-white/5 opacity-60">
+            <div className="flex flex-col">
+              <span className="font-medium text-sm tracking-wide mb-1">Battle Pass</span>
+              <span className="text-[11px] opacity-60">Coming Soon</span>
+            </div>
+          </div>
+        </div>
+      </div>
+      
+      {/* Play Button */}
+      <div className="mt-auto p-4">
+        <Button className="w-full h-14 text-xl" onClick={startMatch} disabled={mode !== 'single'}>Play</Button>
+        <div className="mt-2 text-xs text-gray-300 h-4">{queue ?? (mode === 'single' ? 'Ready' : 'Disabled')}</div>
       </div>
     </aside>
   );
