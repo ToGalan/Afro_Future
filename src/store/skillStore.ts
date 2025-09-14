@@ -47,15 +47,24 @@ export const useSkillStore = create<SkillState>((set, get) => ({
   utility: 0,
   traitTags: [],
   unlock: (id: string) => set(state => {
-    if (state.unlocked.includes(id)) return state;
+    if (state.unlocked.includes(id)) {
+      console.debug('[skillStore.unlock] already unlocked', { id });
+      return state;
+    }
     // guard: must have available points
     const avail = availablePoints(state);
-    if (avail <= 0) return state;
+    if (avail <= 0) {
+      console.debug('[skillStore.unlock] no available points', { id, avail, spent: state.spent, basePoints: state.basePoints, level: state.level });
+      return state;
+    }
+    console.debug('[skillStore.unlock] unlocking', { id, beforeUnlockedCount: state.unlocked.length, availBefore: avail });
     const nextUnlocked = [...state.unlocked, id];
     const nextOrder = [...state.unlockOrder, id];
     const stats = deriveStats(nextUnlocked);
     const traits = deriveTraits(nextUnlocked, TREE);
-    return { unlocked: nextUnlocked, unlockOrder: nextOrder, spent: state.spent + 1, ...stats, primaryBranch: traits.topBranch, primaryType: traits.topType, traitTags: traits.tags };
+    const newState = { unlocked: nextUnlocked, unlockOrder: nextOrder, spent: state.spent + 1, ...stats, primaryBranch: traits.topBranch, primaryType: traits.topType, traitTags: traits.tags } as const;
+    console.debug('[skillStore.unlock] success', { id, afterUnlockedCount: newState.unlocked.length, spent: newState.spent });
+    return newState;
   }),
   respec: () => set(state => {
     if (!state.unlockOrder.length) return state;

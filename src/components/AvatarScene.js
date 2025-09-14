@@ -6,7 +6,6 @@ import { AvatarPartsLoader, BaseBody } from './AvatarPartsLoader';
 import { AvatarAnimator } from './AvatarAnimator';
 import * as THREE from 'three';
 import { useCreatorStore } from '../store/creatorStore';
-import { useWebGLStore } from '../store/webglStore';
 // Central token mapping: each color channel -> array of material name substrings to match
 // To extend: add new channel key (e.g. "emissive") and update AvatarSceneProps.colors + tintHierarchy logic.
 const MATERIAL_TOKENS = {
@@ -154,7 +153,7 @@ export function AvatarScene({ parts, colors, debugTint, animPaused, animSpeed, r
     const margin = frameMargin ?? 0.12;
     // We'll read auto-frame result through ref to hidden helper group to avoid extra renders
     const autoDataRef = useRef(null);
-    return (_jsxs(Canvas, { shadows: true, camera: { position: camPos, fov }, dpr: [1, 1.75], children: [_jsx("color", { attach: "background", args: ["#12171f"] }), _jsx("ambientLight", { intensity: 0.4 }), _jsx("directionalLight", { position: [5, 5, 5], intensity: 1.1, castShadow: true, "shadow-mapSize-width": 1024, "shadow-mapSize-height": 1024 }), _jsxs(Suspense, { fallback: null, children: [autoFrame && (_jsx(AutoFrameHelper, { rootRef: rootRef, enabled: !!autoFrame, margin: margin, manualOffset: offset, deps: [parts] })), _jsx(IdlePivot, { speed: rotateSpeed ?? 0.15, children: _jsx("group", { ref: rootRef,
+    return (_jsxs(Canvas, { shadows: true, camera: { position: camPos, fov }, dpr: [1, 1.75], children: [_jsx("color", { attach: "background", args: ["#12171f"] }), _jsx("ambientLight", { intensity: 0.4 }), _jsx("directionalLight", { position: [5, 5, 5], intensity: 1.1, castShadow: true, "shadow-mapSize-width": 1024, "shadow-mapSize-height": 1024 }), _jsxs(Suspense, { fallback: null, children: [autoFrame && (_jsx(AutoFrameHelper, { rootRef: rootRef, enabled: !!autoFrame, margin: margin, manualOffset: offset, deps: [parts] })), _jsx(IdlePivot, { speed: rotateSpeed ?? 0.15, children: _jsx("group", { ref: rootRef, 
                             // Dynamically apply auto frame data if available; fallback to manual
                             position: (autoFrame && autoDataRef.current?.ready ? autoDataRef.current.offset : offset), scale: (autoFrame && autoDataRef.current?.ready ? autoDataRef.current.scale : scale) || 1, onUpdate: grp => {
                                 // pull latest auto frame data from hidden helper (stored in userData of its group)

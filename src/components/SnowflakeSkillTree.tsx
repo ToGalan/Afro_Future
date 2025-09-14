@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from 'react';
+import React, { useMemo, useState, useEffect, useRef } from 'react';
 import { useSkillStore, availablePoints } from '../store/skillStore';
 import { BRANCHES, makeTree, deriveTraits } from '../store/skillData';
 
@@ -47,6 +47,10 @@ export default function SnowflakeSkillTree({ initialLevel = 1, onClose }: Snowfl
   const level = useSkillStore(s=>s.level);
   const unlockGlobal = useSkillStore(s=>s.unlock);
   const setLevelGlobal = useSkillStore(s=>s.setLevel);
+  const attackStat = useSkillStore(s=>s.attack);
+  const defenseStat = useSkillStore(s=>s.defense);
+  const utilityStat = useSkillStore(s=>s.utility);
+  const traitTags = useSkillStore(s=>s.traitTags);
   const [scale, setScale] = useState(1.0);
   const [pan, setPan] = useState({ x: 0, y: 0 });
   const [dragging, setDragging] = useState(false);
@@ -59,15 +63,26 @@ export default function SnowflakeSkillTree({ initialLevel = 1, onClose }: Snowfl
 
   function clamp(v:number,a:number,b:number){ return Math.min(b, Math.max(a,v)); }
   function canUnlock(id:string){ const node = nodes.find(n=>n.id===id); if(!node) return false; if(unlocked.includes(id)) return false; if(!node.requires||node.requires.length===0) return true; return node.requires.every(r=>unlocked.includes(r)); }
-  function onUnlock(id:string){ if(!canUnlock(id)) return; const st = useSkillStore.getState(); const avail = availablePoints(st); if (avail<=0) return; unlockGlobal(id); }
+  function unlockReason(id:string){ const node = nodes.find(n=>n.id===id); if(!node) return 'Missing node'; if(unlocked.includes(id)) return 'Already unlocked'; if(node.requires && node.requires.some(r=>!unlocked.includes(r))) return 'Missing prereq'; const st = useSkillStore.getState(); const avail = availablePoints(st); if(avail<=0) return 'No points'; return 'Unlockable'; }
   function onWheel(e:React.WheelEvent){ e.preventDefault(); setScale(s=>clamp(s - e.deltaY*0.0015,1.0,2.5)); }
+  // Track if movement exceeded a small threshold to differentiate drag vs click
+  const dragThreshold = 5;
   function onPointerDown(e:React.PointerEvent<SVGSVGElement>){ if(scale<=1.0) return; setDragging(true); setLastPt({ x:e.clientX, y:e.clientY }); try{ (e.currentTarget as any).setPointerCapture(e.pointerId);}catch{} }
-  function onPointerMove(e:React.PointerEvent<SVGSVGElement>){ if(!dragging || !lastPt || scale<=1.0) return; const dx=e.clientX-lastPt.x; const dy=e.clientY-lastPt.y; setPan(p=>({x:p.x+dx,y:p.y+dy})); setLastPt({x:e.clientX,y:e.clientY}); }
+  function onPointerMove(e:React.PointerEvent<SVGSVGElement>){ if(!dragging || !lastPt || scale<=1.0) return; const dx=e.clientX-lastPt.x; const dy=e.clientY-lastPt.y; if(Math.abs(dx)>0 || Math.abs(dy)>0){ setPan(p=>({x:p.x+dx,y:p.y+dy})); } setLastPt({x:e.clientX,y:e.clientY}); }
   function onPointerUp(e:React.PointerEvent<SVGSVGElement>){ setDragging(false); setLastPt(null); try{ (e.currentTarget as any).releasePointerCapture(e.pointerId);}catch{} }
   function links(){ const arr:{from:PositionedNode;to:PositionedNode; faction?:string; counters?:string[]}[]=[]; laid.forEach(n=>{ if(!n.requires) return; n.requires.forEach(r=>{ const from = laid.find(x=>x.id===r); if(from) arr.push({from,to:n,faction:n.faction,counters:n.counters}); }); }); return arr; }
 
   const traits = deriveTraits(unlocked, nodes);
   const [hoverId, setHoverId] = useState<string | null>(null);
+  const [lastUnlocked, setLastUnlocked] = useState<string | null>(null);
+  function onUnlock(id:string){ const reason = unlockReason(id); const st = useSkillStore.getState(); const avail = availablePoints(st); console.debug('[SnowflakeSkillTree.onUnlock] attempt', { id, reason, avail, unlockedCount: st.unlocked.length }); if(reason!=='Unlockable') return; unlockGlobal(id); setLastUnlocked(id); }
+  // Hold-to-unlock state
+  const HOLD_DURATION = 4000; // ms
+  const [holdTarget, setHoldTarget] = useState<string | null>(null);
+  const [holdProgress, setHoldProgress] = useState(0); // 0..1
+  const holdingRef = useRef(false);
+  const rafRef = useRef<number | null>(null);
+  const holdStartRef = useRef<number | null>(null);
   // Determine which branch cores are next unlockable (tier1 core nodes that are locked but requirements satisfied)
   const nextCores = useMemo(()=>{
     return laid.filter(n=> n.id.endsWith('_core') && !unlocked.includes(n.id) && canUnlock(n.id)).map(n=>n.id);
@@ -82,13 +97,75 @@ export default function SnowflakeSkillTree({ initialLevel = 1, onClose }: Snowfl
     return { attack, defense, utility, traitProj };
   },[hoverId, nodes, canUnlock]);
   const showDetail = scale >= 1.05;
-  const pointsLeft = availablePoints(useSkillStore.getState());
+  // reactive points left
+  const basePoints = useSkillStore(s=>s.basePoints);
+  const lvl = useSkillStore(s=>s.level);
+  const ptsLeft = useMemo(()=> availablePoints(useSkillStore.getState()), [unlocked, basePoints, lvl, spent]);
+
+  // Reset hold if conditions change
+  useEffect(()=>{
+    if(!hoverId || holdTarget && hoverId !== holdTarget){
+      // if moved away from target
+      holdingRef.current = false; holdStartRef.current = null; setHoldTarget(null); setHoldProgress(0);
+      if(rafRef.current) cancelAnimationFrame(rafRef.current);
+    }
+    if(hoverId && unlockReason(hoverId) !== 'Unlockable'){
+      holdingRef.current = false; holdStartRef.current = null; setHoldTarget(null); setHoldProgress(0);
+      if(rafRef.current) cancelAnimationFrame(rafRef.current);
+    }
+  },[hoverId, unlocked, ptsLeft]);
+
+  // Key handling for hold-to-unlock
+  useEffect(()=>{
+    function step(){
+      if(!holdingRef.current || !holdStartRef.current || !holdTarget){ return; }
+      const elapsed = performance.now() - holdStartRef.current;
+      const prog = Math.min(1, elapsed / HOLD_DURATION);
+      setHoldProgress(prog);
+      if(prog >= 1){
+        onUnlock(holdTarget);
+        holdingRef.current = false; holdStartRef.current = null; setHoldTarget(null); setHoldProgress(0);
+        return;
+      }
+      rafRef.current = requestAnimationFrame(step);
+    }
+    function keyDown(e:KeyboardEvent){
+      if(e.key.toLowerCase() === 'u'){
+        if(!hoverId) return;
+        if(unlockReason(hoverId) !== 'Unlockable') return;
+        if(!holdingRef.current){
+          holdingRef.current = true;
+          holdStartRef.current = performance.now();
+          setHoldTarget(hoverId);
+          setHoldProgress(0);
+          rafRef.current = requestAnimationFrame(step);
+        }
+      }
+    }
+    function keyUp(e:KeyboardEvent){
+      if(e.key.toLowerCase() === 'u'){
+        holdingRef.current = false; holdStartRef.current = null; setHoldTarget(null); setHoldProgress(0);
+        if(rafRef.current) cancelAnimationFrame(rafRef.current);
+      }
+    }
+    window.addEventListener('keydown', keyDown);
+    window.addEventListener('keyup', keyUp);
+    return ()=>{ window.removeEventListener('keydown', keyDown); window.removeEventListener('keyup', keyUp); if(rafRef.current) cancelAnimationFrame(rafRef.current); };
+  },[hoverId]);
 
   return (
     <div className="w-full h-full bg-[#0f1218] text-gray-100 p-4 overflow-hidden relative">
+      <div className="absolute top-2 right-2 bg-black/50 border border-white/10 rounded-md px-3 py-2 text-[10px] leading-tight space-y-1 pointer-events-none z-40">
+        <div className="font-semibold text-emerald-300">Unlock Debug</div>
+        <div>Last: <span className="text-emerald-200">{lastUnlocked ?? '—'}</span></div>
+        <div>Spent: {spent} / Avail: {availablePoints(useSkillStore.getState())}</div>
+        <div>Unlocked: {unlocked.length}</div>
+        <div>Atk/Def/Util: {attackStat}/{defenseStat}/{utilityStat}</div>
+        <div className="flex flex-wrap gap-1 max-w-[160px]">{traitTags.slice(0,6).map(t=> <span key={t} className="px-1 py-0.5 bg-white/10 rounded">{t}</span>)}</div>
+      </div>
       <div className="flex items-center justify-between mb-3">
         <div className="text-xl font-semibold">Skill Snowflake</div>
-        <div className="text-sm opacity-80">Spent: {spent} • Points Left: {pointsLeft}</div>
+  <div className="text-sm opacity-80">Spent: {spent} • Points Left: {ptsLeft}</div>
       </div>
       <div className="grid grid-cols-12 gap-4">
         <div className="col-span-9">
@@ -110,10 +187,16 @@ export default function SnowflakeSkillTree({ initialLevel = 1, onClose }: Snowfl
                 {laid.map(n=>{
                   const color = branchColor(n.type); const isUnlocked = unlocked.includes(n.id); const r = n.id==='root'?22: n.tier===1?14:11;
                   const isCoreHighlight = nextCores.includes(n.id);
+                  const isHoldingThis = holdTarget === n.id && holdingRef.current;
                   return (
-                    <g key={n.id} transform={`translate(${n.x},${n.y})`} onMouseEnter={()=>setHoverId(n.id)} onMouseLeave={()=>setHoverId(h=> h===n.id? null : h)}>
+                    <g key={n.id} data-id={n.id} transform={`translate(${n.x},${n.y})`} onMouseEnter={()=>setHoverId(n.id)} onMouseLeave={()=>setHoverId(h=> h===n.id? null : h)} style={{ pointerEvents:'all' }}>
                       <circle r={r+5} fill="#0b1220" stroke="#1f2937" strokeWidth={2} />
-                      <circle r={r} fill={isUnlocked?color:'#111827'} stroke={isUnlocked?color:'#374151'} strokeWidth={isUnlocked?3:2} filter={isUnlocked? 'url(#glow)': undefined} onClick={()=>onUnlock(n.id)} style={{ cursor: canUnlock(n.id)?'pointer':'not-allowed', boxShadow: isCoreHighlight? '0 0 0 4px rgba(16,185,129,0.6)': undefined }} />
+                      <circle r={r} fill={isUnlocked?color:'#111827'} stroke={isUnlocked?color:'#374151'} strokeWidth={isUnlocked?3:2} filter={isUnlocked? 'url(#glow)': undefined} style={{ cursor: canUnlock(n.id)?'pointer':'not-allowed', boxShadow: isCoreHighlight? '0 0 0 4px rgba(16,185,129,0.6)': undefined }} />
+                      {(!isUnlocked && isHoldingThis) && (()=>{ const pr = holdProgress; const rr = r + 6; const circ = 2*Math.PI*rr; return (
+                        <circle r={rr} fill="none" stroke="#10b981" strokeWidth={4} strokeLinecap="round" strokeDasharray={circ} strokeDashoffset={circ - circ*pr} />
+                      )})()}
+                      {/* Invisible larger hit area to make clicks easier */}
+                      <circle r={r+10} fill="transparent" stroke="none" style={{ cursor: canUnlock(n.id)?'pointer':'not-allowed' }} />
                       {isCoreHighlight && !isUnlocked && (
                         <circle r={r+6} fill="none" stroke="rgba(16,185,129,0.55)" strokeWidth={2} strokeDasharray="4 4" />
                       )}
@@ -134,7 +217,7 @@ export default function SnowflakeSkillTree({ initialLevel = 1, onClose }: Snowfl
               </g>
             </svg>
             {hoverProjection && hoverId && (
-              <div className="absolute top-2 left-2 w-64 rounded-xl border border-emerald-400/30 bg-[#0f1218]/95 backdrop-blur p-3 text-xs shadow-xl">
+              <div className="absolute top-2 left-2 w-64 rounded-xl border border-emerald-400/30 bg-[#0f1218]/95 backdrop-blur p-3 text-xs shadow-xl pointer-events-auto">
                 <div className="font-semibold text-emerald-300 mb-1 truncate">Preview: {laid.find(n=>n.id===hoverId)?.label}</div>
                 <div className="grid grid-cols-3 gap-2 mb-2">
                   <div className="flex flex-col items-start"><span className="opacity-60">Atk</span><span className="font-semibold text-emerald-200">{hoverProjection.attack}</span></div>
@@ -144,7 +227,33 @@ export default function SnowflakeSkillTree({ initialLevel = 1, onClose }: Snowfl
                 <div className="flex flex-wrap gap-1 mb-2">
                   {hoverProjection.traitProj.tags.length ? hoverProjection.traitProj.tags.map(t=> <span key={t} className="px-1.5 py-0.5 rounded bg-white/10 border border-white/10 text-[10px]">{t}</span>) : <span className="opacity-50">No new trait</span>}
                 </div>
-                <div className="opacity-60 leading-snug line-clamp-3">{laid.find(n=>n.id===hoverId)?.description}</div>
+                <div className="opacity-60 leading-snug line-clamp-3 mb-2">{laid.find(n=>n.id===hoverId)?.description}</div>
+                {unlockReason(hoverId)==='Unlockable' && !unlocked.includes(hoverId) && (
+                  <div className="flex items-center gap-3">
+                    <div className="flex flex-col gap-1">
+                      <span className="text-emerald-300">Hold key 'U' to Unlock</span>
+                      <span className="opacity-50">{( (HOLD_DURATION/1000) * (1-holdProgress) ).toFixed(1)}s remaining</span>
+                      <div className="h-1 w-full bg-white/10 rounded overflow-hidden">
+                        <div className="h-full bg-emerald-500" style={{ width: `${(holdProgress*100).toFixed(1)}%`, transition:'width 0.1s linear' }} />
+                      </div>
+                      <span className="opacity-60 text-[10px]">Points after unlock: {ptsLeft-1 >= 0 ? ptsLeft-1 : 0}</span>
+                    </div>
+                    <div className="relative w-10 h-10 flex items-center justify-center">
+                      <svg width={40} height={40} className="block">
+                        {(()=>{ const r=16; const c=2*Math.PI*r; return (
+                          <g transform="translate(20,20)">
+                            <circle r={r} fill="#111827" stroke="#374151" strokeWidth={4} />
+                            <circle r={r} fill="none" stroke="#10b981" strokeWidth={4} strokeLinecap="round" strokeDasharray={c} strokeDashoffset={c - c*holdProgress} style={{ transition: holdingRef.current? 'stroke-dashoffset 0.1s linear':'stroke-dashoffset 0.25s ease' }} />
+                          </g>
+                        ); })()}
+                      </svg>
+                      <span className="absolute text-xs font-semibold tracking-wide">U</span>
+                    </div>
+                  </div>
+                )}
+                {unlockReason(hoverId)!=='Unlockable' && (
+                  <div className="opacity-60">{unlockReason(hoverId)}</div>
+                )}
               </div>
             )}
           </div>

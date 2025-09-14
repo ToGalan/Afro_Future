@@ -22,24 +22,42 @@ export const useSkillStore = create((set, get) => ({
     spent: 0,
     basePoints: 12,
     bonusPer5: 3,
+    unlockOrder: [],
     attack: 0,
     defense: 0,
     utility: 0,
     traitTags: [],
     unlock: (id) => set(state => {
-        if (state.unlocked.includes(id))
+        if (state.unlocked.includes(id)) {
+            console.debug('[skillStore.unlock] already unlocked', { id });
             return state;
+        }
         // guard: must have available points
         const avail = availablePoints(state);
-        if (avail <= 0)
+        if (avail <= 0) {
+            console.debug('[skillStore.unlock] no available points', { id, avail, spent: state.spent, basePoints: state.basePoints, level: state.level });
             return state;
+        }
+        console.debug('[skillStore.unlock] unlocking', { id, beforeUnlockedCount: state.unlocked.length, availBefore: avail });
         const nextUnlocked = [...state.unlocked, id];
+        const nextOrder = [...state.unlockOrder, id];
         const stats = deriveStats(nextUnlocked);
         const traits = deriveTraits(nextUnlocked, TREE);
-        return { unlocked: nextUnlocked, spent: state.spent + 1, ...stats, primaryBranch: traits.topBranch, primaryType: traits.topType, traitTags: traits.tags };
+        const newState = { unlocked: nextUnlocked, unlockOrder: nextOrder, spent: state.spent + 1, ...stats, primaryBranch: traits.topBranch, primaryType: traits.topType, traitTags: traits.tags };
+        console.debug('[skillStore.unlock] success', { id, afterUnlockedCount: newState.unlocked.length, spent: newState.spent });
+        return newState;
+    }),
+    respec: () => set(state => {
+        if (!state.unlockOrder.length)
+            return state;
+        // Keep root only; optionally keep level and basePoints untouched.
+        const resetUnlocked = ['root'];
+        const stats = deriveStats(resetUnlocked);
+        const traits = deriveTraits(resetUnlocked, TREE);
+        return { unlocked: resetUnlocked, unlockOrder: [], spent: 0, ...stats, primaryBranch: traits.topBranch, primaryType: traits.topType, traitTags: traits.tags };
     }),
     setLevel: (lvl) => set(state => ({ level: Math.max(1, lvl) })),
-    reset: () => set({ level: 1, unlocked: ['root'], spent: 0, attack: 0, defense: 0, utility: 0, traitTags: [], primaryBranch: undefined, primaryType: undefined }),
+    reset: () => set({ level: 1, unlocked: ['root'], unlockOrder: [], spent: 0, attack: 0, defense: 0, utility: 0, traitTags: [], primaryBranch: undefined, primaryType: undefined }),
 }));
 export function availablePoints(state) {
     const bonusBlocks = Math.floor((Math.max(1, state.level) - 1) / 5);
