@@ -9,12 +9,16 @@ interface AvatarPartsLoaderProps {
 // Returns variant record indexed by id for quick lookup
 const variantById = PART_VARIANTS.reduce<Record<string, typeof PART_VARIANTS[number]>>((acc,v)=>{acc[v.id]=v;return acc;},{});
 
-function PartMesh({ file }: { file: string }) {
-  // Attempt both src-relative and public served path conventions
+function PartMesh({ file, group }: { file: string; group: string }) {
   const publicPath = `/assets/3d/${file}`;
-  // Load via public path (ensure files served from public/assets/3d/*)
   const { scene } = useGLTF(publicPath) as any;
-  return <primitive object={scene.clone()} />;
+  // Clone so tagging does not mutate cached scene
+  const inst = scene.clone();
+  inst.traverse((obj: any) => {
+    if (!obj.userData) obj.userData = {};
+    obj.userData.partGroup = group; // tag for downstream tint logic
+  });
+  return <primitive object={inst} />;
 }
 
 export function AvatarPartsLoader({ parts }: AvatarPartsLoaderProps) {
@@ -28,8 +32,8 @@ export function AvatarPartsLoader({ parts }: AvatarPartsLoaderProps) {
       <Suspense fallback={null}>
         {activeVariants.map(id => {
           const v = variantById[id];
-            if (!v) return null;
-            return <PartMesh key={id} file={v.file} />;
+          if (!v) return null;
+          return <PartMesh key={id} file={v.file} group={v.group} />;
         })}
       </Suspense>
     </group>

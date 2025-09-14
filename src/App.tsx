@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { GROUP_ORDER, getVariantsByGroup } from './assets/threeParts';
 import AvatarScene from './components/AvatarScene';
+import VariantPreview from './components/VariantPreview';
 import { Archetype, CharacterLoadout, Faction, PetType, uid, now } from './types/loadout';
 import { CharacterPortrait, FactionIcon, ImageAssets, getCharacterPortrait, PetIcon } from './assets/assetPaths';
 
@@ -670,8 +671,13 @@ function CharacterCreator({ onSave, onBack, initial, locked }: { onSave: (payloa
                       className={`w-24 h-24 rounded-xl border transition flex flex-col items-center justify-center gap-1 px-1 text-[11px]
                         ${active ? 'bg-emerald-600/30 border-emerald-500/60 text-emerald-200 shadow-inner' : 'bg-white/5 border-white/10 hover:bg-white/10 text-gray-300'}`}
                     >
-                      <span className="truncate max-w-[88px]">{v.label}</span>
-                      {active && <span className="text-[9px] uppercase tracking-wide">Selected</span>}
+                      <div className="relative w-full h-full flex items-center justify-center">
+                        <VariantPreview file={v.file} />
+                        <div className="absolute bottom-0 left-0 right-0 text-[9px] leading-tight px-1 py-0.5 bg-black/40 backdrop-blur-sm">
+                          <span className="truncate block max-w-full">{v.label}</span>
+                          {active && <span className="uppercase tracking-wide text-emerald-300">Selected</span>}
+                        </div>
+                      </div>
                     </button>
                   );
                 })}
