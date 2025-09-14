@@ -418,17 +418,13 @@ function WelcomeScreen({ progress, build, onSignOut }: { progress: number; build
           </div>
           <div className="mt-2 text-xs opacity-60 text-center">{progress}%</div>
           <div className="mt-6 flex flex-col items-center gap-3">
-            {import.meta.env.VITE_GOOGLE_CLIENT_ID ? (
-              idToken ? (
-                <>
-                  <div className="text-xs text-emerald-300">Signed in</div>
-                  <button onClick={signOut} className="text-[11px] px-3 py-1 rounded bg-white/10 hover:bg-white/20 border border-white/10">Sign Out</button>
-                </>
-              ) : (
-                <GoogleSignInButton onCredential={() => window.location.reload()} />
-              )
+            {idToken ? (
+              <>
+                <div className="text-xs text-emerald-300">Signed in</div>
+                <button onClick={signOut} className="text-[11px] px-3 py-1 rounded bg-white/10 hover:bg-white/20 border border-white/10">Sign Out</button>
+              </>
             ) : (
-              <div className="text-[11px] opacity-60">Set VITE_GOOGLE_CLIENT_ID to enable sign-in</div>
+              <GoogleSignInButton onCredential={() => window.location.reload()} />
             )}
           </div>
         </div>
