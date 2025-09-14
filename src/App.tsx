@@ -35,6 +35,21 @@ export default function App() {
   const [playerName] = useState('PlayerOne');
   const [accountLevel] = useState(1);
   const [activeLoadout, setActiveLoadout] = useState<CharacterLoadout | null>(null);
+
+  // Hydrate saved avatar (loadout) from localStorage once on mount
+  useEffect(()=>{
+    try {
+      const raw = localStorage.getItem('afrofuture.activeLoadout');
+      if(raw){
+        const parsed = JSON.parse(raw) as CharacterLoadout;
+        if(parsed && parsed.id){
+          setActiveLoadout(parsed);
+        }
+      }
+    } catch(e){
+      console.warn('[avatar-persist] failed to load', e);
+    }
+  },[]);
   // Once a hero is created and saved, it's locked; user can only customize/grow, not replace.
   const heroLocked = !!activeLoadout;
   const [setupFaction, setSetupFaction] = useState<Faction | null>(null);
@@ -63,9 +78,12 @@ export default function App() {
   function handleCreatorSave(newLoadout: CharacterLoadout) {
     // Preserve original id if already existed (no new hero creation after lock)
     if (activeLoadout) {
-      setActiveLoadout({ ...activeLoadout, ...newLoadout, id: activeLoadout.id, createdAt: activeLoadout.createdAt, updatedAt: now() });
+      const merged = { ...activeLoadout, ...newLoadout, id: activeLoadout.id, createdAt: activeLoadout.createdAt, updatedAt: now() } as CharacterLoadout;
+      setActiveLoadout(merged);
+      try { localStorage.setItem('afrofuture.activeLoadout', JSON.stringify(merged)); } catch(e){ console.warn('[avatar-persist] save failed', e); }
     } else {
       setActiveLoadout(newLoadout);
+      try { localStorage.setItem('afrofuture.activeLoadout', JSON.stringify(newLoadout)); } catch(e){ console.warn('[avatar-persist] save failed', e); }
     }
     setPhase('main');
   }
@@ -582,26 +600,34 @@ function RightPlayerPanel({ className = '', loadout, onCustomize }: { className?
     <aside className={`col-start-3 h-full ${className} bg-[#0f1218] border-l border-black/40 shadow-inner flex flex-col`}>
       {/* 3D Avatar Section */}
       <div className="p-4 border-b border-white/10">
-        <div className="relative rounded-3xl border border-white/10 bg-gradient-to-br from-[#0b0e13] to-[#1a1e29] p-4 overflow-hidden" style={{height:'240px'}}>
+        <div
+          className="relative rounded-3xl border border-white/10 bg-gradient-to-br from-[#0b0e13] to-[#1a1e29] overflow-hidden flex flex-col"
+          style={{ height: '300px' }}
+        >
           <div className="absolute inset-0 bg-gradient-to-tr from-[#0b0e13]/80 via-transparent to-[#0b0e13]/50" />
-          <div className="relative z-10 h-full w-full">
-            <AvatarScene
-              parts={(loadout as any).threeConfig?.parts}
-              colors={(loadout as any).threeConfig?.colors}
-              debugTint={false}
-              animPaused={false}
-              animSpeed={1}
-              rotateSpeed={0.08}
-              disableControls
-              cameraPosition={[1.65,1.2,2.15]}
-              cameraFov={33}
-              target={[0,0.8,0]}
-              modelOffset={[0,-0.6,0]}
-              autoFrame
-              frameMargin={0.1}
-            />
+          {/* Avatar canvas container anchored to bottom */}
+          <div className="relative z-10 flex-1 flex items-end justify-center px-2 pb-2">
+            <div className="w-full h-[260px] relative">
+              <AvatarScene
+                parts={(loadout as any).threeConfig?.parts}
+                colors={(loadout as any).threeConfig?.colors}
+                debugTint={false}
+                animPaused={false}
+                animSpeed={1}
+                rotateSpeed={0.08}
+                disableControls
+                // Lower camera a bit & lower target so model appears visually grounded
+                cameraPosition={[1.6,1.15,2.1]}
+                cameraFov={32}
+                target={[0,0.75,0]}
+                // Push model slightly further down
+                modelOffset={[0,-0.55,0]}
+                autoFrame
+                frameMargin={0.1}
+              />
+            </div>
           </div>
-          <div className="absolute bottom-3 left-3 right-3 z-20">
+          <div className="relative z-20 px-3 pb-3">
             <Button size="sm" className="w-full text-xs" onClick={onCustomize}>
               Customize
             </Button>

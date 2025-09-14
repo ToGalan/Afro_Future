@@ -87,38 +87,8 @@ export default function SnowflakeSkillTree({ initialLevel = 1, onClose }) {
     const traits = deriveTraits(unlocked, nodes);
     const [hoverId, setHoverId] = useState(null);
     const [lastUnlocked, setLastUnlocked] = useState(null);
-    function onUnlock(id) {
-        const reason = unlockReason(id);
-        const st = useSkillStore.getState();
-        const avail = availablePoints(st);
-        const nodeName = nodes.find(n => n.id === id)?.label || id;
-        console.log('[UNLOCK ATTEMPT]', {
-            nodeId: id,
-            nodeName,
-            reason,
-            availablePoints: avail,
-            currentSpent: st.spent,
-            currentUnlocked: st.unlocked.length
-        });
-        if (reason !== 'Unlockable') {
-            console.warn('[UNLOCK FAILED]', { nodeId: id, reason });
-            return;
-        }
-        // Execute unlock
-        unlockGlobal(id);
-        setLastUnlocked(id);
-        // Echo success with updated state
-        const updatedState = useSkillStore.getState();
-        console.log('[UNLOCK SUCCESS]', {
-            nodeId: id,
-            nodeName,
-            tokenSpent: true,
-            newSpentCount: updatedState.spent,
-            newAvailablePoints: availablePoints(updatedState),
-            totalUnlocked: updatedState.unlocked.length,
-            newTraits: updatedState.traitTags
-        });
-    }
+    function onUnlock(id) { const reason = unlockReason(id); const st = useSkillStore.getState(); const avail = availablePoints(st); console.debug('[SnowflakeSkillTree.onUnlock] attempt', { id, reason, avail, unlockedCount: st.unlocked.length }); if (reason !== 'Unlockable')
+        return; unlockGlobal(id); setLastUnlocked(id); }
     // Hold-to-unlock state
     const HOLD_DURATION = 4000; // ms
     const [holdTarget, setHoldTarget] = useState(null);
@@ -155,7 +125,7 @@ export default function SnowflakeSkillTree({ initialLevel = 1, onClose }) {
     const ptsLeft = useMemo(() => availablePoints(useSkillStore.getState()), [unlocked, basePoints, lvl, spent]);
     // Reset hold if conditions change
     useEffect(() => {
-        if (!hoverId || (holdTarget && hoverId !== holdTarget)) {
+        if (!hoverId || holdTarget && hoverId !== holdTarget) {
             // if moved away from target
             holdingRef.current = false;
             holdStartRef.current = null;
@@ -164,7 +134,7 @@ export default function SnowflakeSkillTree({ initialLevel = 1, onClose }) {
             if (rafRef.current)
                 cancelAnimationFrame(rafRef.current);
         }
-        if (hoverId && !unlocked.includes(hoverId) && unlockReason(hoverId) !== 'Unlockable') {
+        if (hoverId && unlockReason(hoverId) !== 'Unlockable') {
             holdingRef.current = false;
             holdStartRef.current = null;
             setHoldTarget(null);
@@ -172,7 +142,7 @@ export default function SnowflakeSkillTree({ initialLevel = 1, onClose }) {
             if (rafRef.current)
                 cancelAnimationFrame(rafRef.current);
         }
-    }, [hoverId, holdTarget]); // Removed unlocked and ptsLeft to prevent premature resets
+    }, [hoverId, unlocked, ptsLeft]);
     // Key handling for hold-to-unlock
     useEffect(() => {
         function step() {
@@ -182,40 +152,23 @@ export default function SnowflakeSkillTree({ initialLevel = 1, onClose }) {
             const elapsed = performance.now() - holdStartRef.current;
             const prog = Math.min(1, elapsed / HOLD_DURATION);
             setHoldProgress(prog);
-            console.log('[HOLD PROGRESS]', {
-                elapsed: elapsed.toFixed(0),
-                progress: (prog * 100).toFixed(1) + '%',
-                target: holdTarget
-            });
             if (prog >= 1) {
-                console.log('[HOLD COMPLETE] Triggering unlock for', holdTarget);
-                // Reset hold state first to prevent interference
+                onUnlock(holdTarget);
                 holdingRef.current = false;
                 holdStartRef.current = null;
-                setHoldProgress(0);
-                const targetToUnlock = holdTarget;
                 setHoldTarget(null);
-                // Then trigger unlock
-                onUnlock(targetToUnlock);
+                setHoldProgress(0);
                 return;
             }
             rafRef.current = requestAnimationFrame(step);
         }
         function keyDown(e) {
             if (e.key.toLowerCase() === 'u') {
-                console.log('[KEY DOWN] U pressed, hoverId:', hoverId);
-                if (!hoverId) {
-                    console.log('[KEY DOWN] No hover target');
+                if (!hoverId)
                     return;
-                }
-                const reason = unlockReason(hoverId);
-                console.log('[KEY DOWN] Unlock reason:', reason);
-                if (reason !== 'Unlockable') {
-                    console.log('[KEY DOWN] Cannot unlock:', reason);
+                if (unlockReason(hoverId) !== 'Unlockable')
                     return;
-                }
                 if (!holdingRef.current) {
-                    console.log('[KEY DOWN] Starting hold for', hoverId);
                     holdingRef.current = true;
                     holdStartRef.current = performance.now();
                     setHoldTarget(hoverId);
@@ -226,7 +179,6 @@ export default function SnowflakeSkillTree({ initialLevel = 1, onClose }) {
         }
         function keyUp(e) {
             if (e.key.toLowerCase() === 'u') {
-                console.log('[KEY UP] U released, resetting hold');
                 holdingRef.current = false;
                 holdStartRef.current = null;
                 setHoldTarget(null);
@@ -237,25 +189,20 @@ export default function SnowflakeSkillTree({ initialLevel = 1, onClose }) {
         }
         window.addEventListener('keydown', keyDown);
         window.addEventListener('keyup', keyUp);
-        return () => {
-            window.removeEventListener('keydown', keyDown);
-            window.removeEventListener('keyup', keyUp);
-            if (rafRef.current)
-                cancelAnimationFrame(rafRef.current);
-        };
+        return () => { window.removeEventListener('keydown', keyDown); window.removeEventListener('keyup', keyUp); if (rafRef.current)
+            cancelAnimationFrame(rafRef.current); };
     }, [hoverId]);
-    return (_jsxs("div", { className: "w-full h-full bg-[#0f1218] text-gray-100 p-4 overflow-hidden relative", children: [_jsxs("div", { className: "absolute top-2 right-2 bg-black/70 border border-emerald-500/30 rounded-lg px-3 py-2 text-[10px] leading-tight space-y-1 pointer-events-none z-40 backdrop-blur-sm", children: [_jsx("div", { className: "font-semibold text-emerald-300", children: "Token Tracker" }), _jsxs("div", { className: "text-emerald-200", children: ["Last Unlocked: ", _jsx("span", { className: "font-mono", children: lastUnlocked ?? '—' })] }), _jsxs("div", { className: "text-yellow-300", children: ["Tokens Spent: ", _jsx("span", { className: "font-mono font-bold", children: spent })] }), _jsxs("div", { className: "text-blue-300", children: ["Available: ", _jsx("span", { className: "font-mono font-bold", children: availablePoints(useSkillStore.getState()) })] }), _jsxs("div", { className: "text-gray-300", children: ["Total Unlocked: ", _jsx("span", { className: "font-mono", children: unlocked.length })] }), _jsxs("div", { className: "text-purple-300", children: ["Stats: ", attackStat, "/", defenseStat, "/", utilityStat] }), _jsx("div", { className: "flex flex-wrap gap-1 max-w-[160px]", children: traitTags.slice(0, 4).map(t => _jsx("span", { className: "px-1 py-0.5 bg-emerald-600/20 border border-emerald-500/40 rounded text-emerald-200", children: t }, t)) }), holdTarget && (_jsxs("div", { className: "text-amber-300", children: ["Unlocking: ", laid.find(n => n.id === holdTarget)?.label] }))] }), _jsx("div", { className: "flex items-center justify-between mb-3", children: _jsx("div", { className: "text-xl font-semibold", children: "Skill Snowflake" }) }), _jsxs("div", { className: "grid grid-cols-12 gap-4", children: [_jsx("div", { className: "col-span-9", children: _jsxs("div", { className: "relative mx-auto select-none", style: { width: size, height: size }, onWheel: onWheel, children: [_jsxs("svg", { width: size, height: size, onPointerDown: onPointerDown, onPointerMove: onPointerMove, onPointerUp: onPointerUp, style: { cursor: dragging ? 'grabbing' : scale > 1.02 ? 'grab' : 'default' }, children: [_jsx("defs", { children: _jsxs("filter", { id: "glow", x: "-50%", y: "-50%", width: "200%", height: "200%", children: [_jsx("feGaussianBlur", { stdDeviation: "3", result: "colored" }), _jsxs("feMerge", { children: [_jsx("feMergeNode", { in: "colored" }), _jsx("feMergeNode", { in: "SourceGraphic" })] })] }) }), _jsxs("g", { transform: `translate(${size / 2 + pan.x},${size / 2 + pan.y}) scale(${scale}) translate(${-size / 2},${-size / 2})`, children: [links().map((l, i) => (_jsx("line", { x1: l.from.x, y1: l.from.y, x2: l.to.x, y2: l.to.y, stroke: unlocked.includes(l.to.id) ? branchColor(l.to.type) : '#6b7280', strokeWidth: 2 }, i))), laid.map(n => {
+    return (_jsxs("div", { className: "w-full h-full bg-[#0f1218] text-gray-100 p-4 overflow-hidden relative", children: [_jsxs("div", { className: "flex items-center justify-between mb-3", children: [_jsx("div", { className: "text-xl font-semibold", children: "Skill Snowflake" }), _jsxs("div", { className: "text-sm opacity-80", children: ["Spent: ", spent, " \u2022 Points Left: ", ptsLeft] })] }), _jsxs("div", { className: "grid grid-cols-12 gap-4", children: [_jsx("div", { className: "col-span-9", children: _jsxs("div", { className: "relative mx-auto select-none", style: { width: size, height: size }, onWheel: onWheel, children: [_jsxs("svg", { width: size, height: size, onPointerDown: onPointerDown, onPointerMove: onPointerMove, onPointerUp: onPointerUp, style: { cursor: dragging ? 'grabbing' : scale > 1.02 ? 'grab' : 'default' }, children: [_jsx("defs", { children: _jsxs("filter", { id: "glow", x: "-50%", y: "-50%", width: "200%", height: "200%", children: [_jsx("feGaussianBlur", { stdDeviation: "3", result: "colored" }), _jsxs("feMerge", { children: [_jsx("feMergeNode", { in: "colored" }), _jsx("feMergeNode", { in: "SourceGraphic" })] })] }) }), _jsxs("g", { transform: `translate(${size / 2 + pan.x},${size / 2 + pan.y}) scale(${scale}) translate(${-size / 2},${-size / 2})`, children: [links().map((l, i) => (_jsx("line", { x1: l.from.x, y1: l.from.y, x2: l.to.x, y2: l.to.y, stroke: unlocked.includes(l.to.id) ? branchColor(l.to.type) : '#6b7280', strokeWidth: 2 }, i))), laid.map(n => {
                                                     const color = branchColor(n.type);
                                                     const isUnlocked = unlocked.includes(n.id);
                                                     const r = n.id === 'root' ? 22 : n.tier === 1 ? 14 : 11;
                                                     const isCoreHighlight = nextCores.includes(n.id);
                                                     const isHoldingThis = holdTarget === n.id && holdingRef.current;
-                                                    const isHovered = hoverId === n.id;
-                                                    return (_jsxs("g", { "data-id": n.id, transform: `translate(${n.x},${n.y})`, onMouseEnter: () => setHoverId(n.id), onMouseLeave: () => setHoverId(h => h === n.id ? null : h), style: { pointerEvents: 'all' }, children: [_jsx("circle", { r: r + 5, fill: "#0b1220", stroke: "#1f2937", strokeWidth: 2 }), _jsx("circle", { r: r, fill: isUnlocked ? color : '#111827', stroke: isUnlocked ? color : '#374151', strokeWidth: isUnlocked ? 3 : 2, filter: isUnlocked ? 'url(#glow)' : undefined, style: { cursor: canUnlock(n.id) ? 'pointer' : 'not-allowed' } }), (!isUnlocked && isHoldingThis && holdProgress > 0) && (() => {
+                                                    return (_jsxs("g", { "data-id": n.id, transform: `translate(${n.x},${n.y})`, onMouseEnter: () => setHoverId(n.id), onMouseLeave: () => setHoverId(h => h === n.id ? null : h), style: { pointerEvents: 'all' }, children: [_jsx("circle", { r: r + 5, fill: "#0b1220", stroke: "#1f2937", strokeWidth: 2 }), _jsx("circle", { r: r, fill: isUnlocked ? color : '#111827', stroke: isUnlocked ? color : '#374151', strokeWidth: isUnlocked ? 3 : 2, filter: isUnlocked ? 'url(#glow)' : undefined, style: { cursor: canUnlock(n.id) ? 'pointer' : 'not-allowed', boxShadow: isCoreHighlight ? '0 0 0 4px rgba(16,185,129,0.6)' : undefined } }), (!isUnlocked && isHoldingThis) && (() => {
                                                                 const pr = holdProgress;
                                                                 const rr = r + 6;
                                                                 const circ = 2 * Math.PI * rr;
-                                                                return (_jsx("circle", { r: rr, fill: "none", stroke: "#10b981", strokeWidth: 4, strokeLinecap: "round", strokeDasharray: circ, strokeDashoffset: circ - circ * pr, style: { transition: 'stroke-dashoffset 0.1s linear' } }));
+                                                                return (_jsx("circle", { r: rr, fill: "none", stroke: "#10b981", strokeWidth: 4, strokeLinecap: "round", strokeDasharray: circ, strokeDashoffset: circ - circ * pr }));
                                                             })(), _jsx("circle", { r: r + 10, fill: "transparent", stroke: "none", style: { cursor: canUnlock(n.id) ? 'pointer' : 'not-allowed' } }), isCoreHighlight && !isUnlocked && (_jsx("circle", { r: r + 6, fill: "none", stroke: "rgba(16,185,129,0.55)", strokeWidth: 2, strokeDasharray: "4 4" })), showDetail ? (_jsxs(_Fragment, { children: [_jsx("text", { y: -r - 8, textAnchor: "middle", fontSize: 11, fill: "#e5e7eb", children: n.label }), n.faction && _jsx("text", { y: r + 12, textAnchor: "middle", fontSize: 9, fill: "#9ca3af", children: n.faction })] })) : (_jsx("text", { y: 4, textAnchor: "middle", fontSize: 8, fill: "#cbd5e1", children: n.tier }))] }, n.id));
                                                 }), BRANCHES.map((b, i) => {
                                                     const angle = (2 * Math.PI * i) / BRANCHES.length;

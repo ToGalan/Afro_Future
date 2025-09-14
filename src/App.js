@@ -34,6 +34,21 @@ export default function App() {
     const [playerName] = useState('PlayerOne');
     const [accountLevel] = useState(1);
     const [activeLoadout, setActiveLoadout] = useState(null);
+    // Hydrate saved avatar (loadout) from localStorage once on mount
+    useEffect(() => {
+        try {
+            const raw = localStorage.getItem('afrofuture.activeLoadout');
+            if (raw) {
+                const parsed = JSON.parse(raw);
+                if (parsed && parsed.id) {
+                    setActiveLoadout(parsed);
+                }
+            }
+        }
+        catch (e) {
+            console.warn('[avatar-persist] failed to load', e);
+        }
+    }, []);
     // Once a hero is created and saved, it's locked; user can only customize/grow, not replace.
     const heroLocked = !!activeLoadout;
     const [setupFaction, setSetupFaction] = useState(null);
@@ -64,10 +79,23 @@ export default function App() {
     function handleCreatorSave(newLoadout) {
         // Preserve original id if already existed (no new hero creation after lock)
         if (activeLoadout) {
-            setActiveLoadout({ ...activeLoadout, ...newLoadout, id: activeLoadout.id, createdAt: activeLoadout.createdAt, updatedAt: now() });
+            const merged = { ...activeLoadout, ...newLoadout, id: activeLoadout.id, createdAt: activeLoadout.createdAt, updatedAt: now() };
+            setActiveLoadout(merged);
+            try {
+                localStorage.setItem('afrofuture.activeLoadout', JSON.stringify(merged));
+            }
+            catch (e) {
+                console.warn('[avatar-persist] save failed', e);
+            }
         }
         else {
             setActiveLoadout(newLoadout);
+            try {
+                localStorage.setItem('afrofuture.activeLoadout', JSON.stringify(newLoadout));
+            }
+            catch (e) {
+                console.warn('[avatar-persist] save failed', e);
+            }
         }
         setPhase('main');
     }
@@ -251,7 +279,11 @@ function RightPlayerPanel({ className = '', loadout, onCustomize }) {
         { key: 'single', label: 'Single Player', enabled: true },
         { key: 'multi', label: 'Multiplayer (Coming Soon)', enabled: false },
     ];
-    return (_jsxs("aside", { className: `col-start-3 h-full ${className} bg-[#0f1218] border-l border-black/40 shadow-inner flex flex-col`, children: [_jsx("div", { className: "p-4 border-b border-white/10", children: _jsxs("div", { className: "relative rounded-3xl border border-white/10 bg-gradient-to-br from-[#0b0e13] to-[#1a1e29] p-4 overflow-hidden", style: { height: '240px' }, children: [_jsx("div", { className: "absolute inset-0 bg-gradient-to-tr from-[#0b0e13]/80 via-transparent to-[#0b0e13]/50" }), _jsx("div", { className: "relative z-10 h-full w-full", children: _jsx(AvatarScene, { parts: loadout.threeConfig?.parts, colors: loadout.threeConfig?.colors, debugTint: false, animPaused: false, animSpeed: 1, rotateSpeed: 0.08, disableControls: true, cameraPosition: [1.65, 1.2, 2.15], cameraFov: 33, target: [0, 0.8, 0], modelOffset: [0, -0.6, 0], autoFrame: true, frameMargin: 0.1 }) }), _jsx("div", { className: "absolute bottom-3 left-3 right-3 z-20", children: _jsx(Button, { size: "sm", className: "w-full text-xs", onClick: onCustomize, children: "Customize" }) })] }) }), _jsxs("div", { className: "px-4 py-4 border-b border-white/10", children: [_jsx("div", { className: "text-lg font-semibold mb-4", children: "Game Modes" }), _jsx("div", { className: "grid gap-3", children: modes.map(m => (_jsxs("button", { disabled: !m.enabled, onClick: () => m.enabled && setMode(m.key), className: `rounded-2xl px-4 py-4 text-left relative overflow-hidden border transition group
+    return (_jsxs("aside", { className: `col-start-3 h-full ${className} bg-[#0f1218] border-l border-black/40 shadow-inner flex flex-col`, children: [_jsx("div", { className: "p-4 border-b border-white/10", children: _jsxs("div", { className: "relative rounded-3xl border border-white/10 bg-gradient-to-br from-[#0b0e13] to-[#1a1e29] overflow-hidden flex flex-col", style: { height: '300px' }, children: [_jsx("div", { className: "absolute inset-0 bg-gradient-to-tr from-[#0b0e13]/80 via-transparent to-[#0b0e13]/50" }), _jsx("div", { className: "relative z-10 flex-1 flex items-end justify-center px-2 pb-2", children: _jsx("div", { className: "w-full h-[260px] relative", children: _jsx(AvatarScene, { parts: loadout.threeConfig?.parts, colors: loadout.threeConfig?.colors, debugTint: false, animPaused: false, animSpeed: 1, rotateSpeed: 0.08, disableControls: true, 
+                                    // Lower camera a bit & lower target so model appears visually grounded
+                                    cameraPosition: [1.6, 1.15, 2.1], cameraFov: 32, target: [0, 0.75, 0], 
+                                    // Push model slightly further down
+                                    modelOffset: [0, -0.55, 0], autoFrame: true, frameMargin: 0.1 }) }) }), _jsx("div", { className: "relative z-20 px-3 pb-3", children: _jsx(Button, { size: "sm", className: "w-full text-xs", onClick: onCustomize, children: "Customize" }) })] }) }), _jsxs("div", { className: "px-4 py-4 border-b border-white/10", children: [_jsx("div", { className: "text-lg font-semibold mb-4", children: "Game Modes" }), _jsx("div", { className: "grid gap-3", children: modes.map(m => (_jsxs("button", { disabled: !m.enabled, onClick: () => m.enabled && setMode(m.key), className: `rounded-2xl px-4 py-4 text-left relative overflow-hidden border transition group
                 h-24 flex items-start
                 ${mode === m.key ? 'bg-emerald-600/30 border-emerald-500/60 shadow-inner' : 'bg-white/5 border-white/10 hover:bg-white/10'}
                 ${!m.enabled ? 'opacity-40 cursor-not-allowed' : ''}`, children: [_jsxs("div", { className: "flex flex-col", children: [_jsx("span", { className: "font-medium text-sm tracking-wide mb-1", children: m.label }), _jsx("span", { className: "text-[11px] opacity-60", children: m.enabled ? (m.key === 'single' ? 'Solo mission queue' : 'Feature in development') : 'Unavailable' })] }), mode === m.key && _jsx("div", { className: "absolute top-2 right-2 text-[10px] px-2 py-0.5 rounded bg-emerald-500/20 border border-emerald-400/40 text-emerald-200", children: "Active" })] }, m.key))) })] }), _jsxs("div", { className: "px-4 py-4 border-b border-white/10", children: [_jsx("div", { className: "text-lg font-semibold mb-4", children: "Rewards" }), _jsxs("div", { className: "grid gap-3", children: [_jsx("div", { className: "rounded-2xl px-4 py-4 text-left relative overflow-hidden border border-white/10 bg-white/5 opacity-60", children: _jsxs("div", { className: "flex flex-col", children: [_jsx("span", { className: "font-medium text-sm tracking-wide mb-1", children: "Gifts" }), _jsx("span", { className: "text-[11px] opacity-60", children: "Coming Soon" })] }) }), _jsx("div", { className: "rounded-2xl px-4 py-4 text-left relative overflow-hidden border border-white/10 bg-white/5 opacity-60", children: _jsxs("div", { className: "flex flex-col", children: [_jsx("span", { className: "font-medium text-sm tracking-wide mb-1", children: "Battle Pass" }), _jsx("span", { className: "text-[11px] opacity-60", children: "Coming Soon" })] }) })] })] }), _jsxs("div", { className: "mt-auto p-4", children: [_jsx(Button, { className: "w-full h-14 text-xl", onClick: startMatch, disabled: mode !== 'single', children: "Play" }), _jsx("div", { className: "mt-2 text-xs text-gray-300 h-4", children: queue ?? (mode === 'single' ? 'Ready' : 'Disabled') })] })] }));
