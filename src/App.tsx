@@ -203,28 +203,43 @@ function WelcomeScreen({ progress, build }: { progress: number; build: string })
 
 function FirstTimeFlow({ faction, archetype, pet, onFaction, onArchetype, onPet, onContinue }: { faction: Faction | null; archetype: Archetype | null; pet: PetType | null; onFaction: (f: Faction) => void; onArchetype: (a: Archetype) => void; onPet: (p: PetType) => void; onContinue: () => void; }) {
   const [step, setStep] = useState(0);
-  const factionDetails: Record<Faction, { ethos: string; blurb: string; specs: string[] }> = {
-    PAA: { ethos: 'Heal and Unite', blurb: 'Technologically advanced peacekeepers favoring non‑lethal tech, healing, and diplomacy.', specs: ['Non‑lethal crowd control', 'Medical drones', 'Shield tech'] },
-    ASF: { ethos: 'Africa First', blurb: 'Sovereignty‑focused defenders using advanced offense and guerrilla tactics.', specs: ['Assault exosuits', 'EMP artillery', 'Guerrilla logistics'] },
-    WC: { ethos: 'Survival at Any Cost', blurb: 'Global survivors seeking resources with improvised/traditional military tech.', specs: ['Conventional armor', 'Ballistic weapons', 'Supply scavenging'] },
-  };
-  const archetypeDetails: Record<Faction, Record<Archetype, { title: string; class: string; specs: string[]; abilities: string[] }>> = {
+  const factionDetails: Record<Faction, { name: string; mission: string; objectives: string; lore: string; }> = {
     PAA: {
-      MALE: { title: 'Engineer‑Diplomat', class: 'Support', specs: ['Pulse shield', 'Mediation protocols', 'Drone repair kit'], abilities: ['Project Aegis', 'Calm Field', 'Nano‑Heal Burst'] },
-      FEMALE: { title: 'Peace Ambassador', class: 'Skirmisher', specs: ['Aikido stance', 'Holo‑decoy', 'Stun baton'], abilities: ['Disarm', 'Parley', 'Guardian Step'] },
+      name: 'PAA – Pan-African Alliance',
+      mission: 'Unite fractured societies under peacekeeping and healing technologies; prioritize diplomacy and reconstruction over war.',
+      objectives: 'Secure and rebuild territories with non-lethal tech, protect civilians, and stabilize regions torn by conflict.',
+      lore: 'Emerging from Africa’s continental unity movements, the PAA represents hope and healing in a world scarred by collapse. They carry the legacy of ancestral cooperation, combining cultural wisdom with advanced technology to show survival without domination is possible.'
     },
     ASF: {
-      MALE: { title: 'Cyber Tactician', class: 'Vanguard', specs: ['Arm‑mounted SMGs', 'Adaptive armor', 'Tac‑overlay'], abilities: ['Overrun', 'War Cry', 'Kinetic Dash'] },
-      FEMALE: { title: 'Warfare Strategist', class: 'Controller', specs: ['Cyber intrusion', 'Recon swarm', 'Trap grid'], abilities: ['Ghost Net', 'Field Order', 'Ambush Mark'] },
+      name: 'ASF – African Sovereignty Front',
+      mission: 'Guard Africa’s independence and resources from external exploitation; ensure no foreign domination returns.',
+      objectives: 'Defend borders, strike against intruders, and expand African influence through technological warfare and guerrilla tactics.',
+      lore: 'Forged from centuries of resistance, the ASF is relentless in its pursuit of autonomy. They remember colonization’s scars and vow never to repeat them, embodying the warrior spirit of sovereignty at all costs.'
     },
     WC: {
-      MALE: { title: 'Frontline Commander', class: 'Bruiser', specs: ['Ballistic rifle', 'Improvised shields', 'Survival kit'], abilities: ['Suppressing Fire', 'Hold the Line', 'Last Rations'] },
-      FEMALE: { title: 'Resource Scientist', class: 'Utility', specs: ['Chem tools', 'Sensor pucks', 'Field lab'], abilities: ['Catalyst', 'Scan Sweep', 'Make‑Do Gadget'] },
+      name: 'WC – World Confederates',
+      mission: 'Survival through opportunism; gather resources wherever possible to ensure continuity of fragmented global powers.',
+      objectives: 'Secure supplies, dominate weaker groups, and re-establish their authority over contested zones.',
+      lore: 'The remnants of old world governments and corporations, the WC cling to power with desperation. Their past mistakes haunt them, but they push forward, scavenging tech and enforcing control to survive in the Afro-Future age.'
     },
   };
-  const petDetails: Record<PetType, { role: string; specs: string[]; abilities: string[] }> = {
-    CYBER_DOG: { role: 'SCOUT', specs: ['Reinforced frame', 'Thermal nose', 'Boosted sprint'], abilities: ['Track', 'Bark Stun', 'Guard'] },
-    CYBER_CAT: { role: 'SUPPORT', specs: ['Silent servos', 'Micro‑claws', 'Optic camo'], abilities: ['Sneak', 'Distract', 'Hack Scratch'] },
+  const archetypeDetails: Record<Faction, Record<Archetype, { title: string; objective: string; lore: string }>> = {
+    PAA: {
+      MALE: { title: 'Male (Engineer-Diplomat)', objective: 'Protect allies using shield technology, drones, and peacekeeping gear.', lore: 'A descendant of healers and negotiators, he turns battlefields into sanctuaries with tech that embodies unity.' },
+      FEMALE: { title: 'Female (Peace Ambassador)', objective: 'Disarm and disable threats, inspire cooperation, and rally civilians to the cause.', lore: 'Embodying the spirit of ubuntu, she bridges divides through grace and martial discipline, reminding enemies of shared humanity.' },
+    },
+    ASF: {
+      MALE: { title: 'Male (Cyber Tactician)', objective: 'Lead assaults, disrupt enemy infrastructure, and command tactical overlays for squad dominance.', lore: 'A strategist born from insurgent traditions, his every move echoes the resistance of his ancestors.' },
+      FEMALE: { title: 'Female (Warfare Strategist)', objective: 'Control zones, disrupt enemy communications, and turn terrain into traps.', lore: 'Channeling the legacy of warrior queens, she redefines the battlefield, weaving resilience and cunning into every strike.' },
+    },
+    WC: {
+      MALE: { title: 'Male (Frontline Commander)', objective: 'Dominate frontlines with brute force and survival tactics, rally scattered survivors under command.', lore: 'Once an officer of a fallen regime, he now wages war with whatever scraps remain, haunted but unyielding.' },
+      FEMALE: { title: 'Female (Resource Scientist)', objective: 'Innovate with makeshift tools, weaponize chemistry, and adapt technology for survival.', lore: 'A survivor-scientist, she transforms scarcity into strength, embodying humanity’s adaptability in collapse.' },
+    },
+  };
+  const petDetails: Record<PetType, { role: string; abilities: string[]; lore: string }> = {
+    CYBER_DOG: { role: 'Scout & Protector', abilities: ['Track', 'Bark Stun', 'Guard'], lore: 'Engineered as loyal guardians, Cyber-Dogs blend military robotics with canine instinct. They embody loyalty and resilience, never abandoning their human partner.' },
+    CYBER_CAT: { role: 'Stealth & Support', abilities: ['Sneak', 'Distract', 'Hack Scratch'], lore: 'Agile, silent, and mischievous, Cyber-Cats are the unseen eyes in contested zones. Descendants of cultural reverence for felines, they represent mystery and independence, thriving in chaos.' },
   };
   const steps = ['Faction', 'Archetype', 'Pet'];
   const chosenFaction = faction ?? null;
@@ -245,7 +260,7 @@ function FirstTimeFlow({ faction, archetype, pet, onFaction, onArchetype, onPet,
                 <button
                   key={f}
                   onClick={() => onFaction(f)}
-                  className={`group px-3 pt-4 pb-4 rounded-2xl border transition text-sm flex flex-col items-center gap-3 relative overflow-hidden
+                  className={`group px-3 pt-4 pb-4 rounded-2xl border transition text-base flex flex-col items-center gap-3 relative overflow-hidden
                     ${faction === f ? 'bg-emerald-600/30 border-emerald-500/60 shadow-inner' : 'bg-white/5 border-white/10 hover:bg-white/10'}`}
                 >
                   <div className="w-full aspect-square rounded-xl bg-white/5 flex items-center justify-center overflow-hidden ring-1 ring-white/5 relative">
@@ -255,25 +270,20 @@ function FirstTimeFlow({ faction, archetype, pet, onFaction, onArchetype, onPet,
                 </button>
               ))}
             </div>
-            <div className="mt-4 rounded-xl border border-white/10 bg-white/5 p-4 h-48 flex flex-col overflow-hidden">
+            <div className="mt-4 rounded-xl border border-white/10 bg-white/5 p-4 h-72 flex flex-col overflow-hidden">
               {chosenFaction ? (
-                <>
-                  <div className="text-base font-semibold flex items-center gap-2">
+                <div className="flex flex-col text-lg leading-relaxed overflow-auto pr-1 custom-scrollbar">
+                  <div className="text-base font-semibold flex items-center gap-2 mb-1">
                     <img src={FactionIcon[chosenFaction]} className="w-5 h-5" />
-                    {chosenFaction} • {factionDetails[chosenFaction].ethos}
+                    {factionDetails[chosenFaction].name}
                   </div>
-                  <div className="mt-2 text-sm opacity-80 leading-relaxed space-y-3 overflow-hidden">
-                    <div className="text-[15px] leading-snug">{factionDetails[chosenFaction].blurb}</div>
-                    <div className="grid grid-cols-2 gap-x-5 gap-y-1 text-[13px] pr-1">
-                      {factionDetails[chosenFaction].specs.map(s => (
-                        <div key={s} className="flex items-start gap-2">
-                          <span className="text-emerald-400 mt-[4px]">◆</span>
-                          <span className="leading-snug">{s}</span>
-                        </div>
-                      ))}
-                    </div>
+                  <div className="mt-1"><span className="text-emerald-300 font-medium">Mission:</span> {factionDetails[chosenFaction].mission}</div>
+                  <div className="mt-2"><span className="text-emerald-300 font-medium">Objectives:</span> {factionDetails[chosenFaction].objectives}</div>
+                  <div className="mt-2 space-y-1">
+                    <div className="text-emerald-300 font-medium">Lore:</div>
+                    <div className="opacity-80 text-[17px] leading-snug whitespace-pre-line">{factionDetails[chosenFaction].lore}</div>
                   </div>
-                </>
+                </div>
               ) : (
                 <div className="text-sm opacity-60">Select a faction to see details.</div>
               )}
@@ -301,7 +311,7 @@ function FirstTimeFlow({ faction, archetype, pet, onFaction, onArchetype, onPet,
                     key={g}
                     onClick={() => onArchetype(g)}
                     title={label}
-                    className={`group px-3 pt-4 pb-4 rounded-2xl border transition text-sm flex flex-col items-center gap-3 relative overflow-hidden
+                    className={`group px-3 pt-4 pb-4 rounded-2xl border transition text-base flex flex-col items-center gap-3 relative overflow-hidden
                       ${active ? 'bg-emerald-600/30 border-emerald-500/60 shadow-inner' : 'bg-white/5 border-white/10 hover:bg-white/10'}`}
                   >
                     <div className="w-full aspect-square rounded-xl bg-white/5 overflow-hidden flex items-center justify-center ring-1 ring-white/5 relative">
@@ -312,25 +322,16 @@ function FirstTimeFlow({ faction, archetype, pet, onFaction, onArchetype, onPet,
                 );
               })}
             </div>
-            <div className="mt-4 rounded-xl border border-white/10 bg-white/5 p-4 text-sm h-48 flex flex-col overflow-hidden">
+            <div className="mt-4 rounded-xl border border-white/10 bg-white/5 p-4 text-lg h-60 flex flex-col overflow-hidden">
               {arch ? (
-                <>
-                  <div className="font-semibold text-base mb-2">{arch.title} • <span className="text-emerald-300 font-medium">{arch.class}</span></div>
-                  <div className="grid grid-cols-2 gap-x-6 gap-y-1 pr-1 text-[13px] leading-snug">
-                    {arch.specs.map(s => (
-                      <div key={s} className="flex items-start gap-2">
-                        <span className="text-emerald-400 mt-[4px]">●</span>
-                        <span>{s}</span>
-                      </div>
-                    ))}
-                    {arch.abilities.map(a => (
-                      <div key={a} className="flex items-start gap-2">
-                        <span className="text-sky-400 mt-[4px]">●</span>
-                        <span>{a}</span>
-                      </div>
-                    ))}
+                <div className="flex flex-col overflow-auto pr-1 custom-scrollbar">
+                  <div className="font-semibold text-base mb-2">{arch.title}</div>
+                  <div><span className="text-emerald-300 font-medium">Objective:</span> {arch.objective}</div>
+                  <div className="mt-2 space-y-1">
+                    <div className="text-emerald-300 font-medium">Lore:</div>
+                    <div className="opacity-80 text-[17px] leading-snug whitespace-pre-line">{arch.lore}</div>
                   </div>
-                </>
+                </div>
               ) : (
                 <div className="opacity-60">Select a character to see details.</div>
               )}
@@ -352,8 +353,8 @@ function FirstTimeFlow({ faction, archetype, pet, onFaction, onArchetype, onPet,
                   <button
                     key={p}
                     onClick={() => onPet(p)}
-                    className={`group px-3 pt-4 pb-4 rounded-2xl border transition text-sm flex flex-col items-center gap-3 relative overflow-hidden
-                      ${active ? 'bg-emerald-600/30 border-emerald-500/60 shadow-inner' : 'bg-white/5 border-white/10 hover:bg-white/10'}`}
+                    className={`group px-3 pt-4 pb-4 rounded-2xl border transition text-base flex flex-col items-center gap-3 relative overflow-hidden
+                        ${active ? 'bg-emerald-600/30 border-emerald-500/60 shadow-inner' : 'bg-white/5 border-white/10 hover:bg-white/10'}`}
                   >
                     <div className="w-full aspect-square rounded-xl bg-white/5 flex items-center justify-center overflow-hidden ring-1 ring-white/5 relative">
                       <img src={img} alt={p} className="absolute inset-0 w-full h-full object-cover drop-shadow" />
@@ -363,25 +364,17 @@ function FirstTimeFlow({ faction, archetype, pet, onFaction, onArchetype, onPet,
                 );
               })}
             </div>
-            <div className="mt-4 rounded-xl border border-white/10 bg-white/5 p-4 text-sm h-48 flex flex-col overflow-hidden">
+            <div className="mt-4 rounded-xl border border-white/10 bg-white/5 p-4 text-lg h-60 flex flex-col overflow-hidden">
               {petInfo ? (
-                <>
-                  <div className="font-semibold text-base mb-2">Role • <span className="text-emerald-300">{petInfo.role}</span></div>
-                  <div className="grid grid-cols-2 gap-x-6 gap-y-1 pr-1 text-[13px] leading-snug">
-                    {petInfo.specs.map(s => (
-                      <div key={s} className="flex items-start gap-2">
-                        <span className="text-emerald-400 mt-[4px]">●</span>
-                        <span>{s}</span>
-                      </div>
-                    ))}
-                    {petInfo.abilities.map(a => (
-                      <div key={a} className="flex items-start gap-2">
-                        <span className="text-sky-400 mt-[4px]">●</span>
-                        <span>{a}</span>
-                      </div>
-                    ))}
+                <div className="flex flex-col overflow-auto pr-1 custom-scrollbar">
+                  <div className="font-semibold text-base mb-2">Cyber Companion</div>
+                  <div><span className="text-emerald-300 font-medium">Role:</span> {petInfo.role}</div>
+                  <div className="mt-2"><span className="text-emerald-300 font-medium">Abilities:</span> {petInfo.abilities.join(', ')}</div>
+                  <div className="mt-2 space-y-1">
+                    <div className="text-emerald-300 font-medium">Lore:</div>
+                    <div className="opacity-80 text-[17px] leading-snug whitespace-pre-line">{petInfo.lore}</div>
                   </div>
-                </>
+                </div>
               ) : (
                 <div className="opacity-60">Select a pet to see details.</div>
               )}
@@ -546,24 +539,7 @@ function RightStartPanel({ className = '' }: { className?: string }) {
             </button>
           ))}
         </div>
-        <div className="mt-5 grid grid-cols-2 gap-4">
-          <div className="rounded-2xl border border-white/10 bg-white/5 p-4 flex flex-col gap-2">
-            <div className="text-[11px] uppercase tracking-wide opacity-60">Region</div>
-            <select className="w-full bg-[#141b24] border border-white/10 rounded-lg px-3 py-2 outline-none text-sm focus:border-emerald-400/60">
-              <option>Auto</option>
-              <option>NA-West</option>
-              <option>EU-Central</option>
-            </select>
-          </div>
-          <div className="rounded-2xl border border-white/10 bg-white/5 p-4 flex flex-col gap-2">
-            <div className="text-[11px] uppercase tracking-wide opacity-60">Map</div>
-            <select className="w-full bg-[#141b24] border border-white/10 rounded-lg px-3 py-2 outline-none text-sm focus:border-emerald-400/60">
-              <option>Last Used</option>
-              <option>Sahel Outposts</option>
-              <option>Mediterranean Rim</option>
-            </select>
-          </div>
-        </div>
+        {/* Region & Map selectors removed per request */}
       </div>
       <div className="mt-auto p-4">
         <Button className="w-full h-14 text-xl" onClick={startMatch} disabled={mode !== 'single'}>Play</Button>
