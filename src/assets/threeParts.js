@@ -6,7 +6,8 @@ function v(group, file, label) {
     const base = file.replace(/\.glb$/, '');
     const norm = base.toLowerCase().replace(/\./g, '_');
     const id = `${group.replace(/\s+/g, '').toLowerCase()}_${norm}`;
-    return { id, file: `/assets/3d/${file}`, label: label ?? base, group };
+    // store just filename; runtime loader will map to actual path
+    return { id, file, label: label ?? base, group };
 }
 export const PART_VARIANTS = [
     // Heads (if distinct from face morph targets)
@@ -71,7 +72,7 @@ export const PART_VARIANTS = [
     v('Hat', 'Hat.005.glb', 'Hat 5'),
     v('Hat', 'Hat.006.glb', 'Hat 6'),
     v('Hat', 'Hat.007.glb', 'Hat 7'),
-    v('Hat', 'Hat.007.glb', 'Pumpkin Head'), // placeholder if PumpkinHead should be separate
+    // Removed duplicate Hat.007 (Pumpkin Head placeholder) – add a distinct file (e.g. PumpkinHead.glb) later for separate variant.
     // Glasses
     v('Glasses', 'Glasses.001.glb', 'Glasses 1'),
     v('Glasses', 'Glasses.002.glb', 'Glasses 2'),

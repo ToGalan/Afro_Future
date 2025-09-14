@@ -78,7 +78,7 @@ export const PART_VARIANTS: PartVariant[] = [
   v('Hat','Hat.005.glb','Hat 5'),
   v('Hat','Hat.006.glb','Hat 6'),
   v('Hat','Hat.007.glb','Hat 7'),
-  v('Hat','Hat.007.glb','Pumpkin Head'), // placeholder if PumpkinHead should be separate
+  // Removed duplicate Hat.007 (Pumpkin Head placeholder) – add a distinct file (e.g. PumpkinHead.glb) later for separate variant.
   // Glasses
   v('Glasses','Glasses.001.glb','Glasses 1'),
   v('Glasses','Glasses.002.glb','Glasses 2'),

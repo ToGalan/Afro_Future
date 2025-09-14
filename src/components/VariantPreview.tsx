@@ -1,5 +1,5 @@
-import React, { Suspense, useEffect, useMemo, useRef } from 'react';
-import { Canvas, useThree } from '@react-three/fiber';
+import React, { Suspense, useEffect, useMemo, useRef, useState } from 'react';
+import { Canvas, useThree, useFrame } from '@react-three/fiber';
 import { useGLTF } from '@react-three/drei';
 import * as THREE from 'three';
 
@@ -12,17 +12,31 @@ import * as THREE from 'three';
  */
 export function VariantPreview({ file }: { file: string }) {
   const path = `/assets/3d/${file}`;
+  const [hover, setHover] = useState(false);
   return (
-    <div className="absolute inset-0">
-      <Canvas shadows={false} dpr={0.8} frameloop="demand" camera={{ position: [0.8, 0.8, 0.8], fov: 35 }}>
-        <ambientLight intensity={0.9} />
-        <directionalLight position={[1,2,2]} intensity={0.6} />
+    <div className="absolute inset-0" onMouseEnter={()=>setHover(true)} onMouseLeave={()=>setHover(false)}>
+      <Canvas shadows={false} dpr={0.9} camera={{ position: [0.9, 0.9, 0.9], fov: 34 }}>
+        <ambientLight intensity={0.85} />
+        <directionalLight position={[1.2,2,2]} intensity={0.65} />
         <Suspense fallback={null}>
-          <FitModel url={path} />
+          <Rotator speedBase={0.25} speedHover={0.9} hover={hover}>
+            <FitModel url={path} />
+          </Rotator>
         </Suspense>
       </Canvas>
     </div>
   );
+}
+
+function Rotator({ children, speedBase, speedHover, hover }: { children: React.ReactNode; speedBase: number; speedHover: number; hover: boolean }) {
+  const ref = useRef<THREE.Group>(null);
+  useFrame((_s, dt) => {
+    if (ref.current) {
+      const target = hover ? speedHover : speedBase;
+      ref.current.rotation.y += dt * target;
+    }
+  });
+  return <group ref={ref}>{children}</group>;
 }
 
 function FitModel({ url }: { url: string }) {
@@ -42,15 +56,16 @@ function FitModel({ url }: { url: string }) {
     bbox.getCenter(center);
     group.current.position.sub(center); // center it
     const maxDim = Math.max(size.x, size.y, size.z);
-    const scale = maxDim > 0 ? 1.2 / maxDim : 1;
+    // Slightly larger divisor to provide margin inside thumbnail
+    const scale = maxDim > 0 ? 1.35 / maxDim : 1;
     group.current.scale.setScalar(scale);
-    invalidate();
+    invalidate(); // initial frame
   }, [clone, invalidate]);
 
-  return <group ref={group}>{<primitive object={clone} />}</group>;
+    return <group ref={group}>{<primitive object={clone} />}</group>;
 }
 
+// Legacy single preview preload (now largely superseded by tiered scheduler)
 useGLTF.preload('/assets/3d/Hair.001.glb');
-// (Optional) Could add more preloads dynamically if needed.
 
 export default VariantPreview;

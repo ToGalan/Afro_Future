@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { GROUP_ORDER, getVariantsByGroup } from './assets/threeParts';
 import AvatarScene from './components/AvatarScene';
+import SnowflakeSkillTree from './components/SnowflakeSkillTree';
 import VariantPreview from './components/VariantPreview';
 import { Archetype, CharacterLoadout, Faction, PetType, uid, now } from './types/loadout';
 import { CharacterPortrait, FactionIcon, ImageAssets, getCharacterPortrait, PetIcon } from './assets/assetPaths';
@@ -28,6 +29,7 @@ const defaultLoadout: CharacterLoadout = {
 
 export default function App() {
   const [phase, setPhase] = useState<'boot' | 'onboard' | 'creating' | 'main'>('boot');
+  const [mainView, setMainView] = useState<'dashboard' | 'skills'>('dashboard');
   const [progress, setProgress] = useState(0);
   const [playerName] = useState('PlayerOne');
   const [accountLevel] = useState(1);
@@ -122,6 +124,8 @@ export default function App() {
         loadout={activeLoadout ?? defaultLoadout}
         onCustomize={() => setPhase('creating')}
         heroLocked={heroLocked}
+        view={mainView}
+        onChangeView={setMainView}
       />
     </GameViewport>
   );
@@ -393,23 +397,34 @@ function FirstTimeFlow({ faction, archetype, pet, onFaction, onArchetype, onPet,
   );
 }
 
-function MainMenu({ playerName, accountLevel, loadout, onCustomize, heroLocked }: { playerName: string; accountLevel: number; loadout: CharacterLoadout; onCustomize: () => void; heroLocked: boolean; }) {
+function MainMenu({ playerName, accountLevel, loadout, onCustomize, heroLocked, view, onChangeView }: { playerName: string; accountLevel: number; loadout: CharacterLoadout; onCustomize: () => void; heroLocked: boolean; view: 'dashboard' | 'skills'; onChangeView: (v: 'dashboard' | 'skills') => void; }) {
   return (
     <div className="h-full w-full bg-[#0f1218] text-gray-100 grid grid-rows-[64px_1fr]" style={{gridTemplateColumns:'minmax(260px,20%) 1fr minmax(260px,20%)'}}>
-      <TopNav />
+      <TopNav view={view} onChangeView={onChangeView} />
       <LeftPlayerPanel className="row-start-2" playerName={playerName} accountLevel={accountLevel} loadout={loadout} onCustomize={onCustomize} heroLocked={heroLocked} />
-      <CenterHub className="row-start-2" loadout={loadout} />
+      <CenterHub className="row-start-2" loadout={loadout} view={view} />
       <RightStartPanel className="row-start-2" />
     </div>
   );
 }
 
-function TopNav() {
+function TopNav({ view, onChangeView }: { view: 'dashboard' | 'skills'; onChangeView: (v: 'dashboard' | 'skills') => void }) {
   return (
     <div className="col-span-3 grid grid-cols-3 items-center px-6 bg-[#141924] border-b border-white/10 h-16">
-      <div />
+      <div className="flex items-center">
+        <button
+          onClick={() => onChangeView('dashboard')}
+          className="flex items-center gap-2 group"
+          title="Home"
+        >
+          <div className="w-9 h-9 rounded-lg bg-gradient-to-br from-emerald-500/30 to-sky-500/30 border border-white/10 flex items-center justify-center font-bold text-sm tracking-wide text-emerald-200 group-hover:from-emerald-500/50 group-hover:to-sky-500/50 transition">
+            AF
+          </div>
+          <span className="text-sm font-semibold tracking-wide bg-gradient-to-r from-emerald-300 to-sky-300 bg-clip-text text-transparent hidden xl:inline-block">Afro‑Future</span>
+        </button>
+      </div>
       <div className="flex items-center justify-center gap-8">
-        <button className="opacity-80 hover:opacity-100">Skills</button>
+        <button className={`opacity-80 hover:opacity-100 transition ${view==='skills' ? 'text-emerald-400' : ''}`} onClick={()=>onChangeView('skills')}>Skills</button>
         <button className="opacity-80 hover:opacity-100">Progress</button>
         <button className="opacity-80 hover:opacity-100">Store</button>
         <button className="opacity-80 hover:opacity-100">Help</button>
@@ -430,19 +445,41 @@ function LeftPlayerPanel({ className = '', playerName, accountLevel, loadout, on
     <aside className={`col-start-1 h-full ${className} bg-[#0f1218] border-r border-black/40 shadow-inner flex flex-col`}>      
       <div className="px-4 py-4 border-b border-white/10 flex flex-col items-center">
         {/* 240x240 Character Card */}
-        <div className="w-[240px] h-[240px] rounded-3xl border border-white/10 bg-white/5 overflow-hidden relative flex flex-col items-center justify-center p-4">
-          <div className="absolute inset-0 bg-gradient-to-br from-[#0b0e13]/80 via-transparent to-[#0b0e13]/50" />
-          <img className="relative z-10 w-32 h-32 object-contain drop-shadow-lg" src={loadout.portraitUrl} alt="character" />
-          <div className="relative z-10 mt-3 flex flex-col items-center text-center">
-            <div className="flex items-center gap-2">
-              <img src={FactionIcon[loadout.faction]} alt={loadout.faction} className="w-6 h-6 drop-shadow" />
-              <span className="font-semibold text-white text-lg leading-tight">{loadout.name}</span>
+        <div className="w-[240px] h-[260px] rounded-3xl border border-white/10 bg-[#12171f] overflow-hidden relative flex flex-col items-stretch">
+          {/* Large 3D avatar */}
+          <div className="absolute inset-0">
+            <AvatarScene
+              parts={(loadout as any).threeConfig?.parts}
+              colors={(loadout as any).threeConfig?.colors}
+              debugTint={false}
+              animPaused={false}
+              animSpeed={1}
+              rotateSpeed={0.08}
+              disableControls
+              cameraPosition={[1.65,1.4,2.15]}
+              cameraFov={33}
+              target={[0,1.05,0]}
+              autoFrame
+              frameMargin={0.14}
+            />
+            <div className="absolute inset-x-0 bottom-0 h-24 bg-gradient-to-t from-[#0b0e13] to-transparent" />
+          </div>
+          {/* Small portrait overlay */}
+          <img className="absolute top-2 right-2 w-16 h-16 object-cover rounded-xl border border-white/10 shadow-lg opacity-80" src={loadout.portraitUrl} alt="portrait" />
+          <div className="relative z-10 px-3 pb-3 pt-2 flex flex-col items-center text-center mt-auto">
+            <div className="flex items-center gap-2 mb-1">
+              <img src={FactionIcon[loadout.faction]} alt={loadout.faction} className="w-5 h-5 drop-shadow" />
+              <span className="font-semibold text-white text-sm leading-tight tracking-wide">{loadout.name}</span>
             </div>
-            <div className="mt-1 text-[11px] text-gray-300 flex items-center gap-2">
+            <div className="text-[10px] text-gray-300 flex items-center gap-2">
               <span className="px-2 py-0.5 rounded-full bg-white/5 border border-white/10 tracking-wide">Lv {loadout.level}</span>
               <span>{loadout.archetype === 'MALE' ? 'Male' : 'Female'}</span>
             </div>
           </div>
+          <span className="absolute top-2 left-2 px-2 py-1 rounded-lg bg-black/50 border border-white/10 text-[10px] tracking-wide flex items-center gap-1">
+            <img src={FactionIcon[loadout.faction]} alt="faction" className="w-3.5 h-3.5" />
+            {loadout.faction}
+          </span>
         </div>
         {/* Stat row under card */}
         <div className="mt-4 grid grid-cols-3 gap-3 w-full">
@@ -492,7 +529,16 @@ function LeftPlayerPanel({ className = '', playerName, accountLevel, loadout, on
   );
 }
 
-function CenterHub({ className = '', loadout }: { className?: string; loadout: CharacterLoadout }) {
+function CenterHub({ className = '', loadout, view }: { className?: string; loadout: CharacterLoadout; view: 'dashboard' | 'skills' }) {
+  if (view === 'skills') {
+    return (
+      <main className={`col-start-2 px-6 py-5 min-h-0 flex flex-col ${className}`}>
+        <div className="flex-1 rounded-3xl border border-white/10 bg-[#12171f] overflow-hidden">
+          <SnowflakeSkillTree initialLevel={loadout.level} />
+        </div>
+      </main>
+    );
+  }
   return (
     <main className={`col-start-2 px-6 py-5 min-h-0 flex flex-col gap-5 ${className}`}>
       <div className="relative" style={{flex:'0 0 30%'}}>
@@ -602,7 +648,14 @@ function CharacterCreator({ onSave, onBack, initial, locked }: { onSave: (payloa
           <div className="relative w-full h-full max-h-[55vh] rounded-[32px] bg-[#12171f] border border-white/10 shadow-2xl overflow-hidden flex items-center justify-center">
             <div className="absolute inset-0 bg-gradient-to-tr from-emerald-500/5 via-transparent to-sky-500/5 pointer-events-none" />
             <div className="absolute inset-0">
-              <AvatarScene parts={picked} colors={colorState} debugTint={false} animPaused={animPaused} animSpeed={animSpeed} />
+              <AvatarScene
+                parts={picked}
+                colors={colorState}
+                debugTint={false}
+                animPaused={animPaused}
+                animSpeed={animSpeed}
+                modelOffset={[0,-0.35,0]}
+              />
               <div className="absolute top-3 left-3 flex items-center gap-2 bg-black/40 backdrop-blur-sm px-3 py-2 rounded-xl border border-white/10 text-[11px]">
                 <button
                   onClick={() => setAnimPaused(p=>!p)}
@@ -641,44 +694,66 @@ function CharacterCreator({ onSave, onBack, initial, locked }: { onSave: (payloa
           {/* Single centered row of limited items (no scroll) */}
           <div className="flex-1 px-8 pt-6 pb-20 flex items-start justify-center w-full">
             {tab === 'Colors' ? (
-              <div className="grid grid-cols-3 gap-6 w-full max-w-4xl">
+              <div className="w-full max-w-5xl grid gap-6" style={{gridTemplateColumns:'repeat(auto-fit,minmax(180px,1fr))'}}>
                 {([
                   { key: 'primary', label: 'Primary' },
                   { key: 'secondary', label: 'Secondary' },
                   { key: 'skin', label: 'Skin Tone' },
                 ] as const).map(c => (
-                  <div key={c.key} className="rounded-2xl border border-white/10 bg-white/5 p-4 flex flex-col items-center gap-3">
-                    <div className="text-sm font-medium tracking-wide">{c.label}</div>
-                    <input
-                      type="color"
-                      value={colorState[c.key]}
-                      onChange={e => setColorState(s => ({ ...s, [c.key]: e.target.value }))}
-                      className="w-20 h-20 rounded-xl cursor-pointer border border-white/20 bg-[#12171f] p-1"
-                    />
-                    <div className="text-[11px] opacity-70 font-mono">{colorState[c.key]}</div>
+                  <div key={c.key} className="rounded-2xl border border-white/10 bg-gradient-to-br from-white/5 to-white/[0.02] p-5 flex flex-col items-center gap-4 relative overflow-hidden">
+                    <div className="absolute inset-0 pointer-events-none bg-[radial-gradient(circle_at_30%_30%,rgba(16,185,129,0.08),transparent_60%)]" />
+                    <div className="text-sm font-medium tracking-wide relative z-10">{c.label}</div>
+                    <div className="relative z-10 flex flex-col items-center gap-3">
+                      <input
+                        aria-label={c.label}
+                        type="color"
+                        value={colorState[c.key]}
+                        onChange={e => setColorState(s => ({ ...s, [c.key]: e.target.value }))}
+                        className="w-20 h-20 md:w-24 md:h-24 rounded-2xl cursor-pointer border border-white/20 bg-[#0f141a] p-1 shadow-inner shadow-black/40"
+                      />
+                      <div className="text-[11px] opacity-70 font-mono tracking-wide select-all">{colorState[c.key]}</div>
+                    </div>
                   </div>
                 ))}
+                {/* Quick palettes fits into grid as its own card */}
+                <div className="rounded-2xl border border-white/10 bg-white/5 p-4 flex flex-col gap-3">
+                  <div className="text-xs uppercase tracking-wider opacity-60">Quick Palettes</div>
+                  <div className="flex flex-wrap gap-2">
+                    {[
+                      { primary:'#00A37A', secondary:'#F5F5F5', skin:'#c58b66' },
+                      { primary:'#d97706', secondary:'#111827', skin:'#b0734e' },
+                      { primary:'#3b82f6', secondary:'#1e293b', skin:'#c58b66' },
+                      { primary:'#a855f7', secondary:'#0f172a', skin:'#d19d74' },
+                      { primary:'#ef4444', secondary:'#111827', skin:'#c58b66' },
+                      { primary:'#10b981', secondary:'#0f172a', skin:'#c58b66' },
+                    ].map((p,i) => (
+                      <button
+                        key={i}
+                        onClick={()=>setColorState(p)}
+                        className="group w-14 h-14 rounded-lg border border-white/10 overflow-hidden relative flex"
+                        title="Apply palette"
+                      >
+                        <div className="flex-1 h-full" style={{background:p.primary}} />
+                        <div className="flex-1 h-full" style={{background:p.secondary}} />
+                        <div className="flex-1 h-full" style={{background:p.skin}} />
+                        <div className="absolute inset-0 opacity-0 group-hover:opacity-100 transition text-[9px] font-semibold tracking-wide flex items-center justify-center bg-black/50 text-white">Use</div>
+                      </button>
+                    ))}
+                  </div>
+                </div>
               </div>
             ) : (
               <div className="flex gap-4 flex-wrap justify-center max-w-6xl">
-                {getVariantsByGroup(tab as any).map(v => {
+                {getVariantsByGroup(tab as any).map((v, idx) => {
                   const active = picked[tab] === v.id;
                   return (
-                    <button
+                    <VariantCard
                       key={v.id}
-                      onClick={() => selectVariant(tab, v.id)}
-                      title={v.label}
-                      className={`w-24 h-24 rounded-xl border transition flex flex-col items-center justify-center gap-1 px-1 text-[11px]
-                        ${active ? 'bg-emerald-600/30 border-emerald-500/60 text-emerald-200 shadow-inner' : 'bg-white/5 border-white/10 hover:bg-white/10 text-gray-300'}`}
-                    >
-                      <div className="relative w-full h-full flex items-center justify-center">
-                        <VariantPreview file={v.file} />
-                        <div className="absolute bottom-0 left-0 right-0 text-[9px] leading-tight px-1 py-0.5 bg-black/40 backdrop-blur-sm">
-                          <span className="truncate block max-w-full">{v.label}</span>
-                          {active && <span className="uppercase tracking-wide text-emerald-300">Selected</span>}
-                        </div>
-                      </div>
-                    </button>
+                      v={v}
+                      active={active}
+                      onSelect={() => selectVariant(tab, v.id)}
+                      eager={idx < 6}
+                    />
                   );
                 })}
                 {getVariantsByGroup(tab as any).length === 0 && (
@@ -700,6 +775,35 @@ function CharacterCreator({ onSave, onBack, initial, locked }: { onSave: (payloa
 
 function Card({ children }: { children: React.ReactNode }) {
   return <div className="rounded-2xl p-4 bg-white/5 border border-white/10 shadow">{children}</div>;
+}
+
+interface VariantCardProps { v: { id:string; file:string; label:string }; active: boolean; onSelect: () => void; eager?: boolean; }
+function VariantCard({ v, active, onSelect, eager }: VariantCardProps) {
+  const [hover, setHover] = React.useState(false);
+  // Only mount 3D when eager (first few) or hovered/active to reduce WebGL contexts.
+  const show3D = eager || hover || active;
+  return (
+    <button
+      onClick={onSelect}
+      title={v.label}
+      onMouseEnter={()=>setHover(true)}
+      onMouseLeave={()=>setHover(false)}
+      className={`w-24 h-24 rounded-xl border transition flex flex-col items-center justify-center gap-1 px-1 text-[11px]
+        ${active ? 'bg-emerald-600/30 border-emerald-500/60 text-emerald-200 shadow-inner' : 'bg-white/5 border-white/10 hover:bg-white/10 text-gray-300'}`}
+    >
+      <div className="relative w-full h-full flex items-center justify-center">
+        {show3D ? <VariantPreview file={v.file} /> : (
+          <div className="w-10 h-10 rounded-lg bg-gradient-to-br from-white/10 to-white/5 flex items-center justify-center text-[10px] opacity-60">
+            GLB
+          </div>
+        )}
+        <div className="absolute bottom-0 left-0 right-0 text-[9px] leading-tight px-1 py-0.5 bg-black/40 backdrop-blur-sm">
+          <span className="truncate block max-w-full">{v.label}</span>
+          {active && <span className="uppercase tracking-wide text-emerald-300">Selected</span>}
+        </div>
+      </div>
+    </button>
+  );
 }
 
 function Button({ children, onClick, variant = 'solid', size = 'md', className = '', disabled }: { children: React.ReactNode; onClick?: () => void; variant?: 'solid' | 'ghost'; size?: 'sm' | 'md' | 'lg'; className?: string; disabled?: boolean; }) {

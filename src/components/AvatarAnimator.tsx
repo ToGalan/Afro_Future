@@ -103,6 +103,7 @@ export const AvatarAnimator: React.FC<AvatarAnimatorProps> = ({ children, speed 
 
 // Preload helper (optional call from app root)
 export function preloadAvatarAnimation() {
+  // Retained for any callers; main tiered scheduler already preloads these.
   useFBX.preload(IDLE_PATH);
   useFBX.preload(RIG_PATH);
 }

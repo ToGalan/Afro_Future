@@ -40,6 +40,7 @@ export function AvatarPartsLoader({ parts }: AvatarPartsLoaderProps) {
   );
 }
 
+// Legacy direct preload kept (harmless). Centralized tiered preloads now in assets/preloadAssets.ts
 useGLTF.preload('/assets/3d/NakedFullBody.glb');
 
 export function BaseBody() {

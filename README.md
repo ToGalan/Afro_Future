@@ -45,6 +45,27 @@ npm run preview
 - Implement real customization options & live stat derivation
 - Add tests (Vitest + RTL)
 
+## 3D Asset Preloading
+The app now performs tiered background preloading for GLTF / FBX customization assets via `schedulePreloads()` in `src/assets/preloadAssets.ts`.
+
+Tiers:
+1. Tier 1 (immediate): Base body + a couple of core variants (Heads/Faces/Eyes) + Idle animation.
+2. Tier 2 (idle soon): Broader early customization groups (Head/Face/Eyes/Eyebrows/Nose/Hair subset).
+3. Tier 3 (idle later): Long‑tail cosmetics (Hats, Glasses, Facial Hair, Earrings, Clothing, Accessories).
+
+Implementation details:
+- Uses `useGLTF.preload` / `useFBX.preload` which leverage three.js caching.
+- Batches are chunked (4–6 files) and scheduled with `requestIdleCallback` (fallback to `setTimeout`).
+- Safe to add/remove files; just edit tiers or source PART_VARIANTS in `threeParts.ts`.
+- Legacy single preloads remain in a few components (harmless) but the centralized scheduler covers them.
+
+Disable or tweak:
+- Comment out the `schedulePreloads()` call wrapper in `src/main.tsx` if needed.
+- Adjust batch sizes or timeouts in `preloadAssets.ts` for different network constraints.
+
+Debug:
+- In dev tools: `window.__AF_PRELOAD_INFO__` exposes tier arrays and the scheduler.
+
 ## Tailwind Notes
 The `@tailwind` directives in `src/styles.css` are processed by Vite + PostCSS. Editor warnings about `@tailwind` / `@apply` disappear once dependencies are installed.
 
