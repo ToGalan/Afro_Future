@@ -76,18 +76,29 @@ We previously created more WebGL canvases than the browser liked. Virtualization
 ---
 _Last updated: 2025-09-14_
 
-## 8. Update (Listeners + Shared Preview Canvas)
-Implemented:
-- Added global WebGL context store (zustand) tracking loss / restore counts.
-- Attached `webglcontextlost` / `webglcontextrestored` listeners in `AvatarScene` main canvas.
-- Added floating banner component (`WebGLContextBanner`) to surface state to user/developer.
-- Introduced optional shared preview canvas provider (`SharedVariantPreviewProvider`) so only one preview WebGL context renders all variant hover/active thumbnails (further reducing context pressure vs multiple conditional canvases).
+## 8. Update (2025-09-14 Cleanup)
+Earlier we experimented with:
+- A zustand webgl store + floating `WebGLContextBanner`.
+- A `SharedVariantPreviewProvider` single overlay canvas.
 
-Benefits:
-- Immediate visibility when context loss occurs (with counts for QA reports).
-- Fewer total contexts in typical creator flow (main canvas + 1 shared preview canvas) instead of N hover canvases.
+Current State (Cleanup Applied):
+- Removed banner + store + shared overlay provider to simplify code.
+- Reverted to on-demand per-card preview canvases (still conditional mount: eager first few, hover/active others).
+- Retained auto-framing + minimal scene lighting.
 
-Next Candidate Improvements:
-- Expose a developer toggle to disable the shared preview if debugging individual canvas issues.
-- Integrate performance timing (first restore duration, average restore) into store for advanced telemetry.
-- Persist loss stats across reload (sessionStorage) for longer QA sessions.
+Why Removed:
+- Prototype UI noise: banner distracted from core gameplay panels.
+- Simplicity: fewer abstraction layers while iterating quickly.
+- Current card count & conditional mounting keep active contexts low enough (< ~8) so limits aren't hit.
+
+If Re‑introducing Later:
+- Re-add a lightweight telemetry hook instead of a global store (e.g. event emitter feeding dev console panel).
+- Prefer a single shared canvas only if horizontal lists exceed ~40 simultaneously visible preview slots.
+
+Optional Future Task List:
+- [ ] Add a feature flag (env var) to enable shared preview mode for QA
+- [ ] Integrate context loss metrics into a hidden debug menu (Ctrl+Shift+D)
+- [ ] Add thumbnail raster cache fallback for low-power devices
+
+---
+_Status: Banner & shared preview removed in current build._

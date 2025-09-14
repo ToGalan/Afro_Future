@@ -4,8 +4,6 @@ import { GROUP_ORDER, getVariantsByGroup } from './assets/threeParts';
 import AvatarScene from './components/AvatarScene';
 import SnowflakeSkillTree from './components/SnowflakeSkillTree';
 import VariantPreview from './components/VariantPreview';
-import { SharedVariantPreviewProvider, useSharedPreview } from './components/SharedVariantPreviewProvider';
-import WebGLContextBanner from './components/WebGLContextBanner';
 import { Archetype, CharacterLoadout, Faction, PetType, uid, now } from './types/loadout';
 import { CharacterPortrait, FactionIcon, ImageAssets, getCharacterPortrait, PetIcon } from './assets/assetPaths';
 
@@ -32,7 +30,7 @@ const defaultLoadout: CharacterLoadout = {
 
 export default function App() {
   const [phase, setPhase] = useState<'boot' | 'onboard' | 'creating' | 'main'>('boot');
-  const [mainView, setMainView] = useState<'dashboard' | 'skills'>('dashboard');
+  const [mainView, setMainView] = useState<'dashboard' | 'skills' | 'store' | 'help'>('dashboard');
   const [progress, setProgress] = useState(0);
   const [playerName] = useState('PlayerOne');
   const [accountLevel] = useState(1);
@@ -400,10 +398,9 @@ function FirstTimeFlow({ faction, archetype, pet, onFaction, onArchetype, onPet,
   );
 }
 
-function MainMenu({ playerName, accountLevel, loadout, onCustomize, heroLocked, view, onChangeView }: { playerName: string; accountLevel: number; loadout: CharacterLoadout; onCustomize: () => void; heroLocked: boolean; view: 'dashboard' | 'skills'; onChangeView: (v: 'dashboard' | 'skills') => void; }) {
+function MainMenu({ playerName, accountLevel, loadout, onCustomize, heroLocked, view, onChangeView }: { playerName: string; accountLevel: number; loadout: CharacterLoadout; onCustomize: () => void; heroLocked: boolean; view: 'dashboard' | 'skills' | 'store' | 'help'; onChangeView: (v: 'dashboard' | 'skills' | 'store' | 'help') => void; }) {
   return (
     <div className="h-full w-full bg-[#0f1218] text-gray-100 grid grid-rows-[64px_1fr]" style={{gridTemplateColumns:'minmax(260px,20%) 1fr minmax(260px,20%)'}}>
-      <WebGLContextBanner />
       <TopNav view={view} onChangeView={onChangeView} />
       <LeftPlayerPanel className="row-start-2" playerName={playerName} accountLevel={accountLevel} loadout={loadout} onCustomize={onCustomize} heroLocked={heroLocked} />
       <CenterHub className="row-start-2" loadout={loadout} view={view} />
@@ -412,7 +409,7 @@ function MainMenu({ playerName, accountLevel, loadout, onCustomize, heroLocked, 
   );
 }
 
-function TopNav({ view, onChangeView }: { view: 'dashboard' | 'skills'; onChangeView: (v: 'dashboard' | 'skills') => void }) {
+function TopNav({ view, onChangeView }: { view: 'dashboard' | 'skills' | 'store' | 'help'; onChangeView: (v: 'dashboard' | 'skills' | 'store' | 'help') => void }) {
   return (
     <div className="col-span-3 grid grid-cols-3 items-center px-6 bg-[#141924] border-b border-white/10 h-16">
       <div className="flex items-center">
@@ -428,10 +425,10 @@ function TopNav({ view, onChangeView }: { view: 'dashboard' | 'skills'; onChange
         </button>
       </div>
       <div className="flex items-center justify-center gap-8">
+        <button className={`opacity-80 hover:opacity-100 transition ${view==='dashboard' ? 'text-emerald-400' : ''}`} onClick={()=>onChangeView('dashboard')}>Dashboard</button>
         <button className={`opacity-80 hover:opacity-100 transition ${view==='skills' ? 'text-emerald-400' : ''}`} onClick={()=>onChangeView('skills')}>Skills</button>
-        <button className="opacity-80 hover:opacity-100">Progress</button>
-        <button className="opacity-80 hover:opacity-100">Store</button>
-        <button className="opacity-80 hover:opacity-100">Help</button>
+        <button className={`opacity-80 hover:opacity-100 transition ${view==='store' ? 'text-emerald-400' : ''}`} onClick={()=>onChangeView('store')}>Store</button>
+        <button className={`opacity-80 hover:opacity-100 transition ${view==='help' ? 'text-emerald-400' : ''}`} onClick={()=>onChangeView('help')}>Help</button>
       </div>
       <div className="ml-auto flex items-center justify-end gap-4">
         <Chip>1,458 <span className="opacity-70">shards</span></Chip>
@@ -455,6 +452,8 @@ function LeftPlayerPanel({ className = '', playerName, accountLevel, loadout, on
   const primaryBranch = useSkillStore(s=>s.primaryBranch);
   const primaryType = useSkillStore(s=>s.primaryType);
   const traitTags = useSkillStore(s=>s.traitTags);
+  const respec = useSkillStore(s=>s.respec);
+  const unlockOrder = useSkillStore(s=>s.unlockOrder);
   const pointsLeft = availablePoints(useSkillStore.getState());
   // Derived HP / EP formulas (placeholder: base + scaling)
   const baseHP = 100; const hpPerLevel = 12; const hpPerDefense = 4;
@@ -538,13 +537,20 @@ function LeftPlayerPanel({ className = '', playerName, accountLevel, loadout, on
           <Button className="w-[160px]" onClick={onCustomize}>Customize</Button>
         </div>
         {/* Traits summary */}
-        <div className="mt-4 w-full rounded-2xl border border-white/10 bg-white/5 p-3 text-[10px] flex flex-col gap-1">
-          <div className="flex justify-between"><span className="opacity-70">Primary Path</span><span className="font-semibold">{primaryBranch || '—'}</span></div>
-          <div className="flex justify-between"><span className="opacity-70">Primary Type</span><span className="font-semibold">{primaryType || '—'}</span></div>
+        <div className="mt-4 w-full rounded-2xl border border-white/10 bg-gradient-to-br from-white/5 to-white/[0.02] p-3 text-[10px] flex flex-col gap-1">
+          <div className="flex justify-between"><span className="opacity-70">Primary Path</span><span className="font-semibold text-emerald-300">{primaryBranch || '—'}</span></div>
+          <div className="flex justify-between"><span className="opacity-70">Primary Type</span><span className="font-semibold text-sky-300">{primaryType || '—'}</span></div>
           <div className="mt-1 flex flex-wrap gap-1">
-            {traitTags.length ? traitTags.map(t => <span key={t} className="px-2 py-0.5 rounded-full bg-white/10 border border-white/10 text-[9px] tracking-wide">{t}</span>) : (
+            {traitTags.length ? traitTags.map(t => <TraitTag key={t} tag={t} />) : (
               <span className="opacity-50">Earn traits by investing tokens</span>
             )}
+          </div>
+          <div className="mt-2 flex justify-end">
+            <button
+              disabled={!unlockOrder.length}
+              onClick={()=>{ if(!unlockOrder.length) return; if(confirm('Respec will refund all spent tokens. Proceed?')) respec(); }}
+              className="px-2.5 py-1 rounded-lg border text-[10px] tracking-wide disabled:opacity-40 disabled:cursor-not-allowed bg-white/5 border-white/10 hover:bg-white/10"
+            >Respec</button>
           </div>
         </div>
       </div>
@@ -579,12 +585,65 @@ function LeftPlayerPanel({ className = '', playerName, accountLevel, loadout, on
   );
 }
 
-function CenterHub({ className = '', loadout, view }: { className?: string; loadout: CharacterLoadout; view: 'dashboard' | 'skills' }) {
+function CenterHub({ className = '', loadout, view }: { className?: string; loadout: CharacterLoadout; view: 'dashboard' | 'skills' | 'store' | 'help' }) {
   if (view === 'skills') {
     return (
       <main className={`col-start-2 px-6 py-5 min-h-0 flex flex-col ${className}`}>
         <div className="flex-1 rounded-3xl border border-white/10 bg-[#12171f] overflow-hidden">
           <SnowflakeSkillTree initialLevel={loadout.level} />
+        </div>
+      </main>
+    );
+  }
+  if (view === 'store') {
+    return (
+      <main className={`col-start-2 px-6 py-5 min-h-0 flex flex-col ${className}`}>
+        <div className="flex-1 rounded-3xl border border-white/10 bg-[#12171f] overflow-hidden flex flex-col">
+          <div className="p-4 border-b border-white/10 flex items-center justify-between">
+            <div className="text-lg font-semibold">In-Game Store</div>
+            <span className="text-xs opacity-60">Embedded</span>
+          </div>
+          <iframe title="Store" src="https://store.afro-future.app" className="flex-1 w-full h-full" loading="lazy" referrerPolicy="no-referrer" />
+        </div>
+      </main>
+    );
+  }
+  if (view === 'help') {
+    return (
+      <main className={`col-start-2 px-6 py-5 min-h-0 flex flex-col ${className}`}>
+        <div className="flex-1 rounded-3xl border border-white/10 bg-[#12171f] overflow-auto p-6 space-y-6 custom-scrollbar">
+          <section>
+            <h2 className="text-xl font-semibold mb-2">Help & Guide</h2>
+            <p className="text-sm opacity-80 leading-relaxed">Welcome to Afro‑Future. This guide summarizes core panels and how to progress your character.</p>
+          </section>
+          <section>
+            <h3 className="font-semibold mb-1">Character Customization</h3>
+            <p className="text-sm opacity-80">Use the Creator to choose body parts, colors, and cosmetics. Scroll through horizontal variant rows and click to select. Saved configurations appear in your dashboard avatar.</p>
+          </section>
+          <section>
+            <h3 className="font-semibold mb-1">Skills Snowflake</h3>
+            <p className="text-sm opacity-80">Spend skill tokens to unlock connected nodes. Investing 4+ nodes in a branch grants a Trait tag (e.g., Aggressor, Commander). Traits update sidebar stats in real time.</p>
+          </section>
+          <section>
+            <h3 className="font-semibold mb-1">Tokens & Levels</h3>
+            <p className="text-sm opacity-80">Skill tokens are limited by your level. Every 5 levels you gain a bonus pool. Hover potential nodes to plan your path; respec functionality will arrive later.</p>
+          </section>
+          <section>
+            <h3 className="font-semibold mb-1">Store</h3>
+            <p className="text-sm opacity-80">The embedded store (beta) lets you preview upcoming cosmetic sets. Purchases are disabled in this prototype build.</p>
+          </section>
+          <section>
+            <h3 className="font-semibold mb-1">Performance Tips</h3>
+            <ul className="list-disc pl-5 text-sm opacity-80 space-y-1">
+              <li>Limit background tabs with WebGL apps to keep GPU memory stable.</li>
+              <li>Close the skill tree when not in use to reduce layout work.</li>
+              <li>Use palettes for rapid color scheme iteration.</li>
+            </ul>
+          </section>
+          <section>
+            <h3 className="font-semibold mb-1">Need More Help?</h3>
+            <p className="text-sm opacity-80">Future versions will include an interactive tutorial and glossary. For now, explore freely—this prototype auto-saves your choices.</p>
+          </section>
         </div>
       </main>
     );
@@ -793,21 +852,21 @@ function CharacterCreator({ onSave, onBack, initial, locked }: { onSave: (payloa
                 </div>
               </div>
             ) : (
-              <div className="flex gap-4 overflow-x-auto no-scrollbar py-2 px-1 items-stretch">
-                <SharedVariantPreviewProvider>
-                  {getVariantsByGroup(tab as any).map((v, idx) => {
-                    const active = picked[tab] === v.id;
-                    return (
-                      <VariantCard
-                        key={v.id}
-                        v={v}
-                        active={active}
-                        onSelect={() => selectVariant(tab, v.id)}
-                        eager={idx < 6}
-                      />
-                    );
-                  })}
-                </SharedVariantPreviewProvider>
+              <div className="relative flex gap-4 overflow-x-auto no-scrollbar py-2 px-1 items-stretch scroll-smooth snap-x snap-mandatory group" id="variant-row">
+                <div className="pointer-events-none absolute left-0 top-0 bottom-0 w-8 bg-gradient-to-r from-[#12171f] to-transparent opacity-70 group-hover:opacity-90" />
+                <div className="pointer-events-none absolute right-0 top-0 bottom-0 w-8 bg-gradient-to-l from-[#12171f] to-transparent opacity-70 group-hover:opacity-90" />
+                {getVariantsByGroup(tab as any).map((v, idx) => {
+                  const active = picked[tab] === v.id;
+                  return (
+                    <VariantCard
+                      key={v.id}
+                      v={v}
+                      active={active}
+                      onSelect={() => selectVariant(tab, v.id)}
+                      eager={idx < 6}
+                    />
+                  );
+                })}
                 {getVariantsByGroup(tab as any).length === 0 && (
                   <div className="text-xs opacity-50 px-4 py-6">No variants for {tab}</div>
                 )}
@@ -834,34 +893,18 @@ function VariantCard({ v, active, onSelect, eager }: VariantCardProps) {
   const [hover, setHover] = React.useState(false);
   // Only mount 3D when eager (first few) or hovered/active to reduce WebGL contexts.
   const show3D = eager || hover || active;
-  const shared = true; // feature flag: shared preview canvas enabled
-  const ref = React.useRef<HTMLDivElement>(null);
-  const sharedApi = (() => { try { return useSharedPreview(); } catch { return null; } })();
   return (
     <button
       onClick={onSelect}
       title={v.label}
-      onMouseEnter={() => {
-        setHover(true);
-        if (shared && sharedApi && ref.current) sharedApi.setCardPreview(v.file, ref.current, active);
-      }}
-      onMouseLeave={() => {
-        setHover(false);
-        if (shared && sharedApi) sharedApi.clearIfTransient(v.file);
-      }}
-      className={`w-24 h-24 rounded-xl border transition flex flex-col items-center justify-center gap-1 px-1 text-[11px]
-        ${active ? 'bg-emerald-600/30 border-emerald-500/60 text-emerald-200 shadow-inner' : 'bg-white/5 border-white/10 hover:bg-white/10 text-gray-300'}`}
+      onMouseEnter={()=>setHover(true)}
+      onMouseLeave={()=>setHover(false)}
+      className={`w-24 h-24 rounded-xl border transition flex flex-col items-center justify-center gap-1 px-1 text-[11px] snap-start
+        ${active ? 'bg-emerald-600/30 border-emerald-500/60 text-emerald-200 shadow-inner ring-2 ring-emerald-400/50' : 'bg-white/5 border-white/10 hover:bg-white/10 text-gray-300'}`}
     >
-      <div ref={ref} data-variant-card data-file={v.file} className="relative w-full h-full flex items-center justify-center">
-        {!shared && show3D ? <VariantPreview file={v.file} /> : (!shared && (
-          <div className="w-10 h-10 rounded-lg bg-gradient-to-br from-white/10 to-white/5 flex items-center justify-center text-[10px] opacity-60">
-            GLB
-          </div>
-        ))}
-        {shared && (
-          <div className="w-10 h-10 rounded-lg bg-gradient-to-br from-white/10 to-white/5 flex items-center justify-center text-[10px] opacity-50">
-            GLB
-          </div>
+      <div className="relative w-full h-full flex items-center justify-center">
+        {show3D ? <VariantPreview file={v.file} /> : (
+          <div className="w-10 h-10 rounded-lg bg-gradient-to-br from-white/10 to-white/5 flex items-center justify-center text-[10px] opacity-60">GLB</div>
         )}
         <div className="absolute bottom-0 left-0 right-0 text-[9px] leading-tight px-1 py-0.5 bg-black/40 backdrop-blur-sm">
           <span className="truncate block max-w-full">{v.label}</span>
@@ -926,6 +969,24 @@ function FactionPill({ faction }: { faction: Faction }) {
       <img src={FactionIcon[faction]} alt={faction} className="w-3.5 h-3.5" />
       {faction}
     </span>
+  );
+}
+
+// TraitTag with icon/color mapping
+const TRAIT_META: Record<string,{ icon: string; colors: string }>= {
+  'Commander': { icon: '🛡️', colors: 'from-amber-500/30 to-amber-700/30 text-amber-200 border-amber-400/30' },
+  'Terraformer': { icon: '🌍', colors: 'from-green-500/30 to-emerald-700/30 text-emerald-200 border-emerald-400/30' },
+  'Technocrat': { icon: '🧪', colors: 'from-fuchsia-500/30 to-purple-700/30 text-fuchsia-200 border-fuchsia-400/30' },
+  'Trader': { icon: '💱', colors: 'from-cyan-500/30 to-sky-700/30 text-cyan-200 border-cyan-400/30' },
+  'Raider': { icon: '⚔️', colors: 'from-rose-500/30 to-red-700/30 text-rose-200 border-rose-400/30' },
+  'Aggressor': { icon: '🔥', colors: 'from-orange-500/30 to-red-700/30 text-orange-200 border-orange-400/30' },
+  'Support Specialist': { icon: '✚', colors: 'from-emerald-500/30 to-teal-700/30 text-emerald-200 border-emerald-400/30' },
+  'Skirmisher': { icon: '🏹', colors: 'from-indigo-500/30 to-blue-700/30 text-indigo-200 border-indigo-400/30' },
+};
+function TraitTag({ tag }: { tag: string }) {
+  const meta = TRAIT_META[tag] || { icon: '✦', colors: 'from-white/10 to-white/5 text-gray-200 border-white/10' };
+  return (
+    <span className={`px-2 py-0.5 rounded-md border text-[9px] tracking-wide bg-gradient-to-br ${meta.colors} flex items-center gap-1`}>{meta.icon}<span>{tag}</span></span>
   );
 }
 

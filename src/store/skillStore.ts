@@ -8,6 +8,8 @@ export interface SkillState {
   basePoints: number; // starting pool (e.g. 12)
   bonusPer5: number;  // bonus every 5 levels
   unlock: (id: string) => void;
+  respec: () => void;
+  unlockOrder: string[]; // chronological order (excluding root)
   setLevel: (lvl: number) => void;
   reset: () => void;
   // Derived combat-style stats
@@ -39,6 +41,7 @@ export const useSkillStore = create<SkillState>((set, get) => ({
   spent: 0,
   basePoints: 12,
   bonusPer5: 3,
+  unlockOrder: [],
   attack: 0,
   defense: 0,
   utility: 0,
@@ -49,12 +52,21 @@ export const useSkillStore = create<SkillState>((set, get) => ({
     const avail = availablePoints(state);
     if (avail <= 0) return state;
     const nextUnlocked = [...state.unlocked, id];
+    const nextOrder = [...state.unlockOrder, id];
     const stats = deriveStats(nextUnlocked);
     const traits = deriveTraits(nextUnlocked, TREE);
-    return { unlocked: nextUnlocked, spent: state.spent + 1, ...stats, primaryBranch: traits.topBranch, primaryType: traits.topType, traitTags: traits.tags };
+    return { unlocked: nextUnlocked, unlockOrder: nextOrder, spent: state.spent + 1, ...stats, primaryBranch: traits.topBranch, primaryType: traits.topType, traitTags: traits.tags };
+  }),
+  respec: () => set(state => {
+    if (!state.unlockOrder.length) return state;
+    // Keep root only; optionally keep level and basePoints untouched.
+    const resetUnlocked = ['root'];
+    const stats = deriveStats(resetUnlocked);
+    const traits = deriveTraits(resetUnlocked, TREE);
+    return { unlocked: resetUnlocked, unlockOrder: [], spent: 0, ...stats, primaryBranch: traits.topBranch, primaryType: traits.topType, traitTags: traits.tags };
   }),
   setLevel: (lvl: number) => set(state => ({ level: Math.max(1,lvl) })),
-  reset: () => set({ level: 1, unlocked: ['root'], spent: 0, attack:0, defense:0, utility:0, traitTags: [], primaryBranch: undefined, primaryType: undefined }),
+  reset: () => set({ level: 1, unlocked: ['root'], unlockOrder: [], spent: 0, attack:0, defense:0, utility:0, traitTags: [], primaryBranch: undefined, primaryType: undefined }),
 }));
 
 export function availablePoints(state: SkillState) {

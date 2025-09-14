@@ -67,26 +67,28 @@ export default function SnowflakeSkillTree({ initialLevel = 1, onClose }: Snowfl
   function links(){ const arr:{from:PositionedNode;to:PositionedNode; faction?:string; counters?:string[]}[]=[]; laid.forEach(n=>{ if(!n.requires) return; n.requires.forEach(r=>{ const from = laid.find(x=>x.id===r); if(from) arr.push({from,to:n,faction:n.faction,counters:n.counters}); }); }); return arr; }
 
   const traits = deriveTraits(unlocked, nodes);
+  const [hoverId, setHoverId] = useState<string | null>(null);
+  // Determine which branch cores are next unlockable (tier1 core nodes that are locked but requirements satisfied)
+  const nextCores = useMemo(()=>{
+    return laid.filter(n=> n.id.endsWith('_core') && !unlocked.includes(n.id) && canUnlock(n.id)).map(n=>n.id);
+  },[laid, unlocked]);
+  // Compute projected stats / traits when hovering an unlockable node
+  const hoverProjection = useMemo(()=>{
+    if(!hoverId) return null; if(!canUnlock(hoverId)) return null; const st = useSkillStore.getState(); const nextUnlocked = [...st.unlocked, hoverId];
+    // derive stats like in store
+    let attack=0, defense=0, utility=0;
+    nextUnlocked.forEach(id=>{ if (id.includes('combat') || id.includes('weapon')) attack += 2; if (id.includes('defense') || id.includes('shield')) defense += 2; if (id.includes('support') || id.includes('leadership') || id.includes('mobility')) utility += 2; if (id.includes('terraform') || id.includes('technologist')) utility += 1; });
+    const traitProj = deriveTraits(nextUnlocked, nodes);
+    return { attack, defense, utility, traitProj };
+  },[hoverId, nodes, canUnlock]);
   const showDetail = scale >= 1.05;
   const pointsLeft = availablePoints(useSkillStore.getState());
 
   return (
     <div className="w-full h-full bg-[#0f1218] text-gray-100 p-4 overflow-hidden relative">
       <div className="flex items-center justify-between mb-3">
-        <div className="flex items-center gap-4">
-          <div className="text-xl font-semibold">Skill Snowflake</div>
-          <div className="text-sm px-2 py-1 rounded bg-white/5 border border-white/10">Zoom Locked ≥ 100%</div>
-        </div>
-        <div className="flex items-center gap-2">
-          <button className="px-2 py-1 rounded bg-white/10 border border-white/10 disabled:opacity-40" disabled={scale<=1.0} onClick={()=>setScale(s=>clamp(s*0.9,1.0,2.5))}>−</button>
-          <div className="w-16 text-center text-sm opacity-80">{Math.round(scale*100)}%</div>
-          <button className="px-2 py-1 rounded bg-white/10 border border-white/10" onClick={()=>setScale(s=>clamp(s*1.1,1.0,2.5))}>+</button>
-          <div className="text-sm opacity-80 ml-2">Lvl</div>
-          <button className="px-2 rounded bg-white/10 border border-white/10" onClick={()=>setLevelGlobal(Math.max(1,level-1))}>−</button>
-          <div className="w-8 text-center text-sm opacity-80">{level}</div>
-          <button className="px-2 rounded bg-white/10 border border-white/10" onClick={()=>setLevelGlobal(level+1)}>+</button>
-          <div className="text-sm opacity-80 ml-4">Spent: {spent} • Points Left: {pointsLeft}</div>
-        </div>
+        <div className="text-xl font-semibold">Skill Snowflake</div>
+        <div className="text-sm opacity-80">Spent: {spent} • Points Left: {pointsLeft}</div>
       </div>
       <div className="grid grid-cols-12 gap-4">
         <div className="col-span-9">
@@ -107,10 +109,14 @@ export default function SnowflakeSkillTree({ initialLevel = 1, onClose }: Snowfl
                 ))}
                 {laid.map(n=>{
                   const color = branchColor(n.type); const isUnlocked = unlocked.includes(n.id); const r = n.id==='root'?22: n.tier===1?14:11;
+                  const isCoreHighlight = nextCores.includes(n.id);
                   return (
-                    <g key={n.id} transform={`translate(${n.x},${n.y})`}>
+                    <g key={n.id} transform={`translate(${n.x},${n.y})`} onMouseEnter={()=>setHoverId(n.id)} onMouseLeave={()=>setHoverId(h=> h===n.id? null : h)}>
                       <circle r={r+5} fill="#0b1220" stroke="#1f2937" strokeWidth={2} />
-                      <circle r={r} fill={isUnlocked?color:'#111827'} stroke={isUnlocked?color:'#374151'} strokeWidth={isUnlocked?3:2} filter={isUnlocked? 'url(#glow)': undefined} onClick={()=>onUnlock(n.id)} style={{ cursor: canUnlock(n.id)?'pointer':'not-allowed' }} />
+                      <circle r={r} fill={isUnlocked?color:'#111827'} stroke={isUnlocked?color:'#374151'} strokeWidth={isUnlocked?3:2} filter={isUnlocked? 'url(#glow)': undefined} onClick={()=>onUnlock(n.id)} style={{ cursor: canUnlock(n.id)?'pointer':'not-allowed', boxShadow: isCoreHighlight? '0 0 0 4px rgba(16,185,129,0.6)': undefined }} />
+                      {isCoreHighlight && !isUnlocked && (
+                        <circle r={r+6} fill="none" stroke="rgba(16,185,129,0.55)" strokeWidth={2} strokeDasharray="4 4" />
+                      )}
                       {showDetail ? (
                         <>
                           <text y={-r-8} textAnchor="middle" fontSize={11} fill="#e5e7eb">{n.label}</text>
@@ -127,6 +133,20 @@ export default function SnowflakeSkillTree({ initialLevel = 1, onClose }: Snowfl
                 );})}
               </g>
             </svg>
+            {hoverProjection && hoverId && (
+              <div className="absolute top-2 left-2 w-64 rounded-xl border border-emerald-400/30 bg-[#0f1218]/95 backdrop-blur p-3 text-xs shadow-xl">
+                <div className="font-semibold text-emerald-300 mb-1 truncate">Preview: {laid.find(n=>n.id===hoverId)?.label}</div>
+                <div className="grid grid-cols-3 gap-2 mb-2">
+                  <div className="flex flex-col items-start"><span className="opacity-60">Atk</span><span className="font-semibold text-emerald-200">{hoverProjection.attack}</span></div>
+                  <div className="flex flex-col items-start"><span className="opacity-60">Def</span><span className="font-semibold text-emerald-200">{hoverProjection.defense}</span></div>
+                  <div className="flex flex-col items-start"><span className="opacity-60">Util</span><span className="font-semibold text-emerald-200">{hoverProjection.utility}</span></div>
+                </div>
+                <div className="flex flex-wrap gap-1 mb-2">
+                  {hoverProjection.traitProj.tags.length ? hoverProjection.traitProj.tags.map(t=> <span key={t} className="px-1.5 py-0.5 rounded bg-white/10 border border-white/10 text-[10px]">{t}</span>) : <span className="opacity-50">No new trait</span>}
+                </div>
+                <div className="opacity-60 leading-snug line-clamp-3">{laid.find(n=>n.id===hoverId)?.description}</div>
+              </div>
+            )}
           </div>
         </div>
         <div className="col-span-3">
