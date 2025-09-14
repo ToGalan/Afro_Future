@@ -13,6 +13,7 @@ const gzip = promisify(zlib.gzip);
 // Config precedence: explicit process.env overrides .env file.
 const PORT = process.env.PORT || 8080;
 const SNAP_DIR = path.join(process.cwd(), 'snapshots');
+const PROFILE_DIR = path.join(process.cwd(), 'profiles');
 
 const app = express();
 app.use(cors());
@@ -21,9 +22,10 @@ app.use(express.raw({ type: 'application/octet-stream', limit: '50mb' }));
 
 // Lazy create snapshot dir
 await fs.mkdir(SNAP_DIR, { recursive: true });
+await fs.mkdir(PROFILE_DIR, { recursive: true });
 
-// Real Google ID token verification using google-auth-library
-const GOOGLE_CLIENT_ID = process.env.GOOGLE_CLIENT_ID || process.env.VITE_GOOGLE_CLIENT_ID || '';
+// Real Google ID token verification using google-auth-library (single source: VITE_GOOGLE_CLIENT_ID)
+const GOOGLE_CLIENT_ID = process.env.VITE_GOOGLE_CLIENT_ID || '';
 const oauthClient = GOOGLE_CLIENT_ID ? new OAuth2Client(GOOGLE_CLIENT_ID) : null;
 async function verifyGoogleIdToken(idToken) {
   if (!idToken || !oauthClient) return null;
@@ -87,6 +89,34 @@ app.get('/snapshots/:world/latest', requireAuth, async (req, res) => {
   } catch (e) {
     console.error('snapshot read failed', e);
     res.status(500).json({ error: 'snapshot_read_failed' });
+  }
+});
+
+// -------- Profile (basic JSON persistence) --------
+// Shape: { userId, name?, email?, picture?, loadout? }
+app.get('/profile', requireAuth, async (req, res) => {
+  try {
+    const file = path.join(PROFILE_DIR, req.userId + '.json');
+    const data = await fs.readFile(file, 'utf8').catch(()=>null);
+    if(!data) return res.json({ ok:true, profile:null });
+    res.json({ ok:true, profile: JSON.parse(data) });
+  } catch(e){
+    res.status(500).json({ error:'profile_read_failed' });
+  }
+});
+
+app.put('/profile', requireAuth, async (req, res) => {
+  try {
+    const incoming = req.body || {};
+    const file = path.join(PROFILE_DIR, req.userId + '.json');
+    const existingRaw = await fs.readFile(file, 'utf8').catch(()=>null);
+    const existing = existingRaw ? JSON.parse(existingRaw) : { userId: req.userId };
+    const merged = { ...existing, ...incoming, userId: req.userId, updatedAt: Date.now() };
+    await fs.writeFile(file, JSON.stringify(merged, null, 2));
+    res.json({ ok:true, profile: merged });
+  } catch(e){
+    console.error('profile_write_failed', e);
+    res.status(500).json({ error:'profile_write_failed' });
   }
 });
 

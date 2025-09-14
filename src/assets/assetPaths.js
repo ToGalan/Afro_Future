@@ -1,47 +1,57 @@
 // Centralized asset path mappings. Public assets are served from /assets/*.
 // Keeping as constants ensures refactors are localized here.
+// Base image path (allows future CDN swap). Currently root-served build assets.
+export const BASE_IMG = ''; // e.g., set to 'https://cdn.afro-future.app' later
+// Helper to prefix path while avoiding double slashes
+function p(rel) {
+    const cleaned = rel.startsWith('/') ? rel : '/' + rel.replace(/^\.\//, '');
+    if (!BASE_IMG) {
+        return cleaned;
+    }
+    return BASE_IMG.replace(/\/$/, '') + cleaned;
+}
 // Updated to use higher fidelity PNG faction icons bundled locally
 export const FactionIcon = {
-    PAA: new URL('./img/PAA_Icon.png', import.meta.url).href,
-    ASF: new URL('./img/ASF_Icon.png', import.meta.url).href,
-    WC: new URL('./img/WC_icon.png', import.meta.url).href,
+    PAA: p('/assets/img/PAA_Icon.png'),
+    ASF: p('/assets/img/ASF_Icon.png'),
+    WC: p('/assets/img/WC_icon.png'),
 };
 export const CharacterPortrait = {
-    MALE: '/assets/characters/male_default.svg',
-    FEMALE: '/assets/characters/female_default.svg',
+    MALE: p('/assets/characters/male_default.svg'),
+    FEMALE: p('/assets/characters/female_default.svg'),
 };
 export const PetIcon = {
-    CYBER_DOG: new URL('./img/Dog_Pet.png', import.meta.url).href,
-    CYBER_CAT: new URL('./img/Cat_Pet.png', import.meta.url).href,
+    CYBER_DOG: p('/assets/img/Dog_Pet.png'),
+    CYBER_CAT: p('/assets/img/Cat_Pet.png'),
 };
-export const fallbackPortrait = '/assets/characters/male_default.svg';
+export const fallbackPortrait = p('/assets/characters/male_default.svg');
 // Raw image assets (PNG) placed under src/assets/img (bundled by Vite). Using import.meta.url style absolute paths not needed;
 // we reference via relative path from src since Vite handles them. Centralizing for consistency.
 // Naming: <Name>_<Gender?>_<Faction?>.png etc.
 export const ImageAssets = {
     faction: {
-        PAA: new URL('./img/PAA_Icon.png', import.meta.url).href,
-        ASF: new URL('./img/ASF_Icon.png', import.meta.url).href,
-        WC: new URL('./img/WC_icon.png', import.meta.url).href,
+        PAA: p('/assets/img/PAA_Icon.png'),
+        ASF: p('/assets/img/ASF_Icon.png'),
+        WC: p('/assets/img/WC_icon.png'),
     },
     characters: {
         // Faction-specific exemplars
         PAA: {
-            MALE: new URL('./img/Kwame_Male_PAA.png', import.meta.url).href,
-            FEMALE: new URL('./img/Makena_Female_PAA.png', import.meta.url).href,
+            MALE: p('/assets/img/Kwame_Male_PAA.png'),
+            FEMALE: p('/assets/img/Makena_Female_PAA.png'),
         },
         ASF: {
-            MALE: new URL('./img/Zuberi_Male_ASF.png', import.meta.url).href,
-            FEMALE: new URL('./img/Nia_Female_ASF.png', import.meta.url).href,
+            MALE: p('/assets/img/Zuberi_Male_ASF.png'),
+            FEMALE: p('/assets/img/Nia_Female_ASF.png'),
         },
         WC: {
-            MALE: new URL('./img/Jonathan_Male_WC.png', import.meta.url).href,
-            FEMALE: new URL('./img/Emily_Female_WC.png', import.meta.url).href,
+            MALE: p('/assets/img/Jonathan_Male_WC.png'),
+            FEMALE: p('/assets/img/Emily_Female_WC.png'),
         },
     },
     pets: {
-        CYBER_DOG: new URL('./img/Dog_Pet.png', import.meta.url).href,
-        CYBER_CAT: new URL('./img/Cat_Pet.png', import.meta.url).href,
+        CYBER_DOG: p('/assets/img/Dog_Pet.png'),
+        CYBER_CAT: p('/assets/img/Cat_Pet.png'),
     },
 };
 export function getCharacterPortrait(faction, archetype) {

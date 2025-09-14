@@ -3,10 +3,12 @@ import { useSkillStore, availablePoints } from './store/skillStore';
 import { GROUP_ORDER, getVariantsByGroup } from './assets/threeParts';
 import AvatarScene from './components/AvatarScene';
 import SnowflakeSkillTree from './components/SnowflakeSkillTree';
+import { fetchProducts, type ShopifyProduct } from './services/shopify';
 import VariantPreview from './components/VariantPreview';
 import { Archetype, CharacterLoadout, Faction, PetType, uid, now } from './types/loadout';
 import { CharacterPortrait, FactionIcon, ImageAssets, getCharacterPortrait, PetIcon } from './assets/assetPaths';
 import { joinRoom } from './services/realtimeClient';
+import { useCreatorStore } from './store/creatorStore';
 import GoogleSignInButton from './components/auth/GoogleSignInButton';
 
 const defaultLoadout: CharacterLoadout = {
@@ -39,7 +41,13 @@ export default function App() {
   const [recentRooms, setRecentRooms] = useState<string[]>(() => {
     try { return JSON.parse(localStorage.getItem('afrofuture.recentRooms')||'[]'); } catch { return []; }
   });
-  const [profile, setProfile] = useState<{ sub: string; name?: string; email?: string; picture?: string } | null>(null);
+  const [profile, setProfile] = useState<{ sub: string; name?: string; email?: string; picture?: string } | null>(() => {
+    try {
+      const raw = localStorage.getItem('afrofuture.profile');
+      if(raw) return JSON.parse(raw);
+    } catch {}
+    return null;
+  });
   const [mainView, setMainView] = useState<'dashboard' | 'skills' | 'store' | 'help'>('dashboard');
   const [progress, setProgress] = useState(0);
   const [playerName] = useState('PlayerOne');
@@ -80,18 +88,51 @@ export default function App() {
     return () => clearInterval(id);
   }, [phase, activeLoadout]);
 
-  function handleSignedIn(token: string){
+  async function fetchServerProfile(idToken: string){
+    try {
+      const res = await fetch('/profile', { headers: { 'Authorization': 'Bearer '+idToken } });
+      if(!res.ok) return null;
+      const json = await res.json();
+      return json.profile || null;
+    } catch { return null; }
+  }
+
+  async function persistServerProfile(idToken: string, profilePatch: any){
+    try {
+      await fetch('/profile', { method:'PUT', headers:{ 'Content-Type':'application/json', 'Authorization':'Bearer '+idToken }, body: JSON.stringify(profilePatch) });
+    } catch(e){ console.warn('[profile] save failed', e); }
+  }
+
+  async function handleSignedIn(token: string){
     setIdToken(token);
     localStorage.setItem('afrofuture.idToken', token);
     setPhase('boot');
     try {
       const payload = JSON.parse(atob(token.split('.')[1] || 'e30='));
-      setProfile({ sub: payload.sub, name: payload.name, email: payload.email, picture: payload.picture });
+      const prof = { sub: payload.sub, name: payload.name || payload.given_name || payload.family_name, email: payload.email, picture: payload.picture };
+      setProfile(prof);
+      try { localStorage.setItem('afrofuture.profile', JSON.stringify(prof)); } catch {}
+      // Fetch existing server profile (may include loadout)
+      const serverProf = await fetchServerProfile(token);
+      if(serverProf){
+        // Merge name/email/picture preference: prefer fresh token payload over stored values
+        const mergedProf = { ...serverProf, ...prof };
+        setProfile(mergedProf);
+        if(serverProf.loadout){ setActiveLoadout(serverProf.loadout); }
+        try { localStorage.setItem('afrofuture.profile', JSON.stringify(mergedProf)); } catch {}
+        if(serverProf.loadout){ try { localStorage.setItem('afrofuture.activeLoadout', JSON.stringify(serverProf.loadout)); } catch {} }
+      } else {
+        // Create initial profile server-side
+        persistServerProfile(token, { ...prof });
+      }
     } catch {}
     // Join a default room (e.g., 'lobby') for demonstration
     try {
       const room = joinRoom(roomId, {}, token);
       setRtc(room);
+      try {
+        localStorage.setItem('afrofuture.rtcState', JSON.stringify({ roomId, joinedAt: Date.now(), pcState: room.pc.connectionState, iceState: room.pc.iceConnectionState }));
+      } catch {}
     } catch (e) { console.warn('[rtc] join failed', e); }
   }
   function handleSignOut(){
@@ -126,9 +167,70 @@ export default function App() {
       try {
         const room = joinRoom(newRoom, {}, idToken);
         setRtc(room);
+        try { localStorage.setItem('afrofuture.rtcState', JSON.stringify({ roomId: newRoom, joinedAt: Date.now(), pcState: room.pc.connectionState, iceState: room.pc.iceConnectionState })); } catch {}
       } catch(e){ console.warn('[rtc] room switch failed', e); }
     }
   }
+
+  // On mount (or auth resume) auto-decode token & attempt RTC rejoin if prior state exists
+  useEffect(()=>{
+    if(!idToken) return;
+    // If profile not yet set (e.g., hydration path) attempt decode
+    if(!profile){
+      try {
+        const payload = JSON.parse(atob(idToken.split('.')[1]||'e30='));
+        const prof = { sub: payload.sub, name: payload.name || payload.given_name || payload.family_name, email: payload.email, picture: payload.picture };
+        setProfile(prof);
+        try { localStorage.setItem('afrofuture.profile', JSON.stringify(prof)); } catch {}
+      } catch {}
+    }
+    // Auto-rejoin logic
+    const raw = localStorage.getItem('afrofuture.rtcState');
+    if(!raw) return;
+    try {
+      const saved = JSON.parse(raw);
+      if(saved && saved.roomId && typeof saved.roomId === 'string'){
+        // If current room differs, adopt saved room first
+        if(saved.roomId !== roomId){
+          setRoomId(saved.roomId);
+          localStorage.setItem('afrofuture.room', saved.roomId);
+        }
+        // Only join if not already connected
+        if(!rtc){
+          const room = joinRoom(saved.roomId, {}, idToken);
+          setRtc(room);
+          try { localStorage.setItem('afrofuture.rtcState', JSON.stringify({ roomId: saved.roomId, joinedAt: Date.now(), pcState: room.pc.connectionState, iceState: room.pc.iceConnectionState })); } catch {}
+        }
+      }
+    } catch {}
+  // run once after idToken available
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [idToken]);
+
+  // Persist WebRTC connection state (lightweight) whenever it changes
+  useEffect(()=>{
+  if(!rtc) return;
+    function save(){
+      try {
+        if(!rtc) return;
+        localStorage.setItem('afrofuture.rtcState', JSON.stringify({ roomId, updatedAt: Date.now(), pcState: rtc.pc.connectionState, iceState: rtc.pc.iceConnectionState, dcState: rtc.dc.readyState }));
+      } catch {}
+    }
+    // Attach listeners
+    const pc = rtc.pc as any;
+    const dc = rtc.dc as any;
+    pc.addEventListener('connectionstatechange', save);
+    pc.addEventListener('iceconnectionstatechange', save);
+    if(dc) dc.addEventListener('open', save);
+    if(dc) dc.addEventListener('close', save);
+    save();
+    return () => {
+      pc.removeEventListener('connectionstatechange', save);
+      pc.removeEventListener('iceconnectionstatechange', save);
+      if(dc) dc.removeEventListener('open', save);
+      if(dc) dc.removeEventListener('close', save);
+    };
+  }, [rtc, roomId]);
 
   function startCreator() {
     if (heroLocked) return; // cannot create a new hero once locked
@@ -141,12 +243,42 @@ export default function App() {
       const merged = { ...activeLoadout, ...newLoadout, id: activeLoadout.id, createdAt: activeLoadout.createdAt, updatedAt: now() } as CharacterLoadout;
       setActiveLoadout(merged);
       try { localStorage.setItem('afrofuture.activeLoadout', JSON.stringify(merged)); } catch(e){ console.warn('[avatar-persist] save failed', e); }
+      if(idToken) persistServerProfile(idToken, { loadout: merged });
+      // Broadcast to peers via WebRTC (if data channel open)
+      if(rtc?.dc?.readyState === 'open') {
+        try { rtc.dc.send(JSON.stringify({ type: 'loadoutUpdate', loadout: merged })); } catch(err){ console.warn('[rtc] broadcast failed', err); }
+      }
     } else {
       setActiveLoadout(newLoadout);
       try { localStorage.setItem('afrofuture.activeLoadout', JSON.stringify(newLoadout)); } catch(e){ console.warn('[avatar-persist] save failed', e); }
+      if(idToken) persistServerProfile(idToken, { loadout: newLoadout });
+      if(rtc?.dc?.readyState === 'open') {
+        try { rtc.dc.send(JSON.stringify({ type: 'loadoutUpdate', loadout: newLoadout })); } catch(err){ console.warn('[rtc] broadcast failed', err); }
+      }
     }
     setPhase('main');
   }
+
+  // Listen for remote loadout updates over WebRTC to keep sessions in sync ("chrome sync webrtc" requirement)
+  useEffect(()=>{
+    if(!rtc?.dc) return;
+    function onMessage(ev: MessageEvent){
+      try {
+        const data = JSON.parse(ev.data);
+        if(data?.type === 'loadoutUpdate' && data.loadout){
+          setActiveLoadout(prev => {
+            const incoming: CharacterLoadout = data.loadout;
+            // If we already have a loadout id, prefer keeping its id/timestamps for local authority
+            const merged = prev ? { ...prev, ...incoming, id: prev.id, createdAt: prev.createdAt, updatedAt: now() } : incoming;
+            try { localStorage.setItem('afrofuture.activeLoadout', JSON.stringify(merged)); } catch{}
+            return merged;
+          });
+        }
+      } catch {}
+    }
+    rtc.dc.addEventListener('message', onMessage);
+    return () => { rtc.dc.removeEventListener('message', onMessage); };
+  }, [rtc]);
 
   if (phase === 'auth') return <GameViewport mode="fit"><AuthGate onSignedIn={handleSignedIn} /></GameViewport>;
   if (phase === 'boot') return <GameViewport mode="fit"><WelcomeScreen progress={progress} build="v0.2.3 demo • UE5" onSignOut={handleSignOut} /></GameViewport>;
@@ -208,9 +340,6 @@ export default function App() {
         onChangeView={setMainView}
         profile={profile}
         onSignOut={handleSignOut}
-        roomId={roomId}
-        onChangeRoom={switchRoom}
-        recentRooms={recentRooms}
       />
     </GameViewport>
   );
@@ -567,10 +696,10 @@ function FirstTimeFlow({ faction, archetype, pet, onFaction, onArchetype, onPet,
   );
 }
 
-function MainMenu({ playerName, accountLevel, loadout, onCustomize, heroLocked, view, onChangeView, profile, onSignOut, roomId, onChangeRoom, recentRooms }: { playerName: string; accountLevel: number; loadout: CharacterLoadout; onCustomize: () => void; heroLocked: boolean; view: 'dashboard' | 'skills' | 'store' | 'help'; onChangeView: (v: 'dashboard' | 'skills' | 'store' | 'help') => void; profile?: { sub: string; name?: string; email?: string; picture?: string } | null; onSignOut?: () => void; roomId: string; onChangeRoom: (r:string)=>void; recentRooms: string[]; }) {
+function MainMenu({ playerName, accountLevel, loadout, onCustomize, heroLocked, view, onChangeView, profile, onSignOut }: { playerName: string; accountLevel: number; loadout: CharacterLoadout; onCustomize: () => void; heroLocked: boolean; view: 'dashboard' | 'skills' | 'store' | 'help'; onChangeView: (v: 'dashboard' | 'skills' | 'store' | 'help') => void; profile?: { sub: string; name?: string; email?: string; picture?: string } | null; onSignOut?: () => void; }) {
   return (
     <div className="h-full w-full bg-[#0f1218] text-gray-100 grid grid-rows-[64px_1fr]" style={{gridTemplateColumns:'minmax(260px,20%) 1fr minmax(260px,20%)'}}>
-      <TopNav view={view} onChangeView={onChangeView} profile={profile} onSignOut={onSignOut} roomId={roomId} onChangeRoom={onChangeRoom} recentRooms={recentRooms} />
+      <TopNav view={view} onChangeView={onChangeView} profile={profile} onSignOut={onSignOut} />
       <LeftPlayerPanel className="row-start-2" playerName={playerName} accountLevel={accountLevel} loadout={loadout} heroLocked={heroLocked} />
       <CenterHub className="row-start-2" loadout={loadout} view={view} />
       <RightPlayerPanel className="row-start-2" loadout={loadout} onCustomize={onCustomize} />
@@ -578,9 +707,21 @@ function MainMenu({ playerName, accountLevel, loadout, onCustomize, heroLocked, 
   );
 }
 
-function TopNav({ view, onChangeView, profile, onSignOut, roomId, onChangeRoom, recentRooms }: { view: 'dashboard' | 'skills' | 'store' | 'help'; onChangeView: (v: 'dashboard' | 'skills' | 'store' | 'help') => void; profile?: { sub: string; name?: string; email?: string; picture?: string } | null; onSignOut?: () => void; roomId: string; onChangeRoom: (r:string)=>void; recentRooms: string[]; }) {
+function TopNav({ view, onChangeView, profile, onSignOut }: { view: 'dashboard' | 'skills' | 'store' | 'help'; onChangeView: (v: 'dashboard' | 'skills' | 'store' | 'help') => void; profile?: { sub: string; name?: string; email?: string; picture?: string } | null; onSignOut?: () => void; }) {
+  const [open, setOpen] = React.useState(false);
+  const menuRef = React.useRef<HTMLDivElement|null>(null);
+  React.useEffect(()=>{
+    if(!open) return;
+    function handle(e:MouseEvent){
+      if(menuRef.current && !menuRef.current.contains(e.target as Node)) setOpen(false);
+    }
+    function handleKey(e:KeyboardEvent){ if(e.key==='Escape') setOpen(false); }
+    window.addEventListener('mousedown', handle);
+    window.addEventListener('keydown', handleKey);
+    return ()=>{ window.removeEventListener('mousedown', handle); window.removeEventListener('keydown', handleKey); };
+  },[open]);
   return (
-    <div className="col-span-3 grid grid-cols-3 items-center px-6 bg-[#141924] border-b border-white/10 h-16">
+    <div className="col-span-3 grid grid-cols-3 items-center px-6 bg-[#141924] border-b border-white/10 h-16 relative">
       <div className="flex items-center">
         <button
           onClick={() => onChangeView('dashboard')}
@@ -598,37 +739,39 @@ function TopNav({ view, onChangeView, profile, onSignOut, roomId, onChangeRoom, 
         <button className={`opacity-80 hover:opacity-100 transition ${view==='skills' ? 'text-emerald-400' : ''}`} onClick={()=>onChangeView('skills')}>Skills</button>
         <button className={`opacity-80 hover:opacity-100 transition ${view==='store' ? 'text-emerald-400' : ''}`} onClick={()=>onChangeView('store')}>Store</button>
         <button className={`opacity-80 hover:opacity-100 transition ${view==='help' ? 'text-emerald-400' : ''}`} onClick={()=>onChangeView('help')}>Help</button>
-        {/* Room selector */}
-        <div className="flex items-center gap-2 ml-4">
-          <select value={roomId} onChange={e=>onChangeRoom(e.target.value)} className="bg-[#1b222c] border border-white/10 rounded px-2 py-1 text-xs focus:outline-none focus:ring-1 focus:ring-emerald-400">
-            {[roomId, ...recentRooms.filter(r=>r!==roomId)].map(r => <option key={r} value={r}>{r}</option>)}
-          </select>
-          <button
-            onClick={()=>{
-              const newRoom = prompt('Enter room id (alphanumeric, 2-24 chars)', 'lobby');
-              if(!newRoom) return;
-              const trimmed = newRoom.trim();
-              if(!/^[a-zA-Z0-9_-]{2,24}$/.test(trimmed)){ alert('Invalid room id'); return; }
-              onChangeRoom(trimmed);
-            }}
-            className="text-[11px] px-2 py-1 rounded bg-white/5 hover:bg-white/10 border border-white/10"
-          >Change</button>
-        </div>
+        {/* Room selector removed per request */}
       </div>
       <div className="ml-auto flex items-center justify-end gap-4">
         <Chip>1,458 <span className="opacity-70">shards</span></Chip>
         <IconButton label="Notifications">🔔</IconButton>
         <IconButton label="Mail">✉️</IconButton>
         {profile ? (
-          <div className="flex items-center gap-2">
-            {profile.picture ? <img className="w-9 h-9 rounded object-cover border border-white/10" src={profile.picture} alt={profile.name || 'avatar'} /> : (
-              <div className="w-9 h-9 rounded-lg bg-white/10 border border-white/10 flex items-center justify-center text-xs font-semibold">{(profile.name||profile.email||'U').slice(0,1).toUpperCase()}</div>
+          <div className="relative" ref={menuRef}>
+            <button onClick={()=>setOpen(o=>!o)} className="flex items-center gap-2 group">
+              {profile.picture ? <img className="w-9 h-9 rounded object-cover border border-white/10" src={profile.picture} alt={profile.name || 'avatar'} /> : (
+                <div className="w-9 h-9 rounded-lg bg-white/10 border border-white/10 flex items-center justify-center text-xs font-semibold">{(profile.name||profile.email||'U').slice(0,1).toUpperCase()}</div>
+              )}
+              <div className="hidden md:flex flex-col leading-tight text-left">
+                <span className="text-xs font-medium truncate max-w-[120px]" title={profile.name||profile.email}>{profile.name || 'User'}</span>
+              </div>
+              <svg className={`w-3 h-3 transition ${open ? 'rotate-180' : ''}`} viewBox="0 0 20 20" fill="currentColor"><path d="M5.23 7.21a.75.75 0 011.06.02L10 11.168l3.71-3.938a.75.75 0 111.08 1.04l-4.25 4.51a.75.75 0 01-1.08 0l-4.25-4.51a.75.75 0 01.02-1.06z"/></svg>
+            </button>
+            {open && (
+              <div className="absolute right-0 mt-2 w-64 rounded-xl border border-white/10 bg-[#1b222c] shadow-xl shadow-black/40 p-3 flex flex-col gap-2 z-50">
+                <div className="flex items-center gap-3 pb-3 border-b border-white/10">
+                  {profile.picture ? <img className="w-10 h-10 rounded object-cover border border-white/10" src={profile.picture} alt={profile.name || 'avatar'} /> : (
+                    <div className="w-10 h-10 rounded-lg bg-white/10 border border-white/10 flex items-center justify-center text-sm font-semibold">{(profile.name||profile.email||'U').slice(0,1).toUpperCase()}</div>
+                  )}
+                  <div className="flex flex-col leading-tight">
+                    <span className="text-xs font-semibold">{profile.name || 'User'}</span>
+                    {profile.email && <span className="text-[10px] opacity-60">{profile.email}</span>}
+                  </div>
+                </div>
+                <button className="text-left text-xs px-3 py-2 rounded-lg hover:bg-white/10 transition" onClick={()=>{ setOpen(false); onChangeView('dashboard'); }}>Account</button>
+                <button className="text-left text-xs px-3 py-2 rounded-lg hover:bg-white/10 transition" onClick={()=>{ setOpen(false); onChangeView('help'); }}>Settings</button>
+                <button className="text-left text-xs px-3 py-2 rounded-lg hover:bg-rose-600/30 hover:text-rose-200 transition border border-transparent hover:border-rose-500/40" onClick={()=>{ setOpen(false); onSignOut?.(); }}>Log out</button>
+              </div>
             )}
-            <div className="hidden md:flex flex-col leading-tight">
-              <span className="text-xs font-medium">{profile.name || 'User'}</span>
-              {profile.email && <span className="text-[10px] opacity-60">{profile.email}</span>}
-            </div>
-            <Button size="sm" variant="ghost" onClick={onSignOut}>Sign Out</Button>
           </div>
         ) : (
           <div className="text-[11px] opacity-60">Not signed in</div>
@@ -766,7 +909,8 @@ function RightPlayerPanel({ className = '', loadout, onCustomize }: { className?
           <div className="absolute inset-0 bg-gradient-to-tr from-[#0b0e13]/80 via-transparent to-[#0b0e13]/50" />
           {/* Avatar canvas container anchored to bottom */}
           <div className="relative z-10 flex-1 flex items-end justify-center px-2 pb-2">
-            <div className="w-full h-[260px] relative">
+            {/* Shrunk avatar (60% smaller) & anchored to bottom by reducing container height */}
+            <div className="w-full h-[100px] relative">
               <AvatarScene
                 parts={(loadout as any).threeConfig?.parts}
                 colors={(loadout as any).threeConfig?.colors}
@@ -779,10 +923,10 @@ function RightPlayerPanel({ className = '', loadout, onCustomize }: { className?
                 cameraPosition={[1.6,1.15,2.1]}
                 cameraFov={32}
                 target={[0,0.75,0]}
-                // Push model slightly further down
+                // Adjust offsets/margin for smaller presentation
                 modelOffset={[0,-0.55,0]}
                 autoFrame
-                frameMargin={0.1}
+                frameMargin={0.18}
               />
             </div>
           </div>
@@ -857,57 +1001,10 @@ function CenterHub({ className = '', loadout, view }: { className?: string; load
     );
   }
   if (view === 'store') {
-    return (
-      <main className={`col-start-2 px-6 py-5 min-h-0 flex flex-col ${className}`}>
-        <div className="flex-1 rounded-3xl border border-white/10 bg-[#12171f] overflow-hidden flex flex-col">
-          <div className="p-4 border-b border-white/10 flex items-center justify-between">
-            <div className="text-lg font-semibold">In-Game Store</div>
-            <span className="text-xs opacity-60">Embedded</span>
-          </div>
-          <iframe title="Store" src="https://store.afro-future.app" className="flex-1 w-full h-full" loading="lazy" referrerPolicy="no-referrer" />
-        </div>
-      </main>
-    );
+    return <StoreView className={className} />;
   }
   if (view === 'help') {
-    return (
-      <main className={`col-start-2 px-6 py-5 min-h-0 flex flex-col ${className}`}>
-        <div className="flex-1 rounded-3xl border border-white/10 bg-[#12171f] overflow-auto p-6 space-y-6 custom-scrollbar">
-          <section>
-            <h2 className="text-xl font-semibold mb-2">Help & Guide</h2>
-            <p className="text-sm opacity-80 leading-relaxed">Welcome to Afro‑Future. This guide summarizes core panels and how to progress your character.</p>
-          </section>
-          <section>
-            <h3 className="font-semibold mb-1">Character Customization</h3>
-            <p className="text-sm opacity-80">Use the Creator to choose body parts, colors, and cosmetics. Scroll through horizontal variant rows and click to select. Saved configurations appear in your dashboard avatar.</p>
-          </section>
-          <section>
-            <h3 className="font-semibold mb-1">Skills Snowflake</h3>
-            <p className="text-sm opacity-80">Spend skill tokens to unlock connected nodes. Investing 4+ nodes in a branch grants a Trait tag (e.g., Aggressor, Commander). Traits update sidebar stats in real time.</p>
-          </section>
-          <section>
-            <h3 className="font-semibold mb-1">Tokens & Levels</h3>
-            <p className="text-sm opacity-80">Skill tokens are limited by your level. Every 5 levels you gain a bonus pool. Hover potential nodes to plan your path; respec functionality will arrive later.</p>
-          </section>
-          <section>
-            <h3 className="font-semibold mb-1">Store</h3>
-            <p className="text-sm opacity-80">The embedded store (beta) lets you preview upcoming cosmetic sets. Purchases are disabled in this prototype build.</p>
-          </section>
-          <section>
-            <h3 className="font-semibold mb-1">Performance Tips</h3>
-            <ul className="list-disc pl-5 text-sm opacity-80 space-y-1">
-              <li>Limit background tabs with WebGL apps to keep GPU memory stable.</li>
-              <li>Close the skill tree when not in use to reduce layout work.</li>
-              <li>Use palettes for rapid color scheme iteration.</li>
-            </ul>
-          </section>
-          <section>
-            <h3 className="font-semibold mb-1">Need More Help?</h3>
-            <p className="text-sm opacity-80">Future versions will include an interactive tutorial and glossary. For now, explore freely—this prototype auto-saves your choices.</p>
-          </section>
-        </div>
-      </main>
-    );
+    return <SettingsView className={className} />;
   }
   return (
     <main className={`col-start-2 px-6 py-5 min-h-0 flex flex-col gap-5 ${className}`}>
@@ -918,6 +1015,121 @@ function CenterHub({ className = '', loadout, view }: { className?: string; load
         <NewsCard title="Season 1: Terraformers" />
         <NewsCard title="Patch 0.2.3 Notes" />
         <NewsCard title="Community Spotlight" />
+      </div>
+    </main>
+  );
+}
+
+// --- Store (Shopify) View ---
+function StoreView({ className='' }: { className?: string }) {
+  const [products, setProducts] = React.useState<ShopifyProduct[]|null>(null);
+  const [error, setError] = React.useState<string|null>(null);
+  const [loading, setLoading] = React.useState(false);
+  React.useEffect(()=>{
+    let active = true;
+    async function load(){
+      if(!import.meta.env.VITE_SHOPIFY_STORE_DOMAIN || !import.meta.env.VITE_SHOPIFY_STOREFRONT_TOKEN){
+        setError('Shop not configured');
+        return;
+      }
+      setLoading(true);
+      try {
+        const list = await fetchProducts(12);
+        if(active) setProducts(list);
+      } catch(e:any){ if(active) setError(e.message||'Failed to load'); }
+      finally { if(active) setLoading(false); }
+    }
+    load();
+    return ()=>{ active=false; };
+  },[]);
+  return (
+    <main className={`col-start-2 px-6 py-5 min-h-0 flex flex-col ${className}`}>
+      <div className="flex-1 rounded-3xl border border-white/10 bg-[#12171f] overflow-hidden flex flex-col">
+        <div className="p-4 border-b border-white/10 flex items-center justify-between">
+          <div className="text-lg font-semibold">Store</div>
+          <span className="text-xs opacity-60">Shopify</span>
+        </div>
+        <div className="flex-1 overflow-auto p-6 custom-scrollbar">
+          {error && (
+            <div className="text-sm text-rose-300 bg-rose-900/30 border border-rose-500/30 px-4 py-3 rounded-lg">
+              {error === 'Shop not configured' ? (
+                <>
+                  Storefront not configured. Add <code className="font-mono">VITE_SHOPIFY_STORE_DOMAIN</code> & <code className="font-mono">VITE_SHOPIFY_STOREFRONT_TOKEN</code> to .env.
+                </>
+              ) : error}
+            </div>
+          )}
+          {loading && !products && (
+            <div className="flex items-center gap-3 text-sm opacity-70"><div className="w-4 h-4 border-2 border-emerald-400 border-t-transparent rounded-full animate-spin"/> Loading products…</div>
+          )}
+          {!loading && products && products.length === 0 && !error && <div className="text-sm opacity-60">No products found.</div>}
+          {products && products.length>0 && (
+            <div className="grid gap-5" style={{gridTemplateColumns:'repeat(auto-fill,minmax(200px,1fr))'}}>
+              {products.map(p => <ProductCard key={p.id} product={p} />)}
+            </div>
+          )}
+        </div>
+      </div>
+    </main>
+  );
+}
+
+function ProductCard({ product }: { product: ShopifyProduct }) {
+  const img = product.images[0];
+  const variant = product.variants[0];
+  return (
+    <div className="rounded-2xl border border-white/10 bg-white/5 overflow-hidden flex flex-col group hover:bg-white/10 transition">
+      <div className="aspect-square w-full relative overflow-hidden bg-[#0f141a]">
+        {img ? <img src={img.url} alt={img.altText||product.title} className="absolute inset-0 w-full h-full object-cover group-hover:scale-105 transition"/> : (
+          <div className="absolute inset-0 flex items-center justify-center text-[11px] opacity-40">No Image</div>
+        )}
+        <div className="absolute top-2 left-2 text-[10px] px-2 py-0.5 rounded bg-black/50 backdrop-blur border border-white/10">{variant ? `${variant.price.amount} ${variant.price.currencyCode}` : '—'}</div>
+      </div>
+      <div className="p-3 flex flex-col gap-1">
+        <div className="text-xs font-semibold tracking-wide line-clamp-2 leading-snug min-h-[2rem]">{product.title}</div>
+        <button disabled className="mt-1 text-[11px] px-2 py-1 rounded bg-emerald-600/30 border border-emerald-500/40 text-emerald-200 cursor-not-allowed uppercase tracking-wide">Preview</button>
+      </div>
+    </div>
+  );
+}
+
+// --- Settings (repurposed Help) View ---
+function SettingsView({ className='' }: { className?: string }) {
+  return (
+    <main className={`col-start-2 px-6 py-5 min-h-0 flex flex-col ${className}`}>
+      <div className="flex-1 rounded-3xl border border-white/10 bg-[#12171f] overflow-auto p-6 space-y-8 custom-scrollbar">
+        <section>
+          <h2 className="text-xl font-semibold mb-2">Settings</h2>
+          <p className="text-sm opacity-80 leading-relaxed">Configure your experience. (Prototype – values not persisted yet.)</p>
+        </section>
+        <section className="space-y-4">
+          <div className="rounded-xl border border-white/10 bg-white/5 p-4 flex flex-col gap-3">
+            <div className="text-sm font-semibold tracking-wide">Audio</div>
+            <div className="flex items-center justify-between text-xs">
+              <span className="opacity-70">Master Volume</span>
+              <input type="range" min={0} max={100} defaultValue={70} className="w-40" />
+            </div>
+            <div className="flex items-center justify-between text-xs">
+              <span className="opacity-70">Music Volume</span>
+              <input type="range" min={0} max={100} defaultValue={55} className="w-40" />
+            </div>
+          </div>
+          <div className="rounded-xl border border-white/10 bg-white/5 p-4 flex flex-col gap-3">
+            <div className="text-sm font-semibold tracking-wide">Graphics</div>
+            <div className="flex items-center justify-between text-xs">
+              <span className="opacity-70">Quality</span>
+              <select className="bg-[#1b222c] border border-white/10 rounded px-2 py-1 text-xs"><option>Auto</option><option>Low</option><option>Medium</option><option>High</option></select>
+            </div>
+            <div className="flex items-center justify-between text-xs">
+              <span className="opacity-70">Show FPS</span>
+              <input type="checkbox" />
+            </div>
+          </div>
+          <div className="rounded-xl border border-white/10 bg-white/5 p-4 flex flex-col gap-3">
+            <div className="text-sm font-semibold tracking-wide">Account</div>
+            <div className="text-xs opacity-70">More account controls coming soon.</div>
+          </div>
+        </section>
       </div>
     </main>
   );
@@ -979,6 +1191,9 @@ function CharacterCreator({ onSave, onBack, initial, locked }: { onSave: (payloa
   const [colorState, setColorState] = useState<{primary:string;secondary:string;skin:string}>(
     { primary: '#00A37A', secondary: '#F5F5F5', skin: '#c58b66' }
   );
+  // Link skin picker to central creator store so shared skin material updates live in preview
+  const setSkinColor = useCreatorStore(s => s.setSkinColor);
+  useEffect(()=>{ setSkinColor(colorState.skin); },[colorState.skin,setSkinColor]);
   // Animation preview controls
   const [animPaused, setAnimPaused] = useState(false);
   const [animSpeed, setAnimSpeed] = useState(1);
@@ -1024,7 +1239,9 @@ function CharacterCreator({ onSave, onBack, initial, locked }: { onSave: (payloa
                 debugTint={false}
                 animPaused={animPaused}
                 animSpeed={animSpeed}
-                modelOffset={[0,-0.35,0]}
+                // Reduce overall avatar size by 20%
+                modelScale={0.8}
+                modelOffset={[0,-0.25,0]}
               />
               <div className="absolute top-3 left-3 flex items-center gap-2 bg-black/40 backdrop-blur-sm px-3 py-2 rounded-xl border border-white/10 text-[11px]">
                 <button

@@ -4,6 +4,7 @@ import { useSkillStore, availablePoints } from './store/skillStore';
 import { GROUP_ORDER, getVariantsByGroup } from './assets/threeParts';
 import AvatarScene from './components/AvatarScene';
 import SnowflakeSkillTree from './components/SnowflakeSkillTree';
+import { fetchProducts } from './services/shopify';
 import VariantPreview from './components/VariantPreview';
 import { uid, now } from './types/loadout';
 import { CharacterPortrait, FactionIcon, ImageAssets, getCharacterPortrait, PetIcon } from './assets/assetPaths';
@@ -43,7 +44,15 @@ export default function App() {
             return [];
         }
     });
-    const [profile, setProfile] = useState(null);
+    const [profile, setProfile] = useState(() => {
+        try {
+            const raw = localStorage.getItem('afrofuture.profile');
+            if (raw)
+                return JSON.parse(raw);
+        }
+        catch { }
+        return null;
+    });
     const [mainView, setMainView] = useState('dashboard');
     const [progress, setProgress] = useState(0);
     const [playerName] = useState('PlayerOne');
@@ -86,19 +95,72 @@ export default function App() {
         }, 300);
         return () => clearInterval(id);
     }, [phase, activeLoadout]);
-    function handleSignedIn(token) {
+    async function fetchServerProfile(idToken) {
+        try {
+            const res = await fetch('/profile', { headers: { 'Authorization': 'Bearer ' + idToken } });
+            if (!res.ok)
+                return null;
+            const json = await res.json();
+            return json.profile || null;
+        }
+        catch {
+            return null;
+        }
+    }
+    async function persistServerProfile(idToken, profilePatch) {
+        try {
+            await fetch('/profile', { method: 'PUT', headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + idToken }, body: JSON.stringify(profilePatch) });
+        }
+        catch (e) {
+            console.warn('[profile] save failed', e);
+        }
+    }
+    async function handleSignedIn(token) {
         setIdToken(token);
         localStorage.setItem('afrofuture.idToken', token);
         setPhase('boot');
         try {
             const payload = JSON.parse(atob(token.split('.')[1] || 'e30='));
-            setProfile({ sub: payload.sub, name: payload.name, email: payload.email, picture: payload.picture });
+            const prof = { sub: payload.sub, name: payload.name || payload.given_name || payload.family_name, email: payload.email, picture: payload.picture };
+            setProfile(prof);
+            try {
+                localStorage.setItem('afrofuture.profile', JSON.stringify(prof));
+            }
+            catch { }
+            // Fetch existing server profile (may include loadout)
+            const serverProf = await fetchServerProfile(token);
+            if (serverProf) {
+                // Merge name/email/picture preference: prefer fresh token payload over stored values
+                const mergedProf = { ...serverProf, ...prof };
+                setProfile(mergedProf);
+                if (serverProf.loadout) {
+                    setActiveLoadout(serverProf.loadout);
+                }
+                try {
+                    localStorage.setItem('afrofuture.profile', JSON.stringify(mergedProf));
+                }
+                catch { }
+                if (serverProf.loadout) {
+                    try {
+                        localStorage.setItem('afrofuture.activeLoadout', JSON.stringify(serverProf.loadout));
+                    }
+                    catch { }
+                }
+            }
+            else {
+                // Create initial profile server-side
+                persistServerProfile(token, { ...prof });
+            }
         }
         catch { }
         // Join a default room (e.g., 'lobby') for demonstration
         try {
             const room = joinRoom(roomId, {}, token);
             setRtc(room);
+            try {
+                localStorage.setItem('afrofuture.rtcState', JSON.stringify({ roomId, joinedAt: Date.now(), pcState: room.pc.connectionState, iceState: room.pc.iceConnectionState }));
+            }
+            catch { }
         }
         catch (e) {
             console.warn('[rtc] join failed', e);
@@ -155,12 +217,91 @@ export default function App() {
             try {
                 const room = joinRoom(newRoom, {}, idToken);
                 setRtc(room);
+                try {
+                    localStorage.setItem('afrofuture.rtcState', JSON.stringify({ roomId: newRoom, joinedAt: Date.now(), pcState: room.pc.connectionState, iceState: room.pc.iceConnectionState }));
+                }
+                catch { }
             }
             catch (e) {
                 console.warn('[rtc] room switch failed', e);
             }
         }
     }
+    // On mount (or auth resume) auto-decode token & attempt RTC rejoin if prior state exists
+    useEffect(() => {
+        if (!idToken)
+            return;
+        // If profile not yet set (e.g., hydration path) attempt decode
+        if (!profile) {
+            try {
+                const payload = JSON.parse(atob(idToken.split('.')[1] || 'e30='));
+                const prof = { sub: payload.sub, name: payload.name || payload.given_name || payload.family_name, email: payload.email, picture: payload.picture };
+                setProfile(prof);
+                try {
+                    localStorage.setItem('afrofuture.profile', JSON.stringify(prof));
+                }
+                catch { }
+            }
+            catch { }
+        }
+        // Auto-rejoin logic
+        const raw = localStorage.getItem('afrofuture.rtcState');
+        if (!raw)
+            return;
+        try {
+            const saved = JSON.parse(raw);
+            if (saved && saved.roomId && typeof saved.roomId === 'string') {
+                // If current room differs, adopt saved room first
+                if (saved.roomId !== roomId) {
+                    setRoomId(saved.roomId);
+                    localStorage.setItem('afrofuture.room', saved.roomId);
+                }
+                // Only join if not already connected
+                if (!rtc) {
+                    const room = joinRoom(saved.roomId, {}, idToken);
+                    setRtc(room);
+                    try {
+                        localStorage.setItem('afrofuture.rtcState', JSON.stringify({ roomId: saved.roomId, joinedAt: Date.now(), pcState: room.pc.connectionState, iceState: room.pc.iceConnectionState }));
+                    }
+                    catch { }
+                }
+            }
+        }
+        catch { }
+        // run once after idToken available
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [idToken]);
+    // Persist WebRTC connection state (lightweight) whenever it changes
+    useEffect(() => {
+        if (!rtc)
+            return;
+        function save() {
+            try {
+                if (!rtc)
+                    return;
+                localStorage.setItem('afrofuture.rtcState', JSON.stringify({ roomId, updatedAt: Date.now(), pcState: rtc.pc.connectionState, iceState: rtc.pc.iceConnectionState, dcState: rtc.dc.readyState }));
+            }
+            catch { }
+        }
+        // Attach listeners
+        const pc = rtc.pc;
+        const dc = rtc.dc;
+        pc.addEventListener('connectionstatechange', save);
+        pc.addEventListener('iceconnectionstatechange', save);
+        if (dc)
+            dc.addEventListener('open', save);
+        if (dc)
+            dc.addEventListener('close', save);
+        save();
+        return () => {
+            pc.removeEventListener('connectionstatechange', save);
+            pc.removeEventListener('iceconnectionstatechange', save);
+            if (dc)
+                dc.removeEventListener('open', save);
+            if (dc)
+                dc.removeEventListener('close', save);
+        };
+    }, [rtc, roomId]);
     function startCreator() {
         if (heroLocked)
             return; // cannot create a new hero once locked
@@ -177,6 +318,8 @@ export default function App() {
             catch (e) {
                 console.warn('[avatar-persist] save failed', e);
             }
+            if (idToken)
+                persistServerProfile(idToken, { loadout: merged });
         }
         else {
             setActiveLoadout(newLoadout);
@@ -186,6 +329,8 @@ export default function App() {
             catch (e) {
                 console.warn('[avatar-persist] save failed', e);
             }
+            if (idToken)
+                persistServerProfile(idToken, { loadout: newLoadout });
         }
         setPhase('main');
     }
@@ -217,7 +362,7 @@ export default function App() {
                         return getCharacterPortrait(f, a);
                     })(),
                 }, locked: heroLocked, onBack: () => heroLocked ? setPhase('main') : setPhase('onboard'), onSave: handleCreatorSave }) }));
-    return (_jsx(GameViewport, { mode: "fit", children: _jsx(MainMenu, { playerName: playerName, accountLevel: accountLevel, loadout: activeLoadout ?? defaultLoadout, onCustomize: () => setPhase('creating'), heroLocked: heroLocked, view: mainView, onChangeView: setMainView, profile: profile, onSignOut: handleSignOut, roomId: roomId, onChangeRoom: switchRoom, recentRooms: recentRooms }) }));
+    return (_jsx(GameViewport, { mode: "fit", children: _jsx(MainMenu, { playerName: playerName, accountLevel: accountLevel, loadout: activeLoadout ?? defaultLoadout, onCustomize: () => setPhase('creating'), heroLocked: heroLocked, view: mainView, onChangeView: setMainView, profile: profile, onSignOut: handleSignOut }) }));
 }
 function GameViewport({ children, mode = 'fixed', allowUpscale = true, minScale = 0.5, maxScale = 2, designWidth = 1920, designHeight = 1080 }) {
     const DESIGN_W = designWidth;
@@ -376,21 +521,26 @@ function FirstTimeFlow({ faction, archetype, pet, onFaction, onArchetype, onPet,
                         ${active ? 'bg-emerald-600/30 border-emerald-500/60 shadow-inner' : 'bg-white/5 border-white/10 hover:bg-white/10'}`, children: [_jsx("div", { className: "w-full aspect-square rounded-xl bg-white/5 flex items-center justify-center overflow-hidden ring-1 ring-white/5 relative", children: _jsx("img", { src: img, alt: p, className: "absolute inset-0 w-full h-full object-cover drop-shadow" }) }), _jsx("span", { className: "font-medium tracking-wide", children: p === 'CYBER_DOG' ? 'Cyber‑Dog' : 'Cyber‑Cat' })] }, p));
                             }) }), _jsx("div", { className: "mt-4 rounded-xl border border-white/10 bg-white/5 p-4 text-lg h-60 flex flex-col overflow-hidden", children: petInfo ? (_jsxs("div", { className: "flex flex-col overflow-auto pr-1 custom-scrollbar", children: [_jsx("div", { className: "font-semibold text-base mb-2", children: "Cyber Companion" }), _jsxs("div", { children: [_jsx("span", { className: "text-emerald-300 font-medium", children: "Role:" }), " ", petInfo.role] }), _jsxs("div", { className: "mt-2", children: [_jsx("span", { className: "text-emerald-300 font-medium", children: "Abilities:" }), " ", petInfo.abilities.join(', ')] }), _jsxs("div", { className: "mt-2 space-y-1", children: [_jsx("div", { className: "text-emerald-300 font-medium", children: "Lore:" }), _jsx("div", { className: "opacity-80 text-[17px] leading-snug whitespace-pre-line", children: petInfo.lore })] })] })) : (_jsx("div", { className: "opacity-60", children: "Select a pet to see details." })) }), _jsxs("div", { className: "mt-6 flex justify-between", children: [_jsx(Button, { variant: "ghost", onClick: () => setStep(1), children: "Previous" }), _jsx(Button, { onClick: onContinue, disabled: !pet, children: "Continue" })] })] }))] }) }));
 }
-function MainMenu({ playerName, accountLevel, loadout, onCustomize, heroLocked, view, onChangeView, profile, onSignOut, roomId, onChangeRoom, recentRooms }) {
-    return (_jsxs("div", { className: "h-full w-full bg-[#0f1218] text-gray-100 grid grid-rows-[64px_1fr]", style: { gridTemplateColumns: 'minmax(260px,20%) 1fr minmax(260px,20%)' }, children: [_jsx(TopNav, { view: view, onChangeView: onChangeView, profile: profile, onSignOut: onSignOut, roomId: roomId, onChangeRoom: onChangeRoom, recentRooms: recentRooms }), _jsx(LeftPlayerPanel, { className: "row-start-2", playerName: playerName, accountLevel: accountLevel, loadout: loadout, heroLocked: heroLocked }), _jsx(CenterHub, { className: "row-start-2", loadout: loadout, view: view }), _jsx(RightPlayerPanel, { className: "row-start-2", loadout: loadout, onCustomize: onCustomize })] }));
+function MainMenu({ playerName, accountLevel, loadout, onCustomize, heroLocked, view, onChangeView, profile, onSignOut }) {
+    return (_jsxs("div", { className: "h-full w-full bg-[#0f1218] text-gray-100 grid grid-rows-[64px_1fr]", style: { gridTemplateColumns: 'minmax(260px,20%) 1fr minmax(260px,20%)' }, children: [_jsx(TopNav, { view: view, onChangeView: onChangeView, profile: profile, onSignOut: onSignOut }), _jsx(LeftPlayerPanel, { className: "row-start-2", playerName: playerName, accountLevel: accountLevel, loadout: loadout, heroLocked: heroLocked }), _jsx(CenterHub, { className: "row-start-2", loadout: loadout, view: view }), _jsx(RightPlayerPanel, { className: "row-start-2", loadout: loadout, onCustomize: onCustomize })] }));
 }
-function TopNav({ view, onChangeView, profile, onSignOut, roomId, onChangeRoom, recentRooms }) {
-    return (_jsxs("div", { className: "col-span-3 grid grid-cols-3 items-center px-6 bg-[#141924] border-b border-white/10 h-16", children: [_jsx("div", { className: "flex items-center", children: _jsxs("button", { onClick: () => onChangeView('dashboard'), className: "flex items-center gap-2 group", title: "Home", children: [_jsx("div", { className: "w-9 h-9 rounded-lg bg-gradient-to-br from-emerald-500/30 to-sky-500/30 border border-white/10 flex items-center justify-center font-bold text-sm tracking-wide text-emerald-200 group-hover:from-emerald-500/50 group-hover:to-sky-500/50 transition", children: "AF" }), _jsx("span", { className: "text-sm font-semibold tracking-wide bg-gradient-to-r from-emerald-300 to-sky-300 bg-clip-text text-transparent hidden xl:inline-block", children: "Afro\u2011Future" })] }) }), _jsxs("div", { className: "flex items-center justify-center gap-6", children: [_jsx("button", { className: `opacity-80 hover:opacity-100 transition ${view === 'dashboard' ? 'text-emerald-400' : ''}`, onClick: () => onChangeView('dashboard'), children: "Dashboard" }), _jsx("button", { className: `opacity-80 hover:opacity-100 transition ${view === 'skills' ? 'text-emerald-400' : ''}`, onClick: () => onChangeView('skills'), children: "Skills" }), _jsx("button", { className: `opacity-80 hover:opacity-100 transition ${view === 'store' ? 'text-emerald-400' : ''}`, onClick: () => onChangeView('store'), children: "Store" }), _jsx("button", { className: `opacity-80 hover:opacity-100 transition ${view === 'help' ? 'text-emerald-400' : ''}`, onClick: () => onChangeView('help'), children: "Help" }), _jsxs("div", { className: "flex items-center gap-2 ml-4", children: [_jsx("select", { value: roomId, onChange: e => onChangeRoom(e.target.value), className: "bg-[#1b222c] border border-white/10 rounded px-2 py-1 text-xs focus:outline-none focus:ring-1 focus:ring-emerald-400", children: [roomId, ...recentRooms.filter(r => r !== roomId)].map(r => _jsx("option", { value: r, children: r }, r)) }), _jsx("button", { onClick: () => {
-                                    const newRoom = prompt('Enter room id (alphanumeric, 2-24 chars)', 'lobby');
-                                    if (!newRoom)
-                                        return;
-                                    const trimmed = newRoom.trim();
-                                    if (!/^[a-zA-Z0-9_-]{2,24}$/.test(trimmed)) {
-                                        alert('Invalid room id');
-                                        return;
-                                    }
-                                    onChangeRoom(trimmed);
-                                }, className: "text-[11px] px-2 py-1 rounded bg-white/5 hover:bg-white/10 border border-white/10", children: "Change" })] })] }), _jsxs("div", { className: "ml-auto flex items-center justify-end gap-4", children: [_jsxs(Chip, { children: ["1,458 ", _jsx("span", { className: "opacity-70", children: "shards" })] }), _jsx(IconButton, { label: "Notifications", children: "\uD83D\uDD14" }), _jsx(IconButton, { label: "Mail", children: "\u2709\uFE0F" }), profile ? (_jsxs("div", { className: "flex items-center gap-2", children: [profile.picture ? _jsx("img", { className: "w-9 h-9 rounded object-cover border border-white/10", src: profile.picture, alt: profile.name || 'avatar' }) : (_jsx("div", { className: "w-9 h-9 rounded-lg bg-white/10 border border-white/10 flex items-center justify-center text-xs font-semibold", children: (profile.name || profile.email || 'U').slice(0, 1).toUpperCase() })), _jsxs("div", { className: "hidden md:flex flex-col leading-tight", children: [_jsx("span", { className: "text-xs font-medium", children: profile.name || 'User' }), profile.email && _jsx("span", { className: "text-[10px] opacity-60", children: profile.email })] }), _jsx(Button, { size: "sm", variant: "ghost", onClick: onSignOut, children: "Sign Out" })] })) : (_jsx("div", { className: "text-[11px] opacity-60", children: "Not signed in" }))] })] }));
+function TopNav({ view, onChangeView, profile, onSignOut }) {
+    const [open, setOpen] = React.useState(false);
+    const menuRef = React.useRef(null);
+    React.useEffect(() => {
+        if (!open)
+            return;
+        function handle(e) {
+            if (menuRef.current && !menuRef.current.contains(e.target))
+                setOpen(false);
+        }
+        function handleKey(e) { if (e.key === 'Escape')
+            setOpen(false); }
+        window.addEventListener('mousedown', handle);
+        window.addEventListener('keydown', handleKey);
+        return () => { window.removeEventListener('mousedown', handle); window.removeEventListener('keydown', handleKey); };
+    }, [open]);
+    return (_jsxs("div", { className: "col-span-3 grid grid-cols-3 items-center px-6 bg-[#141924] border-b border-white/10 h-16 relative", children: [_jsx("div", { className: "flex items-center", children: _jsxs("button", { onClick: () => onChangeView('dashboard'), className: "flex items-center gap-2 group", title: "Home", children: [_jsx("div", { className: "w-9 h-9 rounded-lg bg-gradient-to-br from-emerald-500/30 to-sky-500/30 border border-white/10 flex items-center justify-center font-bold text-sm tracking-wide text-emerald-200 group-hover:from-emerald-500/50 group-hover:to-sky-500/50 transition", children: "AF" }), _jsx("span", { className: "text-sm font-semibold tracking-wide bg-gradient-to-r from-emerald-300 to-sky-300 bg-clip-text text-transparent hidden xl:inline-block", children: "Afro\u2011Future" })] }) }), _jsxs("div", { className: "flex items-center justify-center gap-6", children: [_jsx("button", { className: `opacity-80 hover:opacity-100 transition ${view === 'dashboard' ? 'text-emerald-400' : ''}`, onClick: () => onChangeView('dashboard'), children: "Dashboard" }), _jsx("button", { className: `opacity-80 hover:opacity-100 transition ${view === 'skills' ? 'text-emerald-400' : ''}`, onClick: () => onChangeView('skills'), children: "Skills" }), _jsx("button", { className: `opacity-80 hover:opacity-100 transition ${view === 'store' ? 'text-emerald-400' : ''}`, onClick: () => onChangeView('store'), children: "Store" }), _jsx("button", { className: `opacity-80 hover:opacity-100 transition ${view === 'help' ? 'text-emerald-400' : ''}`, onClick: () => onChangeView('help'), children: "Help" })] }), _jsxs("div", { className: "ml-auto flex items-center justify-end gap-4", children: [_jsxs(Chip, { children: ["1,458 ", _jsx("span", { className: "opacity-70", children: "shards" })] }), _jsx(IconButton, { label: "Notifications", children: "\uD83D\uDD14" }), _jsx(IconButton, { label: "Mail", children: "\u2709\uFE0F" }), profile ? (_jsxs("div", { className: "relative", ref: menuRef, children: [_jsxs("button", { onClick: () => setOpen(o => !o), className: "flex items-center gap-2 group", children: [profile.picture ? _jsx("img", { className: "w-9 h-9 rounded object-cover border border-white/10", src: profile.picture, alt: profile.name || 'avatar' }) : (_jsx("div", { className: "w-9 h-9 rounded-lg bg-white/10 border border-white/10 flex items-center justify-center text-xs font-semibold", children: (profile.name || profile.email || 'U').slice(0, 1).toUpperCase() })), _jsx("div", { className: "hidden md:flex flex-col leading-tight text-left", children: _jsx("span", { className: "text-xs font-medium truncate max-w-[120px]", title: profile.name || profile.email, children: profile.name || 'User' }) }), _jsx("svg", { className: `w-3 h-3 transition ${open ? 'rotate-180' : ''}`, viewBox: "0 0 20 20", fill: "currentColor", children: _jsx("path", { d: "M5.23 7.21a.75.75 0 011.06.02L10 11.168l3.71-3.938a.75.75 0 111.08 1.04l-4.25 4.51a.75.75 0 01-1.08 0l-4.25-4.51a.75.75 0 01.02-1.06z" }) })] }), open && (_jsxs("div", { className: "absolute right-0 mt-2 w-64 rounded-xl border border-white/10 bg-[#1b222c] shadow-xl shadow-black/40 p-3 flex flex-col gap-2 z-50", children: [_jsxs("div", { className: "flex items-center gap-3 pb-3 border-b border-white/10", children: [profile.picture ? _jsx("img", { className: "w-10 h-10 rounded object-cover border border-white/10", src: profile.picture, alt: profile.name || 'avatar' }) : (_jsx("div", { className: "w-10 h-10 rounded-lg bg-white/10 border border-white/10 flex items-center justify-center text-sm font-semibold", children: (profile.name || profile.email || 'U').slice(0, 1).toUpperCase() })), _jsxs("div", { className: "flex flex-col leading-tight", children: [_jsx("span", { className: "text-xs font-semibold", children: profile.name || 'User' }), profile.email && _jsx("span", { className: "text-[10px] opacity-60", children: profile.email })] })] }), _jsx("button", { className: "text-left text-xs px-3 py-2 rounded-lg hover:bg-white/10 transition", onClick: () => { setOpen(false); onChangeView('dashboard'); }, children: "Account" }), _jsx("button", { className: "text-left text-xs px-3 py-2 rounded-lg hover:bg-white/10 transition", onClick: () => { setOpen(false); onChangeView('help'); }, children: "Settings" }), _jsx("button", { className: "text-left text-xs px-3 py-2 rounded-lg hover:bg-rose-600/30 hover:text-rose-200 transition border border-transparent hover:border-rose-500/40", onClick: () => { setOpen(false); onSignOut?.(); }, children: "Log out" })] }))] })) : (_jsx("div", { className: "text-[11px] opacity-60", children: "Not signed in" }))] })] }));
 }
 function LeftPlayerPanel({ className = '', playerName, accountLevel, loadout, heroLocked }) {
     // Skill / stat integration
@@ -446,12 +596,53 @@ function CenterHub({ className = '', loadout, view }) {
         return (_jsx("main", { className: `col-start-2 px-6 py-5 min-h-0 flex flex-col ${className}`, children: _jsx("div", { className: "flex-1 rounded-3xl border border-white/10 bg-[#12171f] overflow-hidden", children: _jsx(SnowflakeSkillTree, { initialLevel: loadout.level }) }) }));
     }
     if (view === 'store') {
-        return (_jsx("main", { className: `col-start-2 px-6 py-5 min-h-0 flex flex-col ${className}`, children: _jsxs("div", { className: "flex-1 rounded-3xl border border-white/10 bg-[#12171f] overflow-hidden flex flex-col", children: [_jsxs("div", { className: "p-4 border-b border-white/10 flex items-center justify-between", children: [_jsx("div", { className: "text-lg font-semibold", children: "In-Game Store" }), _jsx("span", { className: "text-xs opacity-60", children: "Embedded" })] }), _jsx("iframe", { title: "Store", src: "https://store.afro-future.app", className: "flex-1 w-full h-full", loading: "lazy", referrerPolicy: "no-referrer" })] }) }));
+        return _jsx(StoreView, { className: className });
     }
     if (view === 'help') {
-        return (_jsx("main", { className: `col-start-2 px-6 py-5 min-h-0 flex flex-col ${className}`, children: _jsxs("div", { className: "flex-1 rounded-3xl border border-white/10 bg-[#12171f] overflow-auto p-6 space-y-6 custom-scrollbar", children: [_jsxs("section", { children: [_jsx("h2", { className: "text-xl font-semibold mb-2", children: "Help & Guide" }), _jsx("p", { className: "text-sm opacity-80 leading-relaxed", children: "Welcome to Afro\u2011Future. This guide summarizes core panels and how to progress your character." })] }), _jsxs("section", { children: [_jsx("h3", { className: "font-semibold mb-1", children: "Character Customization" }), _jsx("p", { className: "text-sm opacity-80", children: "Use the Creator to choose body parts, colors, and cosmetics. Scroll through horizontal variant rows and click to select. Saved configurations appear in your dashboard avatar." })] }), _jsxs("section", { children: [_jsx("h3", { className: "font-semibold mb-1", children: "Skills Snowflake" }), _jsx("p", { className: "text-sm opacity-80", children: "Spend skill tokens to unlock connected nodes. Investing 4+ nodes in a branch grants a Trait tag (e.g., Aggressor, Commander). Traits update sidebar stats in real time." })] }), _jsxs("section", { children: [_jsx("h3", { className: "font-semibold mb-1", children: "Tokens & Levels" }), _jsx("p", { className: "text-sm opacity-80", children: "Skill tokens are limited by your level. Every 5 levels you gain a bonus pool. Hover potential nodes to plan your path; respec functionality will arrive later." })] }), _jsxs("section", { children: [_jsx("h3", { className: "font-semibold mb-1", children: "Store" }), _jsx("p", { className: "text-sm opacity-80", children: "The embedded store (beta) lets you preview upcoming cosmetic sets. Purchases are disabled in this prototype build." })] }), _jsxs("section", { children: [_jsx("h3", { className: "font-semibold mb-1", children: "Performance Tips" }), _jsxs("ul", { className: "list-disc pl-5 text-sm opacity-80 space-y-1", children: [_jsx("li", { children: "Limit background tabs with WebGL apps to keep GPU memory stable." }), _jsx("li", { children: "Close the skill tree when not in use to reduce layout work." }), _jsx("li", { children: "Use palettes for rapid color scheme iteration." })] })] }), _jsxs("section", { children: [_jsx("h3", { className: "font-semibold mb-1", children: "Need More Help?" }), _jsx("p", { className: "text-sm opacity-80", children: "Future versions will include an interactive tutorial and glossary. For now, explore freely\u2014this prototype auto-saves your choices." })] })] }) }));
+        return _jsx(SettingsView, { className: className });
     }
     return (_jsxs("main", { className: `col-start-2 px-6 py-5 min-h-0 flex flex-col gap-5 ${className}`, children: [_jsx("div", { className: "relative", style: { flex: '0 0 30%' }, children: _jsx(HeroBanner, { loadout: loadout }) }), _jsxs("div", { className: "flex-1 grid grid-cols-3 gap-5 min-h-0", children: [_jsx(NewsCard, { title: "Season 1: Terraformers" }), _jsx(NewsCard, { title: "Patch 0.2.3 Notes" }), _jsx(NewsCard, { title: "Community Spotlight" })] })] }));
+}
+// --- Store (Shopify) View ---
+function StoreView({ className = '' }) {
+    const [products, setProducts] = React.useState(null);
+    const [error, setError] = React.useState(null);
+    const [loading, setLoading] = React.useState(false);
+    React.useEffect(() => {
+        let active = true;
+        async function load() {
+            if (!import.meta.env.VITE_SHOPIFY_STORE_DOMAIN || !import.meta.env.VITE_SHOPIFY_STOREFRONT_TOKEN) {
+                setError('Shop not configured');
+                return;
+            }
+            setLoading(true);
+            try {
+                const list = await fetchProducts(12);
+                if (active)
+                    setProducts(list);
+            }
+            catch (e) {
+                if (active)
+                    setError(e.message || 'Failed to load');
+            }
+            finally {
+                if (active)
+                    setLoading(false);
+            }
+        }
+        load();
+        return () => { active = false; };
+    }, []);
+    return (_jsx("main", { className: `col-start-2 px-6 py-5 min-h-0 flex flex-col ${className}`, children: _jsxs("div", { className: "flex-1 rounded-3xl border border-white/10 bg-[#12171f] overflow-hidden flex flex-col", children: [_jsxs("div", { className: "p-4 border-b border-white/10 flex items-center justify-between", children: [_jsx("div", { className: "text-lg font-semibold", children: "Store" }), _jsx("span", { className: "text-xs opacity-60", children: "Shopify" })] }), _jsxs("div", { className: "flex-1 overflow-auto p-6 custom-scrollbar", children: [error && (_jsx("div", { className: "text-sm text-rose-300 bg-rose-900/30 border border-rose-500/30 px-4 py-3 rounded-lg", children: error === 'Shop not configured' ? (_jsxs(_Fragment, { children: ["Storefront not configured. Add ", _jsx("code", { className: "font-mono", children: "VITE_SHOPIFY_STORE_DOMAIN" }), " & ", _jsx("code", { className: "font-mono", children: "VITE_SHOPIFY_STOREFRONT_TOKEN" }), " to .env."] })) : error })), loading && !products && (_jsxs("div", { className: "flex items-center gap-3 text-sm opacity-70", children: [_jsx("div", { className: "w-4 h-4 border-2 border-emerald-400 border-t-transparent rounded-full animate-spin" }), " Loading products\u2026"] })), !loading && products && products.length === 0 && !error && _jsx("div", { className: "text-sm opacity-60", children: "No products found." }), products && products.length > 0 && (_jsx("div", { className: "grid gap-5", style: { gridTemplateColumns: 'repeat(auto-fill,minmax(200px,1fr))' }, children: products.map(p => _jsx(ProductCard, { product: p }, p.id)) }))] })] }) }));
+}
+function ProductCard({ product }) {
+    const img = product.images[0];
+    const variant = product.variants[0];
+    return (_jsxs("div", { className: "rounded-2xl border border-white/10 bg-white/5 overflow-hidden flex flex-col group hover:bg-white/10 transition", children: [_jsxs("div", { className: "aspect-square w-full relative overflow-hidden bg-[#0f141a]", children: [img ? _jsx("img", { src: img.url, alt: img.altText || product.title, className: "absolute inset-0 w-full h-full object-cover group-hover:scale-105 transition" }) : (_jsx("div", { className: "absolute inset-0 flex items-center justify-center text-[11px] opacity-40", children: "No Image" })), _jsx("div", { className: "absolute top-2 left-2 text-[10px] px-2 py-0.5 rounded bg-black/50 backdrop-blur border border-white/10", children: variant ? `${variant.price.amount} ${variant.price.currencyCode}` : '—' })] }), _jsxs("div", { className: "p-3 flex flex-col gap-1", children: [_jsx("div", { className: "text-xs font-semibold tracking-wide line-clamp-2 leading-snug min-h-[2rem]", children: product.title }), _jsx("button", { disabled: true, className: "mt-1 text-[11px] px-2 py-1 rounded bg-emerald-600/30 border border-emerald-500/40 text-emerald-200 cursor-not-allowed uppercase tracking-wide", children: "Preview" })] })] }));
+}
+// --- Settings (repurposed Help) View ---
+function SettingsView({ className = '' }) {
+    return (_jsx("main", { className: `col-start-2 px-6 py-5 min-h-0 flex flex-col ${className}`, children: _jsxs("div", { className: "flex-1 rounded-3xl border border-white/10 bg-[#12171f] overflow-auto p-6 space-y-8 custom-scrollbar", children: [_jsxs("section", { children: [_jsx("h2", { className: "text-xl font-semibold mb-2", children: "Settings" }), _jsx("p", { className: "text-sm opacity-80 leading-relaxed", children: "Configure your experience. (Prototype \u2013 values not persisted yet.)" })] }), _jsxs("section", { className: "space-y-4", children: [_jsxs("div", { className: "rounded-xl border border-white/10 bg-white/5 p-4 flex flex-col gap-3", children: [_jsx("div", { className: "text-sm font-semibold tracking-wide", children: "Audio" }), _jsxs("div", { className: "flex items-center justify-between text-xs", children: [_jsx("span", { className: "opacity-70", children: "Master Volume" }), _jsx("input", { type: "range", min: 0, max: 100, defaultValue: 70, className: "w-40" })] }), _jsxs("div", { className: "flex items-center justify-between text-xs", children: [_jsx("span", { className: "opacity-70", children: "Music Volume" }), _jsx("input", { type: "range", min: 0, max: 100, defaultValue: 55, className: "w-40" })] })] }), _jsxs("div", { className: "rounded-xl border border-white/10 bg-white/5 p-4 flex flex-col gap-3", children: [_jsx("div", { className: "text-sm font-semibold tracking-wide", children: "Graphics" }), _jsxs("div", { className: "flex items-center justify-between text-xs", children: [_jsx("span", { className: "opacity-70", children: "Quality" }), _jsxs("select", { className: "bg-[#1b222c] border border-white/10 rounded px-2 py-1 text-xs", children: [_jsx("option", { children: "Auto" }), _jsx("option", { children: "Low" }), _jsx("option", { children: "Medium" }), _jsx("option", { children: "High" })] })] }), _jsxs("div", { className: "flex items-center justify-between text-xs", children: [_jsx("span", { className: "opacity-70", children: "Show FPS" }), _jsx("input", { type: "checkbox" })] })] }), _jsxs("div", { className: "rounded-xl border border-white/10 bg-white/5 p-4 flex flex-col gap-3", children: [_jsx("div", { className: "text-sm font-semibold tracking-wide", children: "Account" }), _jsx("div", { className: "text-xs opacity-70", children: "More account controls coming soon." })] })] })] }) }));
 }
 function RightStartPanel({ className = '' }) {
     const [mode, setMode] = useState('single');

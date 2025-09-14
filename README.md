@@ -98,9 +98,10 @@ Snapshots stored under: `./snapshots/<world>/<timestamp>.yjs.gz`.
 Environment variables (add to `.env` or export in shell):
 ```
 VITE_GOOGLE_CLIENT_ID=YOUR_GOOGLE_OAUTH_WEB_CLIENT_ID
-GOOGLE_CLIENT_ID=YOUR_GOOGLE_OAUTH_WEB_CLIENT_ID  # server (can reuse same value)
+VITE_SHOPIFY_STORE_DOMAIN=yourshop.myshopify.com
+VITE_SHOPIFY_STOREFRONT_TOKEN=your_public_storefront_access_token
 ```
-The dev server (Vite) only exposes `VITE_` prefixed variables to the client bundle. The backend loads both via `dotenv` (`server.js` imports `dotenv/config`).
+The dev server (Vite) only exposes `VITE_` prefixed variables to the client bundle. The backend reuses the same `VITE_GOOGLE_CLIENT_ID` (no duplicate `GOOGLE_CLIENT_ID` needed).
 
 Flow:
 1. `AuthGate` renders a reusable `GoogleSignInButton` (in `src/components/auth/GoogleSignInButton.tsx`).
@@ -110,12 +111,12 @@ Flow:
 
 WebSocket join now requires `{ type:'join', roomId, idToken }`. Invalid or missing tokens result in an error and forced close.
 
-Room selector: Top navigation includes a dropdown + Change button. Current + recent rooms (max 5) persist in:
+Room auto‑rejoin: The last joined room + lightweight RTC state are persisted to:
 ```
 localStorage.afrofuture.room
-localStorage.afrofuture.recentRooms
+localStorage.afrofuture.rtcState
 ```
-Switching rooms cleanly tears down the prior RTCPeerConnection and re‑authenticates join.
+On refresh, if a valid `idToken` exists the app will decode profile and attempt a single auto rejoin.
 
 Security Notes:
 * Do NOT trust decoded client JWT claims—always rely on server verification.
@@ -144,3 +145,30 @@ doc.on('update', u => dc?.readyState === 'open' && dc.send(u));
 - TURN servers for tougher NATs
 - Room presence / heartbeats
 - Chunked large snapshot uploads (if needed)
+
+## Store (Shopify Integration)
+
+The embedded iframe store was replaced with a direct Shopify Storefront API product grid.
+
+Implementation:
+* Query defined in `src/services/shopify.ts` (`fetchProducts`) using the public Storefront API.
+* Environment variables required:
+	* `VITE_SHOPIFY_STORE_DOMAIN` (e.g. `yourshop.myshopify.com`)
+	* `VITE_SHOPIFY_STOREFRONT_TOKEN` (Storefront public token, NOT Admin key)
+* If variables are missing a friendly "Shop not configured" message is shown instead of failing.
+* Products (first 12) show image, title, primary variant price, and a disabled "Preview" button (placeholder for future purchase / details flow).
+
+Security Notes:
+* Do NOT embed private Admin API keys client-side.
+* For secure checkout / mutations, proxy through a backend or use Shopify's Checkout / Hydrogen approach.
+
+Future Enhancements:
+* Pagination / infinite scroll
+* Product detail modal (query by handle)
+* Client-side caching (e.g., SWR/Zustand)
+* Skeleton loading states & image optimization
+* Filtering & categories
+
+## Settings View
+
+The former Help view now acts as a Settings prototype, including placeholder controls (audio sliders, graphics quality, FPS toggle). Values are not persisted yet; future work could store them in localStorage or a profile document.
