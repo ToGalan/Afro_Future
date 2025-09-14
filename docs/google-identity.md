@@ -24,6 +24,22 @@ renderGoogleButton(target, options?)
 promptOneTap()
 ```
 
+## Runtime Fallback (config.json)
+The app will now attempt to resolve the Google client ID in this order:
+1. Build-time `import.meta.env.VITE_GOOGLE_CLIENT_ID`
+2. `window.__AF_ENV.googleClientId` (if you inject an inline script)
+3. `<meta name="google-client-id" content="..." />`
+4. `GET /config.json` (runtime file placed in `public/`)
+
+Edit `public/config.json` post-deploy to rotate the client id without rebuilding.
+
+Example `config.json`:
+```
+{ "googleClientId": "123456789-xyz.apps.googleusercontent.com" }
+```
+
+If all sources fail, a small inline fallback message renders instead of a dead button.
+
 ## One Tap
 To enable One Tap later you can call `promptOneTap()` after initialization if desired (ensure UX approval to avoid intrusive prompts).
 
@@ -34,3 +50,4 @@ If loading fails, `AuthGate` enters `error` mode and offers a retry button.
 - Token refresh / expiry detection.
 - Analytics hook on sign-in method (select_by).
 - Support style variants (dark, filled) via options passed to `renderGoogleButton`.
+- Optional SRI/integrity check for the GIS script.

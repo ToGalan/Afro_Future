@@ -15,6 +15,19 @@ interface GoogleGlobal {
   accounts: { id: GoogleAccountsId };
 }
 
+// Fallback resolution chain for client id (build env -> inline window.__AF_ENV -> meta tag -> /config.json)
+import { getRuntimeGoogleClientId } from '../config/runtimeConfig';
+
+export async function getGoogleClientId(): Promise<string | undefined> {
+  const build = (import.meta as any).env?.VITE_GOOGLE_CLIENT_ID as string | undefined;
+  if (build) return build;
+  const inline = (window as any).__AF_ENV?.googleClientId as string | undefined;
+  if (inline) return inline;
+  const meta = (document.querySelector('meta[name="google-client-id"]') as HTMLMetaElement)?.content;
+  if (meta) return meta || undefined;
+  return await getRuntimeGoogleClientId();
+}
+
 let _loadPromise: Promise<GoogleGlobal> | null = null;
 
 export function loadGoogleIdentity(): Promise<GoogleGlobal> {
@@ -44,7 +57,7 @@ export function loadGoogleIdentity(): Promise<GoogleGlobal> {
 }
 
 export async function initGoogleIdentity(clientId: string, callback: (resp: GoogleCredentialResponse) => void) {
-  if (!clientId) throw new Error('Missing VITE_GOOGLE_CLIENT_ID');
+  if (!clientId) throw new Error('Missing google client id');
   const g = await loadGoogleIdentity();
   // @ts-ignore
   g.accounts.id.initialize({ client_id: clientId, callback });

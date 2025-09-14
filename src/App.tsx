@@ -9,7 +9,7 @@ import { Archetype, CharacterLoadout, Faction, PetType, uid, now } from './types
 import { CharacterPortrait, FactionIcon, ImageAssets, getCharacterPortrait, PetIcon } from './assets/assetPaths';
 import { joinRoom } from './services/realtimeClient';
 import { useCreatorStore } from './store/creatorStore';
-import { initGoogleIdentity, renderGoogleButton } from './services/googleIdentity';
+import { initGoogleIdentity, renderGoogleButton, getGoogleClientId } from './services/googleIdentity';
 import GoogleSignInButton from './components/auth/GoogleSignInButton';
 
 const defaultLoadout: CharacterLoadout = {
@@ -444,14 +444,16 @@ function AuthGate({ onSignedIn }: { onSignedIn: (token:string)=>void }) {
   const idToken = localStorage.getItem('afrofuture.idToken');
   const [mode, setMode] = React.useState<'idle' | 'loading' | 'ready' | 'error'>('idle');
   const buttonContainerRef = React.useRef<HTMLDivElement | null>(null);
-  const clientId = import.meta.env.VITE_GOOGLE_CLIENT_ID;
+  const [clientId, setClientId] = React.useState<string|undefined>(() => import.meta.env.VITE_GOOGLE_CLIENT_ID);
+  React.useEffect(()=>{ (async ()=>{ if(!clientId){ const cid = await getGoogleClientId(); if(cid) setClientId(cid);} })(); },[clientId]);
 
   React.useEffect(()=>{ if(idToken) onSignedIn(idToken); },[idToken,onSignedIn]);
   async function startGoogle(){
-    if(!clientId){ return; }
+    const cid = clientId || await getGoogleClientId();
+    if(!cid){ setMode('error'); return; }
     setMode('loading');
     try {
-      await initGoogleIdentity(clientId, (resp:any)=>{ if(resp.credential) onSignedIn(resp.credential); });
+      await initGoogleIdentity(cid, (resp:any)=>{ if(resp.credential) onSignedIn(resp.credential); });
       if(buttonContainerRef.current){
         buttonContainerRef.current.innerHTML='';
         await renderGoogleButton(buttonContainerRef.current, {});
