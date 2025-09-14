@@ -467,16 +467,7 @@ function AuthGate({ onSignedIn }: { onSignedIn: (token:string)=>void }) {
         console.log('[auth] buttonContainerRef empty, cannot render GIS button');
       }
       setMode('ready');
-      // Auto-click for faster flow (optional synthetic click)
-      setTimeout(()=>{ 
-        const btn = buttonContainerRef.current?.querySelector('div[role=button]');
-        if(btn){
-          console.log('[auth] dispatching synthetic click to rendered GIS button');
-          btn.dispatchEvent(new Event('click')); 
-        } else {
-          console.log('[auth] GIS rendered button not found for synthetic click');
-        }
-      }, 60);
+      // Removed synthetic auto-click to avoid race conditions with container mounting in production.
     } catch(e){
       console.warn('[gis] init failed', e);
       setMode('error');
@@ -492,14 +483,19 @@ function AuthGate({ onSignedIn }: { onSignedIn: (token:string)=>void }) {
             <span>Sign in with Google</span>
           </button>
         )}
-        {clientId && mode==='loading' && (
+        {clientId && (mode==='loading') && (
           <div className="flex flex-col items-center gap-3 py-6">
             <div className="w-8 h-8 border-2 border-emerald-400 border-t-transparent rounded-full animate-spin" />
             <div className="text-[11px] opacity-70">Loading Google Sign-In…</div>
           </div>
         )}
-        {clientId && mode==='ready' && (
-          <div ref={buttonContainerRef} className="mt-2" />
+        {clientId && (
+          <div className="w-full flex flex-col items-center">
+            <div ref={buttonContainerRef} className="mt-2" />
+            {mode==='ready' && !buttonContainerRef.current && (
+              <div className="text-[10px] text-amber-400 mt-2">Button container not mounted</div>
+            )}
+          </div>
         )}
         {clientId && mode==='error' && (
           <div className="mt-4 text-[11px] text-rose-300">Failed to load Google Sign-In. Retry?
