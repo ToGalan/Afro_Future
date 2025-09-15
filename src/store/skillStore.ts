@@ -34,18 +34,33 @@ function deriveStats(unlocked: string[]): { attack:number; defense:number; utili
 }
 
 const TREE = makeTree();
+const INIT_UNLOCKED = ['root'];
+const INIT_STATS = (function(){
+  // mirror deriveStats for initial unlocked state
+  let attack=0, defense=0, utility=0;
+  INIT_UNLOCKED.forEach(id => {
+    if (id.includes('combat') || id.includes('weapon')) attack += 2;
+    if (id.includes('defense') || id.includes('shield')) defense += 2;
+    if (id.includes('support') || id.includes('leadership') || id.includes('mobility')) utility += 2;
+    if (id.includes('terraform') || id.includes('technologist')) utility += 1;
+  });
+  return { attack, defense, utility };
+})();
+const INIT_TRAITS = deriveTraits(INIT_UNLOCKED, TREE);
 
 export const useSkillStore = create<SkillState>((set, get) => ({
   level: 1,
-  unlocked: ['root'],
+  unlocked: INIT_UNLOCKED,
   spent: 0,
   basePoints: 12,
   bonusPer5: 3,
   unlockOrder: [],
-  attack: 0,
-  defense: 0,
-  utility: 0,
-  traitTags: [],
+  attack: INIT_STATS.attack,
+  defense: INIT_STATS.defense,
+  utility: INIT_STATS.utility,
+  traitTags: INIT_TRAITS.tags,
+  primaryBranch: INIT_TRAITS.topBranch,
+  primaryType: INIT_TRAITS.topType,
   unlock: (id: string) => set(state => {
     if (state.unlocked.includes(id)) {
       console.debug('[skillStore.unlock] already unlocked', { id });

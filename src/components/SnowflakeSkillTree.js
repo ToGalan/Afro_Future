@@ -68,23 +68,37 @@ export default function SnowflakeSkillTree({ initialLevel = 1, onClose }) {
     function onWheel(e) { e.preventDefault(); setScale(s => clamp(s - e.deltaY * 0.0015, 1.0, 2.5)); }
     // Track if movement exceeded a small threshold to differentiate drag vs click
     const dragThreshold = 5;
-    function onPointerDown(e) { if (scale <= 1.0)
-        return; setDragging(true); setLastPt({ x: e.clientX, y: e.clientY }); try {
-        e.currentTarget.setPointerCapture(e.pointerId);
+    function onPointerDown(e) {
+        // Do not start dragging if not zoomed in or when user is holding unlock key
+        if (scale <= 1.0 || holdingRef.current)
+            return;
+        setDragging(true);
+        setLastPt({ x: e.clientX, y: e.clientY });
+        // Clear hover to prevent tooltip from interfering while dragging
+        setHoverId(null);
+        try {
+            e.currentTarget.setPointerCapture(e.pointerId);
+        }
+        catch { }
     }
-    catch { } }
     function onPointerMove(e) { if (!dragging || !lastPt || scale <= 1.0)
         return; const dx = e.clientX - lastPt.x; const dy = e.clientY - lastPt.y; if (Math.abs(dx) > 0 || Math.abs(dy) > 0) {
         setPan(p => ({ x: p.x + dx, y: p.y + dy }));
     } setLastPt({ x: e.clientX, y: e.clientY }); }
-    function onPointerUp(e) { setDragging(false); setLastPt(null); try {
-        e.currentTarget.releasePointerCapture(e.pointerId);
+    function onPointerUp(e) {
+        setDragging(false);
+        setLastPt(null);
+        try {
+            e.currentTarget.releasePointerCapture(e.pointerId);
+        }
+        catch { }
     }
-    catch { } }
     function links() { const arr = []; laid.forEach(n => { if (!n.requires)
         return; n.requires.forEach(r => { const from = laid.find(x => x.id === r); if (from)
         arr.push({ from, to: n, faction: n.faction, counters: n.counters }); }); }); return arr; }
     const traits = deriveTraits(unlocked, nodes);
+    const traitsTopBranch = traits.topBranch && traits.topBranch.toLowerCase() === 'root' ? undefined : traits.topBranch;
+    const traitsTopType = traits.topType && traits.topType.toLowerCase() === 'root' ? undefined : traits.topType;
     const [hoverId, setHoverId] = useState(null);
     const [lastUnlocked, setLastUnlocked] = useState(null);
     function onUnlock(id) { const reason = unlockReason(id); const st = useSkillStore.getState(); const avail = availablePoints(st); console.debug('[SnowflakeSkillTree.onUnlock] attempt', { id, reason, avail, unlockedCount: st.unlocked.length }); if (reason !== 'Unlockable')
@@ -92,6 +106,7 @@ export default function SnowflakeSkillTree({ initialLevel = 1, onClose }) {
     // Hold-to-unlock state
     const HOLD_DURATION = 4000; // ms
     const [holdTarget, setHoldTarget] = useState(null);
+    const holdTargetRef = useRef(null);
     const [holdProgress, setHoldProgress] = useState(0); // 0..1
     const holdingRef = useRef(false);
     const rafRef = useRef(null);
@@ -130,6 +145,7 @@ export default function SnowflakeSkillTree({ initialLevel = 1, onClose }) {
             holdingRef.current = false;
             holdStartRef.current = null;
             setHoldTarget(null);
+            holdTargetRef.current = null;
             setHoldProgress(0);
             if (rafRef.current)
                 cancelAnimationFrame(rafRef.current);
@@ -138,6 +154,7 @@ export default function SnowflakeSkillTree({ initialLevel = 1, onClose }) {
             holdingRef.current = false;
             holdStartRef.current = null;
             setHoldTarget(null);
+            holdTargetRef.current = null;
             setHoldProgress(0);
             if (rafRef.current)
                 cancelAnimationFrame(rafRef.current);
@@ -146,17 +163,19 @@ export default function SnowflakeSkillTree({ initialLevel = 1, onClose }) {
     // Key handling for hold-to-unlock
     useEffect(() => {
         function step() {
-            if (!holdingRef.current || !holdStartRef.current || !holdTarget) {
+            if (!holdingRef.current || !holdStartRef.current || !holdTargetRef.current) {
                 return;
             }
             const elapsed = performance.now() - holdStartRef.current;
             const prog = Math.min(1, elapsed / HOLD_DURATION);
             setHoldProgress(prog);
             if (prog >= 1) {
-                onUnlock(holdTarget);
+                if (holdTargetRef.current)
+                    onUnlock(holdTargetRef.current);
                 holdingRef.current = false;
                 holdStartRef.current = null;
                 setHoldTarget(null);
+                holdTargetRef.current = null;
                 setHoldProgress(0);
                 return;
             }
@@ -172,6 +191,7 @@ export default function SnowflakeSkillTree({ initialLevel = 1, onClose }) {
                     holdingRef.current = true;
                     holdStartRef.current = performance.now();
                     setHoldTarget(hoverId);
+                    holdTargetRef.current = hoverId;
                     setHoldProgress(0);
                     rafRef.current = requestAnimationFrame(step);
                 }
@@ -182,6 +202,7 @@ export default function SnowflakeSkillTree({ initialLevel = 1, onClose }) {
                 holdingRef.current = false;
                 holdStartRef.current = null;
                 setHoldTarget(null);
+                holdTargetRef.current = null;
                 setHoldProgress(0);
                 if (rafRef.current)
                     cancelAnimationFrame(rafRef.current);
@@ -198,7 +219,8 @@ export default function SnowflakeSkillTree({ initialLevel = 1, onClose }) {
                                                     const r = n.id === 'root' ? 22 : n.tier === 1 ? 14 : 11;
                                                     const isCoreHighlight = nextCores.includes(n.id);
                                                     const isHoldingThis = holdTarget === n.id && holdingRef.current;
-                                                    return (_jsxs("g", { "data-id": n.id, transform: `translate(${n.x},${n.y})`, onMouseEnter: () => setHoverId(n.id), onMouseLeave: () => setHoverId(h => h === n.id ? null : h), style: { pointerEvents: 'all' }, children: [_jsx("circle", { r: r + 5, fill: "#0b1220", stroke: "#1f2937", strokeWidth: 2 }), _jsx("circle", { r: r, fill: isUnlocked ? color : '#111827', stroke: isUnlocked ? color : '#374151', strokeWidth: isUnlocked ? 3 : 2, filter: isUnlocked ? 'url(#glow)' : undefined, style: { cursor: canUnlock(n.id) ? 'pointer' : 'not-allowed', boxShadow: isCoreHighlight ? '0 0 0 4px rgba(16,185,129,0.6)' : undefined } }), (!isUnlocked && isHoldingThis) && (() => {
+                                                    return (_jsxs("g", { "data-id": n.id, transform: `translate(${n.x},${n.y})`, onMouseEnter: () => setHoverId(n.id), onMouseLeave: () => { if (!dragging)
+                                                            setHoverId(h => h === n.id ? null : h); }, style: { pointerEvents: 'all' }, children: [_jsx("circle", { r: r + 5, fill: "#0b1220", stroke: "#1f2937", strokeWidth: 2 }), _jsx("circle", { r: r, fill: isUnlocked ? color : '#111827', stroke: isUnlocked ? color : '#374151', strokeWidth: isUnlocked ? 3 : 2, filter: isUnlocked ? 'url(#glow)' : undefined, style: { cursor: canUnlock(n.id) ? 'pointer' : 'not-allowed', boxShadow: isCoreHighlight ? '0 0 0 4px rgba(16,185,129,0.6)' : undefined } }), (!isUnlocked && isHoldingThis) && (() => {
                                                                 const pr = holdProgress;
                                                                 const rr = r + 6;
                                                                 const circ = 2 * Math.PI * rr;
@@ -209,7 +231,7 @@ export default function SnowflakeSkillTree({ initialLevel = 1, onClose }) {
                                                     const x = size / 2 + Math.cos(angle) * (size * 0.46);
                                                     const y = size / 2 + Math.sin(angle) * (size * 0.46);
                                                     return (_jsx("g", { transform: `translate(${x},${y})`, children: _jsx("text", { textAnchor: "middle", fontSize: showDetail ? 12 : 14, fill: "#9ca3af", children: b.name }) }, b.id));
-                                                })] })] }), hoverProjection && hoverId && (_jsxs("div", { className: "absolute top-2 left-2 w-64 rounded-xl border border-emerald-400/30 bg-[#0f1218]/95 backdrop-blur p-3 text-xs shadow-xl pointer-events-auto", children: [_jsxs("div", { className: "font-semibold text-emerald-300 mb-1 truncate", children: ["Preview: ", laid.find(n => n.id === hoverId)?.label] }), _jsxs("div", { className: "grid grid-cols-3 gap-2 mb-2", children: [_jsxs("div", { className: "flex flex-col items-start", children: [_jsx("span", { className: "opacity-60", children: "Atk" }), _jsx("span", { className: "font-semibold text-emerald-200", children: hoverProjection.attack })] }), _jsxs("div", { className: "flex flex-col items-start", children: [_jsx("span", { className: "opacity-60", children: "Def" }), _jsx("span", { className: "font-semibold text-emerald-200", children: hoverProjection.defense })] }), _jsxs("div", { className: "flex flex-col items-start", children: [_jsx("span", { className: "opacity-60", children: "Util" }), _jsx("span", { className: "font-semibold text-emerald-200", children: hoverProjection.utility })] })] }), _jsx("div", { className: "flex flex-wrap gap-1 mb-2", children: hoverProjection.traitProj.tags.length ? hoverProjection.traitProj.tags.map(t => _jsx("span", { className: "px-1.5 py-0.5 rounded bg-white/10 border border-white/10 text-[10px]", children: t }, t)) : _jsx("span", { className: "opacity-50", children: "No new trait" }) }), _jsx("div", { className: "opacity-60 leading-snug line-clamp-3 mb-2", children: laid.find(n => n.id === hoverId)?.description }), unlockReason(hoverId) === 'Unlockable' && !unlocked.includes(hoverId) && (_jsxs("div", { className: "flex items-center gap-3", children: [_jsxs("div", { className: "flex flex-col gap-1", children: [_jsx("span", { className: "text-emerald-300 font-semibold", children: "Hold key 'U' to Unlock" }), _jsx("span", { className: "opacity-70", children: holdTarget === hoverId ? `${((HOLD_DURATION / 1000) * (1 - holdProgress)).toFixed(1)}s remaining` : `${(HOLD_DURATION / 1000).toFixed(1)}s required` }), _jsx("div", { className: "h-2 w-full bg-white/10 rounded-full overflow-hidden", children: _jsx("div", { className: "h-full bg-emerald-500 transition-all duration-100 ease-linear", style: {
+                                                })] })] }), hoverProjection && hoverId && (_jsxs("div", { className: "absolute top-2 left-2 w-64 rounded-xl border border-emerald-400/30 bg-[#0f1218]/95 backdrop-blur p-3 text-xs shadow-xl pointer-events-none", children: [_jsxs("div", { className: "font-semibold text-emerald-300 mb-1 truncate", children: ["Preview: ", laid.find(n => n.id === hoverId)?.label] }), _jsxs("div", { className: "grid grid-cols-3 gap-2 mb-2", children: [_jsxs("div", { className: "flex flex-col items-start", children: [_jsx("span", { className: "opacity-60", children: "Atk" }), _jsx("span", { className: "font-semibold text-emerald-200", children: hoverProjection.attack })] }), _jsxs("div", { className: "flex flex-col items-start", children: [_jsx("span", { className: "opacity-60", children: "Def" }), _jsx("span", { className: "font-semibold text-emerald-200", children: hoverProjection.defense })] }), _jsxs("div", { className: "flex flex-col items-start", children: [_jsx("span", { className: "opacity-60", children: "Util" }), _jsx("span", { className: "font-semibold text-emerald-200", children: hoverProjection.utility })] })] }), _jsx("div", { className: "flex flex-wrap gap-1 mb-2", children: hoverProjection.traitProj.tags.length ? hoverProjection.traitProj.tags.map(t => _jsx("span", { className: "px-1.5 py-0.5 rounded bg-white/10 border border-white/10 text-[10px]", children: t }, t)) : _jsx("span", { className: "opacity-50", children: "No new trait" }) }), _jsx("div", { className: "opacity-60 leading-snug line-clamp-3 mb-2", children: laid.find(n => n.id === hoverId)?.description }), unlockReason(hoverId) === 'Unlockable' && !unlocked.includes(hoverId) && (_jsxs("div", { className: "flex items-center gap-3", children: [_jsxs("div", { className: "flex flex-col gap-1", children: [_jsx("span", { className: "text-emerald-300 font-semibold", children: "Hold key 'U' to Unlock" }), _jsx("span", { className: "opacity-70", children: holdTarget === hoverId ? `${((HOLD_DURATION / 1000) * (1 - holdProgress)).toFixed(1)}s remaining` : `${(HOLD_DURATION / 1000).toFixed(1)}s required` }), _jsx("div", { className: "h-2 w-full bg-white/10 rounded-full overflow-hidden", children: _jsx("div", { className: "h-full bg-emerald-500 transition-all duration-100 ease-linear", style: {
                                                                     width: `${(holdProgress * 100).toFixed(1)}%`,
                                                                     backgroundColor: holdProgress > 0.8 ? '#22c55e' : '#10b981'
                                                                 } }) }), _jsxs("span", { className: "opacity-60 text-[10px]", children: ["Points after unlock: ", ptsLeft - 1 >= 0 ? ptsLeft - 1 : 0] })] }), _jsxs("div", { className: "relative w-12 h-12 flex items-center justify-center", children: [_jsx("svg", { width: 48, height: 48, className: "block", children: (() => {
@@ -221,7 +243,7 @@ export default function SnowflakeSkillTree({ initialLevel = 1, onClose }) {
                                                                                 transform: 'rotate(-90deg)',
                                                                                 transformOrigin: 'center'
                                                                             } }), isActive && (_jsx("circle", { r: r + 2, fill: "none", stroke: "#10b981", strokeWidth: 1, opacity: 0.5 }))] }));
-                                                            })() }), _jsx("span", { className: `absolute text-sm font-bold tracking-wide transition-colors duration-200 ${holdTarget === hoverId && holdProgress > 0 ? 'text-emerald-300' : 'text-gray-300'}`, children: "U" })] })] })), unlockReason(hoverId) !== 'Unlockable' && (_jsx("div", { className: "opacity-60", children: unlockReason(hoverId) }))] }))] }) }), _jsxs("div", { className: "col-span-3", children: [_jsxs("div", { className: "rounded-2xl p-4 bg-white/5 border border-white/10", children: [_jsx("div", { className: "text-lg font-semibold", children: "Traits" }), _jsxs("div", { className: "mt-2 text-sm", children: ["Primary Path: ", _jsx("span", { className: "opacity-80", children: traits.topBranch ?? '—' })] }), _jsxs("div", { className: "text-sm", children: ["Primary Type: ", _jsx("span", { className: "opacity-80", children: traits.topType ?? '—' })] }), _jsx("div", { className: "mt-2 flex flex-wrap gap-2", children: traits.tags.length ? traits.tags.map(t => (_jsx("span", { className: "px-2 py-1 rounded bg-white/10 border border-white/10 text-xs", children: t }, t))) : _jsx("span", { className: "opacity-70 text-xs", children: "Unlock nodes to reveal traits" }) }), _jsx("div", { className: "mt-4 text-xs opacity-70", children: "Choosing different branches creates unique player traits. Zoom out for snowflake view; zoom in to drag and inspect details." })] }), _jsxs("div", { className: "mt-3 grid grid-cols-2 gap-2 text-xs", children: [_jsx(LegendItem, { color: branchColor('spell'), label: "Spell" }), _jsx(LegendItem, { color: branchColor('buff'), label: "Buff" }), _jsx(LegendItem, { color: branchColor('stat'), label: "Stat" }), _jsx(LegendItem, { color: branchColor('ability'), label: "Ability" }), _jsx(LegendItem, { color: branchColor('weapon'), label: "Weapon" }), _jsx(LegendItem, { color: branchColor('trade'), label: "Trade" }), _jsx(LegendItem, { color: branchColor('zone'), label: "Zone Control" })] })] })] })] }));
+                                                            })() }), _jsx("span", { className: `absolute text-sm font-bold tracking-wide transition-colors duration-200 ${holdTarget === hoverId && holdProgress > 0 ? 'text-emerald-300' : 'text-gray-300'}`, children: "U" })] })] })), unlockReason(hoverId) !== 'Unlockable' && (_jsx("div", { className: "opacity-60", children: unlockReason(hoverId) }))] }))] }) }), _jsxs("div", { className: "col-span-3", children: [_jsxs("div", { className: "rounded-2xl p-4 bg-white/5 border border-white/10", children: [_jsx("div", { className: "text-lg font-semibold", children: "Traits" }), _jsxs("div", { className: "mt-2 text-sm", children: ["Primary Path: ", _jsx("span", { className: "opacity-80", children: traitsTopBranch ?? '—' })] }), _jsxs("div", { className: "text-sm", children: ["Primary Type: ", _jsx("span", { className: "opacity-80", children: traitsTopType ?? '—' })] }), _jsx("div", { className: "mt-2 flex flex-wrap gap-2", children: traits.tags.length ? traits.tags.map(t => (_jsx("span", { className: "px-2 py-1 rounded bg-white/10 border border-white/10 text-xs", children: t }, t))) : _jsx("span", { className: "opacity-70 text-xs", children: "Unlock nodes to reveal traits" }) }), _jsx("div", { className: "mt-4 text-xs opacity-70", children: "Choosing different branches creates unique player traits. Zoom out for snowflake view; zoom in to drag and inspect details." })] }), _jsxs("div", { className: "mt-3 grid grid-cols-2 gap-2 text-xs", children: [_jsx(LegendItem, { color: branchColor('spell'), label: "Spell" }), _jsx(LegendItem, { color: branchColor('buff'), label: "Buff" }), _jsx(LegendItem, { color: branchColor('stat'), label: "Stat" }), _jsx(LegendItem, { color: branchColor('ability'), label: "Ability" }), _jsx(LegendItem, { color: branchColor('weapon'), label: "Weapon" }), _jsx(LegendItem, { color: branchColor('trade'), label: "Trade" }), _jsx(LegendItem, { color: branchColor('zone'), label: "Zone Control" })] })] })] })] }));
 }
 function LegendItem({ color, label }) {
     return (_jsxs("div", { className: "flex items-center gap-2", children: [_jsx("span", { className: "inline-block w-3 h-3 rounded-full", style: { backgroundColor: color } }), _jsx("span", { children: label })] }));

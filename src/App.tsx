@@ -56,14 +56,19 @@ export default function App() {
   const [accountLevel] = useState(1);
   const [activeLoadout, setActiveLoadout] = useState<CharacterLoadout | null>(null);
 
-  // Hydrate saved avatar (loadout) from localStorage once on mount
+  // Hydrate saved avatar (loadout) from localStorage once on mount, normalizing portrait URL
   useEffect(()=>{
     try {
       const raw = localStorage.getItem('afrofuture.activeLoadout');
       if(raw){
         const parsed = JSON.parse(raw) as CharacterLoadout;
         if(parsed && parsed.id){
-          setActiveLoadout(parsed);
+          const normalized: CharacterLoadout = {
+            ...parsed,
+            // Avoid stale /src/assets/* paths by deriving from faction+archetype
+            portraitUrl: getCharacterPortrait(parsed.faction as Faction, parsed.archetype as Archetype),
+          };
+          setActiveLoadout(normalized);
         }
       }
     } catch(e){
@@ -120,7 +125,14 @@ export default function App() {
         // Merge name/email/picture preference: prefer fresh token payload over stored values
         const mergedProf = { ...serverProf, ...prof };
         setProfile(mergedProf);
-        if(serverProf.loadout){ setActiveLoadout(serverProf.loadout); }
+        if(serverProf.loadout){
+          const l = serverProf.loadout as CharacterLoadout;
+          const normalized: CharacterLoadout = {
+            ...l,
+            portraitUrl: getCharacterPortrait(l.faction as Faction, l.archetype as Archetype),
+          };
+          setActiveLoadout(normalized);
+        }
         try { localStorage.setItem('afrofuture.profile', JSON.stringify(mergedProf)); } catch {}
         if(serverProf.loadout){ try { localStorage.setItem('afrofuture.activeLoadout', JSON.stringify(serverProf.loadout)); } catch {} }
       } else {
@@ -255,6 +267,8 @@ export default function App() {
     // Preserve original id if already existed (no new hero creation after lock)
     if (activeLoadout) {
       const merged = { ...activeLoadout, ...newLoadout, id: activeLoadout.id, createdAt: activeLoadout.createdAt, updatedAt: now() } as CharacterLoadout;
+      // Always derive portraitUrl from canonical mapping (avoids stale /src paths)
+      merged.portraitUrl = getCharacterPortrait(merged.faction as Faction, merged.archetype as Archetype);
       setActiveLoadout(merged);
       try { localStorage.setItem('afrofuture.activeLoadout', JSON.stringify(merged)); } catch(e){ console.warn('[avatar-persist] save failed', e); }
       if(idToken) persistServerProfile(idToken, { loadout: merged });
@@ -263,9 +277,13 @@ export default function App() {
         try { rtc.dc.send(JSON.stringify({ type: 'loadoutUpdate', loadout: merged })); } catch(err){ console.warn('[rtc] broadcast failed', err); }
       }
     } else {
-      setActiveLoadout(newLoadout);
-      try { localStorage.setItem('afrofuture.activeLoadout', JSON.stringify(newLoadout)); } catch(e){ console.warn('[avatar-persist] save failed', e); }
-      if(idToken) persistServerProfile(idToken, { loadout: newLoadout });
+      const normalized: CharacterLoadout = {
+        ...newLoadout,
+        portraitUrl: getCharacterPortrait(newLoadout.faction as Faction, newLoadout.archetype as Archetype),
+      };
+      setActiveLoadout(normalized);
+      try { localStorage.setItem('afrofuture.activeLoadout', JSON.stringify(normalized)); } catch(e){ console.warn('[avatar-persist] save failed', e); }
+      if(idToken) persistServerProfile(idToken, { loadout: normalized });
       if(rtc?.dc?.readyState === 'open') {
         try { rtc.dc.send(JSON.stringify({ type: 'loadoutUpdate', loadout: newLoadout })); } catch(err){ console.warn('[rtc] broadcast failed', err); }
       }
@@ -400,7 +418,7 @@ function GameViewport({ children, mode = 'fixed', allowUpscale = true, minScale 
       <div className="relative" style={stageStyle}>
         <div className="absolute inset-0 pointer-events-none shadow-[0_0_0_1px_rgba(255,255,255,0.04)]" />
         {children}
-        <div className="absolute bottom-1 right-2 text-[10px] font-mono bg-black/40 backdrop-blur-sm px-2 py-1 rounded border border-white/10 text-white/80">
+        <div className="absolute bottom-1 left-2 text-[10px] font-mono bg-black/40 backdrop-blur-sm px-2 py-1 rounded border border-white/10 text-white/80">
           {mode === 'fit'
             ? <>fit mode • win {viewport.w}×{viewport.h}</>
             : <>fixed {DESIGN_W}×{DESIGN_H} • win {viewport.w}×{viewport.h} • scale {scale.toFixed(3)}</>
@@ -761,6 +779,9 @@ function FirstTimeFlow({ faction, archetype, pet, onFaction, onArchetype, onPet,
 }
 
 function MainMenu({ playerName, accountLevel, loadout, onCustomize, heroLocked, view, onChangeView, profile, onSignOut }: { playerName: string; accountLevel: number; loadout: CharacterLoadout; onCustomize: () => void; heroLocked: boolean; view: 'dashboard' | 'skills' | 'store' | 'help'; onChangeView: (v: 'dashboard' | 'skills' | 'store' | 'help') => void; profile?: { sub: string; name?: string; email?: string; picture?: string } | null; onSignOut?: () => void; }) {
+  // Ensure skill store level matches active loadout level even when Skills view isn't open
+  const setSkillLevel = useSkillStore(s=>s.setLevel);
+  useEffect(()=>{ setSkillLevel(loadout.level); }, [loadout.level, setSkillLevel]);
   return (
     <div className="h-full w-full bg-[#0f1218] text-gray-100">
       <TopNav view={view} onChangeView={onChangeView} profile={profile} onSignOut={onSignOut} />
@@ -827,8 +848,7 @@ function TopNav({ view, onChangeView, profile, onSignOut }: { view: 'dashboard' 
       </div>
       <div className="ml-auto flex items-center justify-end gap-4">
         <Chip>1,458 <span className="opacity-70">shards</span></Chip>
-        <IconButton label="Notifications">🔔</IconButton>
-        <IconButton label="Mail">✉️</IconButton>
+  <IconButton label="Notifications">🔔</IconButton>
         <IconButton label={isFs ? 'Exit Fullscreen' : 'Enter Fullscreen'} onClick={toggleFullscreen}>
           {/* Expand arrows icon */}
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
@@ -890,18 +910,25 @@ function LeftPlayerPanel({ className = '', playerName, accountLevel, loadout, he
   const skillUnlocked = useSkillStore(s=>s.unlocked);
   const skillSpent = useSkillStore(s=>s.spent);
   const skillLevel = useSkillStore(s=>s.level);
+  const defense = useSkillStore(s=>s.defense);
+  const utility = useSkillStore(s=>s.utility);
   // Removed Attack/Defense/Utility stat cards per UI cleanup request.
-  const primaryBranch = useSkillStore(s=>s.primaryBranch);
-  const primaryType = useSkillStore(s=>s.primaryType);
+  const primaryBranchRaw = useSkillStore(s=>s.primaryBranch);
+  const primaryTypeRaw = useSkillStore(s=>s.primaryType);
   const traitTags = useSkillStore(s=>s.traitTags);
   const respec = useSkillStore(s=>s.respec);
   const unlockOrder = useSkillStore(s=>s.unlockOrder);
-  const pointsLeft = availablePoints(useSkillStore.getState());
-  // Simplified HP / EP formulas now decoupled from removed defense/utility stats.
-  const baseHP = 100; const hpPerLevel = 12;
-  const baseEP = 60; const epPerLevel = 6;
-  const HP = baseHP + (skillLevel-1)*hpPerLevel;
-  const EP = baseEP + (skillLevel-1)*epPerLevel;
+  const basePoints = useSkillStore(s=>s.basePoints);
+  const bonusPer5 = useSkillStore(s=>s.bonusPer5);
+  const bonusBlocks = Math.floor((Math.max(1,skillLevel)-1)/5);
+  const pointsLeft = basePoints + bonusBlocks * bonusPer5 - skillSpent;
+  const primaryBranch = primaryBranchRaw && primaryBranchRaw.toLowerCase() === 'root' ? undefined : primaryBranchRaw;
+  const primaryType = primaryTypeRaw && primaryTypeRaw.toLowerCase() === 'root' ? undefined : primaryTypeRaw;
+  // HP/EP derived from level plus skill-derived stats (defense/utility)
+  const baseHP = 100; const hpPerLevel = 12; const hpPerDefense = 10;
+  const baseEP = 60; const epPerLevel = 6; const epPerUtility = 6;
+  const HP = baseHP + (skillLevel-1)*hpPerLevel + defense*hpPerDefense;
+  const EP = baseEP + (skillLevel-1)*epPerLevel + utility*epPerUtility;
   return (
     <aside className={`col-start-1 h-full min-h-0 ${className} bg-[#0f1218] border-r border-black/40 shadow-inner flex flex-col overflow-hidden`}>      
       <div className="px-4 py-4 border-b border-white/10 flex flex-col items-center shrink-0">
@@ -991,11 +1018,11 @@ function RightPlayerPanel({ className = '', loadout, onCustomize }: { className?
   ];
   
   return (
-    <aside className={`col-start-3 h-full min-h-0 ${className} bg-[#0f1218] border-l border-black/40 shadow-inner flex flex-col pr-3`}>
+  <aside className={`col-start-3 h-full min-h-0 ${className} bg-[#0f1218] border-l border-black/40 shadow-inner flex flex-col pr-3`}>
         {/* 3D Avatar Section – match left character card size */}
-        <div className="p-4 border-b border-white/10">
+        <div className="p-3 border-b border-white/10">
           <div className="w-full flex items-center justify-center">
-            <div className="relative w-full max-w-[260px] aspect-[4/3] rounded-3xl border border-white/10 bg-gradient-to-br from-[#0b0e13] to-[#1a1e29] overflow-hidden">
+            <div className="relative w-full max-w-[240px] aspect-[4/3] rounded-3xl border border-white/10 bg-gradient-to-br from-[#0b0e13] to-[#1a1e29] overflow-hidden">
               <div className="absolute inset-0 bg-gradient-to-tr from-[#0b0e13]/80 via-transparent to-[#0b0e13]/50" />
               <div className="absolute inset-x-0 bottom-0 top-[20%]">
                 <AvatarScene
@@ -1009,7 +1036,7 @@ function RightPlayerPanel({ className = '', loadout, onCustomize }: { className?
                   cameraPosition={[1.6,1.0,2.4]}
                   cameraFov={30}
                   target={[0,0.55,0]}
-                  modelOffset={[0,-0.75,0]}
+                  modelOffset={[0,-0.7,0]}
                   autoFrame
                   frameMargin={0.12}
                 />
@@ -1017,11 +1044,11 @@ function RightPlayerPanel({ className = '', loadout, onCustomize }: { className?
             </div>
           </div>
           <div className="mt-2 flex justify-center">
-            <Button size="sm" className="w-full max-w-[260px] text-xs" onClick={onCustomize}>Customize</Button>
+            <Button size="sm" className="w-full max-w-[240px] text-xs" onClick={onCustomize}>Customize</Button>
           </div>
         </div>
   {/* Game Modes Section */}
-  <div className="px-4 py-4 border-b border-white/10">
+  <div className="px-4 py-3 border-b border-white/10">
         <div className="text-lg font-semibold mb-4">Game Modes</div>
         <div className="grid gap-3">
           {modes.map(m => (
@@ -1029,41 +1056,24 @@ function RightPlayerPanel({ className = '', loadout, onCustomize }: { className?
               key={m.key}
               disabled={!m.enabled}
               onClick={() => m.enabled && setMode(m.key)}
-              className={`rounded-2xl px-4 py-4 text-left relative overflow-hidden border transition group
-                h-14 flex items-start
+              className={`rounded-2xl px-5 py-4 text-center relative overflow-hidden border transition group
+                min-h-[45px] flex items-center justify-center
                 ${mode === m.key ? 'bg-emerald-600/30 border-emerald-500/60 shadow-inner' : 'bg-white/5 border-white/10 hover:bg-white/10'}
                 ${!m.enabled ? 'opacity-40 cursor-not-allowed' : ''}`}
             >
               <div className="flex flex-col items-center justify-center w-full text-center">
-                <span className="font-medium text-sm tracking-wide mb-1">{m.label}</span>
+                <span className="font-medium text-sm tracking-wide mb-0.5">{m.label}</span>
                 <span className="text-[11px] opacity-60">{m.enabled ? (m.key === 'single' ? 'Solo mission queue' : 'Feature in development') : 'Unavailable'}</span>
               </div>
-              {mode === m.key && <div className="absolute top-2 right-2 text-[10px] px-2 py-0.5 rounded bg-emerald-500/20 border border-emerald-400/40 text-emerald-200">Active</div>}
+              {/* Removed 'Active' badge per request */}
             </button>
           ))}
           </div>
         </div>
-  {/* Future sections for Gifts/Battle Pass */}
-  <div className="px-4 py-4 border-b border-white/10">
-        <div className="text-lg font-semibold mb-3">Rewards</div>
-        <div className="grid grid-cols-2 gap-3 place-items-center">
-          {[
-            { title: 'Gifts', subtitle: 'Coming Soon' },
-            { title: 'Battle Pass', subtitle: 'Coming Soon' },
-          ].map(card => (
-            <div key={card.title} className="aspect-square rounded-2xl border border-white/10 bg-white/5 overflow-hidden relative flex items-center justify-center" style={{ width: '70%' }}>
-              <div className="flex flex-col items-center text-center p-3 w-full">
-                <span className="font-medium text-[13px] tracking-wide mb-0.5">{card.title}</span>
-                <span className="text-[10px] opacity-60">{card.subtitle}</span>
-              </div>
-            </div>
-          ))}
-        </div>
-      </div>
-  {/* Play footer */}
-  <div className="p-4 mt-auto">
+  {/* Play footer pinned to bottom */}
+  <div className="p-4 mt-auto bg-[#0f1218]">
           <Button className="w-full h-12 text-lg" onClick={startMatch} disabled={mode !== 'single'}>Play</Button>
-          <div className="mt-1 text-[11px] text-gray-300 h-4">{queue ?? (mode === 'single' ? 'Ready' : 'Disabled')}</div>
+          <div className="mt-1 text-[11px] text-gray-300 h-4">{queue ?? (mode === 'single' ? '' : 'Disabled')}</div>
         </div>
     </aside>
   );
@@ -1087,7 +1097,7 @@ function CenterHub({ className = '', loadout, view }: { className?: string; load
   }
   return (
     <main className={`col-start-2 px-6 py-5 min-h-0 flex flex-col gap-5 ${className}`}>
-      <div className="relative" style={{flex:'0 0 30%'}}>
+      <div className="relative" style={{flex:'0 0 50%'}}>
         <HeroBanner loadout={loadout} />
       </div>
       <div className="flex-1 grid grid-cols-3 gap-5 min-h-0">
@@ -1104,15 +1114,35 @@ function StoreView({ className='' }: { className?: string }) {
   const [products, setProducts] = React.useState<ShopifyProduct[]|null>(null);
   const [error, setError] = React.useState<string|null>(null);
   const [loading, setLoading] = React.useState(false);
+  function authHeaderMaybe(){
+    const token = localStorage.getItem('afrofuture.idToken');
+    return token ? { Authorization: 'Bearer '+token } : {} as Record<string,string>;
+  }
   React.useEffect(()=>{
     let active = true;
     async function load(){
-      if(!import.meta.env.VITE_SHOPIFY_STORE_DOMAIN || !import.meta.env.VITE_SHOPIFY_STOREFRONT_TOKEN){
-        setError('Shop not configured');
-        return;
-      }
       setLoading(true);
       try {
+        // Prefer Admin REST proxy if available and we are running behind the Node server (not pure file:// or static-only)
+        // Only attempt Admin proxy if explicitly enabled via env. Defaults to off in static-only serving.
+        const allowAdminProxy = ((import.meta as any)?.env?.VITE_ENABLE_ADMIN_PROXY === 'true');
+        if (allowAdminProxy) {
+          try {
+            const r = await fetch('/admin/products?limit=12', { headers: authHeaderMaybe() });
+            if (r.ok) {
+              const json = await r.json();
+              if (json && json.products) {
+                if(active) setProducts(json.products);
+                return;
+              }
+            }
+          } catch {}
+        }
+        // Fallback to Storefront GraphQL (public)
+        if(!import.meta.env.VITE_SHOPIFY_STORE_DOMAIN || !import.meta.env.VITE_SHOPIFY_STOREFRONT_TOKEN){
+          setError('Shop not configured');
+          return;
+        }
         const list = await fetchProducts(12);
         if(active) setProducts(list);
       } catch(e:any){ if(active) setError(e.message||'Failed to load'); }
@@ -1162,7 +1192,7 @@ function ProductCard({ product }: { product: ShopifyProduct }) {
         {img ? <img src={img.url} alt={img.altText||product.title} className="absolute inset-0 w-full h-full object-cover group-hover:scale-105 transition"/> : (
           <div className="absolute inset-0 flex items-center justify-center text-[11px] opacity-40">No Image</div>
         )}
-        <div className="absolute top-2 left-2 text-[10px] px-2 py-0.5 rounded bg-black/50 backdrop-blur border border-white/10">{variant ? `${variant.price.amount} ${variant.price.currencyCode}` : '—'}</div>
+        <div className="absolute top-2 left-2 text-[10px] px-2 py-0.5 rounded bg-black/50 backdrop-blur border border-white/10">{variant && variant.price ? `${variant.price.amount}${variant.price.currencyCode? ' '+variant.price.currencyCode : ''}` : '—'}</div>
       </div>
       <div className="p-3 flex flex-col gap-1">
         <div className="text-xs font-semibold tracking-wide line-clamp-2 leading-snug min-h-[2rem]">{product.title}</div>
@@ -1549,7 +1579,7 @@ function TraitTag({ tag }: { tag: string }) {
 
 function HeroBanner({ loadout }: { loadout: CharacterLoadout }) {
   return (
-    <div className="aspect-[21/9] w-full rounded-3xl overflow-hidden relative border border-white/10 bg-gradient-to-br from-emerald-500/10 via-[#141b24] to-sky-500/10">
+    <div className="w-full h-full rounded-3xl overflow-hidden relative border border-white/10 bg-gradient-to-br from-emerald-500/10 via-[#141b24] to-sky-500/10">
       <img src={loadout.portraitUrl} alt="hero" className="absolute inset-0 w-full h-full object-cover opacity-30 mix-blend-lighten" />
       <div className="absolute inset-0 bg-gradient-to-tr from-[#0b0e13]/60 to-transparent" />
       <div className="absolute left-6 bottom-6">

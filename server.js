@@ -120,6 +120,40 @@ app.put('/profile', requireAuth, async (req, res) => {
   }
 });
 
+// -------- Shopify Admin REST proxy (server-side only) --------
+// Env: SHOPIFY_ADMIN_STORE_DOMAIN, SHOPIFY_ADMIN_ACCESS_TOKEN, optional SHOPIFY_API_VERSION
+const SHOP_DOMAIN = process.env.SHOPIFY_ADMIN_STORE_DOMAIN || process.env.VITE_SHOPIFY_STORE_DOMAIN || '';
+const SHOP_TOKEN = process.env.SHOPIFY_ADMIN_ACCESS_TOKEN || '';
+const SHOP_API_VERSION = process.env.SHOPIFY_API_VERSION || '2024-10';
+
+app.get('/admin/products', requireAuth, async (req, res) => {
+  try {
+    if (!SHOP_DOMAIN || !SHOP_TOKEN) {
+      return res.status(501).json({ error: 'shopify_admin_not_configured' });
+    }
+    const limit = Math.min(parseInt(String(req.query.limit || '12'), 10) || 12, 50);
+    const endpoint = `https://${SHOP_DOMAIN}/admin/api/${SHOP_API_VERSION}/products.json?limit=${limit}`;
+    const r = await fetch(endpoint, { headers: { 'X-Shopify-Access-Token': SHOP_TOKEN } });
+    if (!r.ok) {
+      const text = await r.text().catch(()=> '');
+      return res.status(502).json({ error: 'shopify_admin_bad_gateway', status: r.status, body: text.slice(0, 512) });
+    }
+    const json = await r.json();
+    const products = (json.products || []).map(p => ({
+      id: String(p.id),
+      handle: p.handle,
+      title: p.title,
+      description: p.body_html || '',
+      images: (p.images || []).slice(0,4).map(img => ({ url: img.src, altText: img.alt })) ,
+      variants: (p.variants || []).slice(0,4).map(v => ({ id: String(v.id), title: v.title, price: { amount: String(v.price ?? ''), currencyCode: undefined } })),
+    }));
+    res.json({ ok: true, products });
+  } catch (e) {
+    console.error('shopify_admin_proxy_failed', e);
+    res.status(500).json({ error: 'shopify_admin_proxy_failed' });
+  }
+});
+
 // ---------- WebSocket signaling ----------
 const wss = new WebSocketServer({ noServer: true });
 const rooms = new Map(); // roomId -> Set(ws)

@@ -67,18 +67,33 @@ export default function SnowflakeSkillTree({ initialLevel = 1, onClose }: Snowfl
   function onWheel(e:React.WheelEvent){ e.preventDefault(); setScale(s=>clamp(s - e.deltaY*0.0015,1.0,2.5)); }
   // Track if movement exceeded a small threshold to differentiate drag vs click
   const dragThreshold = 5;
-  function onPointerDown(e:React.PointerEvent<SVGSVGElement>){ if(scale<=1.0) return; setDragging(true); setLastPt({ x:e.clientX, y:e.clientY }); try{ (e.currentTarget as any).setPointerCapture(e.pointerId);}catch{} }
+  function onPointerDown(e:React.PointerEvent<SVGSVGElement>){
+    // Do not start dragging if not zoomed in or when user is holding unlock key
+    if(scale<=1.0 || holdingRef.current) return;
+    setDragging(true);
+    setLastPt({ x:e.clientX, y:e.clientY });
+    // Clear hover to prevent tooltip from interfering while dragging
+    setHoverId(null);
+    try{ (e.currentTarget as any).setPointerCapture(e.pointerId);}catch{}
+  }
   function onPointerMove(e:React.PointerEvent<SVGSVGElement>){ if(!dragging || !lastPt || scale<=1.0) return; const dx=e.clientX-lastPt.x; const dy=e.clientY-lastPt.y; if(Math.abs(dx)>0 || Math.abs(dy)>0){ setPan(p=>({x:p.x+dx,y:p.y+dy})); } setLastPt({x:e.clientX,y:e.clientY}); }
-  function onPointerUp(e:React.PointerEvent<SVGSVGElement>){ setDragging(false); setLastPt(null); try{ (e.currentTarget as any).releasePointerCapture(e.pointerId);}catch{} }
+  function onPointerUp(e:React.PointerEvent<SVGSVGElement>){
+    setDragging(false);
+    setLastPt(null);
+    try{ (e.currentTarget as any).releasePointerCapture(e.pointerId);}catch{}
+  }
   function links(){ const arr:{from:PositionedNode;to:PositionedNode; faction?:string; counters?:string[]}[]=[]; laid.forEach(n=>{ if(!n.requires) return; n.requires.forEach(r=>{ const from = laid.find(x=>x.id===r); if(from) arr.push({from,to:n,faction:n.faction,counters:n.counters}); }); }); return arr; }
 
   const traits = deriveTraits(unlocked, nodes);
+  const traitsTopBranch = traits.topBranch && traits.topBranch.toLowerCase() === 'root' ? undefined : traits.topBranch;
+  const traitsTopType = traits.topType && traits.topType.toLowerCase() === 'root' ? undefined : traits.topType;
   const [hoverId, setHoverId] = useState<string | null>(null);
   const [lastUnlocked, setLastUnlocked] = useState<string | null>(null);
   function onUnlock(id:string){ const reason = unlockReason(id); const st = useSkillStore.getState(); const avail = availablePoints(st); console.debug('[SnowflakeSkillTree.onUnlock] attempt', { id, reason, avail, unlockedCount: st.unlocked.length }); if(reason!=='Unlockable') return; unlockGlobal(id); setLastUnlocked(id); }
   // Hold-to-unlock state
   const HOLD_DURATION = 4000; // ms
   const [holdTarget, setHoldTarget] = useState<string | null>(null);
+  const holdTargetRef = useRef<string | null>(null);
   const [holdProgress, setHoldProgress] = useState(0); // 0..1
   const holdingRef = useRef(false);
   const rafRef = useRef<number | null>(null);
@@ -106,11 +121,11 @@ export default function SnowflakeSkillTree({ initialLevel = 1, onClose }: Snowfl
   useEffect(()=>{
     if(!hoverId || holdTarget && hoverId !== holdTarget){
       // if moved away from target
-      holdingRef.current = false; holdStartRef.current = null; setHoldTarget(null); setHoldProgress(0);
+      holdingRef.current = false; holdStartRef.current = null; setHoldTarget(null); holdTargetRef.current = null; setHoldProgress(0);
       if(rafRef.current) cancelAnimationFrame(rafRef.current);
     }
     if(hoverId && unlockReason(hoverId) !== 'Unlockable'){
-      holdingRef.current = false; holdStartRef.current = null; setHoldTarget(null); setHoldProgress(0);
+      holdingRef.current = false; holdStartRef.current = null; setHoldTarget(null); holdTargetRef.current = null; setHoldProgress(0);
       if(rafRef.current) cancelAnimationFrame(rafRef.current);
     }
   },[hoverId, unlocked, ptsLeft]);
@@ -118,13 +133,13 @@ export default function SnowflakeSkillTree({ initialLevel = 1, onClose }: Snowfl
   // Key handling for hold-to-unlock
   useEffect(()=>{
     function step(){
-      if(!holdingRef.current || !holdStartRef.current || !holdTarget){ return; }
+      if(!holdingRef.current || !holdStartRef.current || !holdTargetRef.current){ return; }
       const elapsed = performance.now() - holdStartRef.current;
       const prog = Math.min(1, elapsed / HOLD_DURATION);
       setHoldProgress(prog);
       if(prog >= 1){
-        onUnlock(holdTarget);
-        holdingRef.current = false; holdStartRef.current = null; setHoldTarget(null); setHoldProgress(0);
+        if(holdTargetRef.current) onUnlock(holdTargetRef.current);
+        holdingRef.current = false; holdStartRef.current = null; setHoldTarget(null); holdTargetRef.current = null; setHoldProgress(0);
         return;
       }
       rafRef.current = requestAnimationFrame(step);
@@ -137,6 +152,7 @@ export default function SnowflakeSkillTree({ initialLevel = 1, onClose }: Snowfl
           holdingRef.current = true;
           holdStartRef.current = performance.now();
           setHoldTarget(hoverId);
+          holdTargetRef.current = hoverId;
           setHoldProgress(0);
           rafRef.current = requestAnimationFrame(step);
         }
@@ -144,7 +160,7 @@ export default function SnowflakeSkillTree({ initialLevel = 1, onClose }: Snowfl
     }
     function keyUp(e:KeyboardEvent){
       if(e.key.toLowerCase() === 'u'){
-        holdingRef.current = false; holdStartRef.current = null; setHoldTarget(null); setHoldProgress(0);
+  holdingRef.current = false; holdStartRef.current = null; setHoldTarget(null); holdTargetRef.current = null; setHoldProgress(0);
         if(rafRef.current) cancelAnimationFrame(rafRef.current);
       }
     }
@@ -181,7 +197,14 @@ export default function SnowflakeSkillTree({ initialLevel = 1, onClose }: Snowfl
                   const isCoreHighlight = nextCores.includes(n.id);
                   const isHoldingThis = holdTarget === n.id && holdingRef.current;
                   return (
-                    <g key={n.id} data-id={n.id} transform={`translate(${n.x},${n.y})`} onMouseEnter={()=>setHoverId(n.id)} onMouseLeave={()=>setHoverId(h=> h===n.id? null : h)} style={{ pointerEvents:'all' }}>
+                    <g
+                      key={n.id}
+                      data-id={n.id}
+                      transform={`translate(${n.x},${n.y})`}
+                      onMouseEnter={()=>setHoverId(n.id)}
+                      onMouseLeave={()=>{ if(!dragging) setHoverId(h=> h===n.id? null : h); }}
+                      style={{ pointerEvents:'all' }}
+                    >
                       <circle r={r+5} fill="#0b1220" stroke="#1f2937" strokeWidth={2} />
                       <circle r={r} fill={isUnlocked?color:'#111827'} stroke={isUnlocked?color:'#374151'} strokeWidth={isUnlocked?3:2} filter={isUnlocked? 'url(#glow)': undefined} style={{ cursor: canUnlock(n.id)?'pointer':'not-allowed', boxShadow: isCoreHighlight? '0 0 0 4px rgba(16,185,129,0.6)': undefined }} />
                       {(!isUnlocked && isHoldingThis) && (()=>{ const pr = holdProgress; const rr = r + 6; const circ = 2*Math.PI*rr; return (
@@ -209,7 +232,7 @@ export default function SnowflakeSkillTree({ initialLevel = 1, onClose }: Snowfl
               </g>
             </svg>
             {hoverProjection && hoverId && (
-              <div className="absolute top-2 left-2 w-64 rounded-xl border border-emerald-400/30 bg-[#0f1218]/95 backdrop-blur p-3 text-xs shadow-xl pointer-events-auto">
+              <div className="absolute top-2 left-2 w-64 rounded-xl border border-emerald-400/30 bg-[#0f1218]/95 backdrop-blur p-3 text-xs shadow-xl pointer-events-none">
                 <div className="font-semibold text-emerald-300 mb-1 truncate">Preview: {laid.find(n=>n.id===hoverId)?.label}</div>
                 <div className="grid grid-cols-3 gap-2 mb-2">
                   <div className="flex flex-col items-start"><span className="opacity-60">Atk</span><span className="font-semibold text-emerald-200">{hoverProjection.attack}</span></div>
@@ -289,8 +312,8 @@ export default function SnowflakeSkillTree({ initialLevel = 1, onClose }: Snowfl
         <div className="col-span-3">
           <div className="rounded-2xl p-4 bg-white/5 border border-white/10">
             <div className="text-lg font-semibold">Traits</div>
-            <div className="mt-2 text-sm">Primary Path: <span className="opacity-80">{traits.topBranch ?? '—'}</span></div>
-            <div className="text-sm">Primary Type: <span className="opacity-80">{traits.topType ?? '—'}</span></div>
+            <div className="mt-2 text-sm">Primary Path: <span className="opacity-80">{traitsTopBranch ?? '—'}</span></div>
+            <div className="text-sm">Primary Type: <span className="opacity-80">{traitsTopType ?? '—'}</span></div>
             <div className="mt-2 flex flex-wrap gap-2">
               {traits.tags.length ? traits.tags.map(t => (
                 <span key={t} className="px-2 py-1 rounded bg-white/10 border border-white/10 text-xs">{t}</span>
