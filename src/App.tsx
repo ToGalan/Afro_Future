@@ -818,6 +818,22 @@ function MainMenu({ playerName, accountLevel, loadout, onCustomize, heroLocked, 
 function TopNav({ view, onChangeView, profile, onSignOut }: { view: 'dashboard' | 'skills' | 'store' | 'help'; onChangeView: (v: 'dashboard' | 'skills' | 'store' | 'help') => void; profile?: { sub: string; name?: string; email?: string; picture?: string } | null; onSignOut?: () => void; }) {
   const [open, setOpen] = React.useState(false);
   const menuRef = React.useRef<HTMLDivElement|null>(null);
+  const [isFs, setIsFs] = React.useState<boolean>(!!document.fullscreenElement);
+  React.useEffect(()=>{
+    function onChange(){ setIsFs(!!document.fullscreenElement); }
+    document.addEventListener('fullscreenchange', onChange);
+    return ()=> document.removeEventListener('fullscreenchange', onChange);
+  },[]);
+  function toggleFullscreen(){
+    try {
+      if(!document.fullscreenElement){
+        // Prefer the root element; the viewport container is fixed to it
+        document.documentElement.requestFullscreen?.();
+      } else {
+        document.exitFullscreen?.();
+      }
+    } catch(err){ console.warn('Fullscreen toggle failed', err); }
+  }
   React.useEffect(()=>{
     if(!open) return;
     function handle(e:MouseEvent){
@@ -853,6 +869,26 @@ function TopNav({ view, onChangeView, profile, onSignOut }: { view: 'dashboard' 
         <Chip>1,458 <span className="opacity-70">shards</span></Chip>
         <IconButton label="Notifications">🔔</IconButton>
         <IconButton label="Mail">✉️</IconButton>
+        <IconButton label={isFs ? 'Exit Fullscreen' : 'Enter Fullscreen'} onClick={toggleFullscreen}>
+          {/* Expand arrows icon */}
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+            {isFs ? (
+              <>
+                <path d="M9 9H5V5"/>
+                <path d="M15 9h4V5"/>
+                <path d="M9 15H5v4"/>
+                <path d="M15 15h4v4"/>
+              </>
+            ) : (
+              <>
+                <path d="M4 9V5h4"/>
+                <path d="M20 9V5h-4"/>
+                <path d="M4 15v4h4"/>
+                <path d="M20 15v4h-4"/>
+              </>
+            )}
+          </svg>
+        </IconButton>
         {profile ? (
           <div className="relative" ref={menuRef}>
             <button onClick={()=>setOpen(o=>!o)} className="flex items-center gap-2 group">
@@ -1509,8 +1545,8 @@ function Button({ children, onClick, variant = 'solid', size = 'md', className =
   );
 }
 
-function IconButton({ children, label }: { children: React.ReactNode; label: string }) {
-  return <button aria-label={label} className="h-9 w-9 grid place-items-center rounded-xl bg-white/10 border border-white/10 hover:bg-white/15">{children}</button>;
+function IconButton({ children, label, onClick }: { children: React.ReactNode; label: string; onClick?: () => void }) {
+  return <button aria-label={label} onClick={onClick} className="h-9 w-9 grid place-items-center rounded-xl bg-white/10 border border-white/10 hover:bg-white/15">{children}</button>;
 }
 
 function Chip({ children }: { children: React.ReactNode }) {
