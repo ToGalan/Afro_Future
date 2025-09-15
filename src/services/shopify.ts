@@ -3,7 +3,7 @@
 //  VITE_SHOPIFY_STORE_DOMAIN (e.g. yourshop.myshopify.com)
 //  VITE_SHOPIFY_STOREFRONT_TOKEN (Storefront API public token)
 // Only public product data is fetched; no checkout mutations here.
-import { createStorefrontApiClient } from '@shopify/storefront-api-client';
+// Using a minimal fetch-based Storefront client to reduce preflight/CORS issues
 
 export interface ShopifyProductVariant {
   id: string;
@@ -25,6 +25,7 @@ interface StorefrontResponse<T> { data?: T; errors?: { message: string }[] }
 const DOMAIN = import.meta.env.VITE_SHOPIFY_STORE_DOMAIN || 'store.afro-future.app';
 const TOKEN = import.meta.env.VITE_SHOPIFY_STOREFRONT_TOKEN;
 const API_VERSION = (import.meta as any)?.env?.VITE_SHOPIFY_STOREFRONT_API_VERSION || '2025-07';
+const API_BASE = (import.meta as any)?.env?.VITE_API_BASE || '';
 // DEBUG flag for verbose client errors
 const DEBUG = (import.meta as any)?.env?.VITE_SHOPIFY_DEBUG === 'true';
 const IS_MYSHOPIFY = /\.myshopify\.com$/i.test(String(DOMAIN));
@@ -45,35 +46,57 @@ export async function fetchProducts(limit = 12): Promise<ShopifyProduct[]> {
   if (typeof TOKEN === 'string' && TOKEN.startsWith('shpat_')) {
     throw new Error('Invalid token for Storefront API: received an Admin token (shpat_...). Please use a Storefront public access token instead.');
   }
-  const client = createStorefrontApiClient({ storeDomain: DOMAIN, apiVersion: API_VERSION, publicAccessToken: TOKEN });
-  let resp: StorefrontResponse<{products:{edges:{node:any}[]}}> | undefined;
+  // Prefer server proxy when API_BASE is configured to avoid browser CORS issues
+  if (API_BASE) {
+    try {
+      const r = await fetch(`${API_BASE.replace(/\/$/,'')}/storefront/products?limit=${encodeURIComponent(String(limit))}`);
+      if (r.ok) {
+        const json = await r.json();
+        if (json?.ok && Array.isArray(json.products)) {
+          return json.products as ShopifyProduct[];
+        }
+      } else if (DEBUG) {
+        const text = await r.text().catch(()=> '');
+        // eslint-disable-next-line no-console
+        console.warn('[storefront-proxy] non-OK', r.status, text?.slice(0,200));
+      }
+      // If proxy returns 501 (not configured) or fails, fall through to direct fetch
+    } catch (e) {
+      if (DEBUG) console.warn('[storefront-proxy] failed', e);
+    }
+  }
+  const endpoint = `https://${DOMAIN}/api/${API_VERSION}/graphql.json`;
+  let data: any; let errors: any;
   try {
-    resp = await client.request(PRODUCTS_QUERY, { variables: { first: limit } }) as StorefrontResponse<{ products: { edges: { node: any }[] } }>;
-  } catch (e: any) {
-    const status = e?.response?.status ?? e?.status;
-    const base = e?.message ? String(e.message) : 'Unknown Storefront client error';
-    const hint = status === 401 ? ' (check Storefront token and store domain)' : '';
+    const r = await fetch(endpoint, {
+      method: 'POST',
+      mode: 'cors',
+      credentials: 'omit',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Shopify-Storefront-Access-Token': String(TOKEN),
+        'Accept': 'application/json',
+      },
+      body: JSON.stringify({ query: PRODUCTS_QUERY, variables: { first: limit } })
+    });
+    if (!r.ok) {
+      const text = await r.text().catch(()=> '');
+      const hint = r.status === 401 ? ' (check Storefront token and store domain)' : '';
+      throw new Error(`HTTP ${r.status} ${r.statusText}${hint} • ${text?.slice(0,200)}`);
+    }
+    const json = await r.json().catch(()=> ({}));
+    data = json.data; errors = json.errors;
+  } catch (e:any) {
     if (DEBUG) {
-      const endpoint = `https://${DOMAIN}/api/${API_VERSION}/graphql.json`;
       // eslint-disable-next-line no-console
-      console.error('Shopify Storefront request failed', {
-        status,
-        message: base,
-        domain: DOMAIN,
-        apiVersion: API_VERSION,
-        endpoint,
-        tokenPrefix: typeof TOKEN === 'string' ? `${TOKEN.slice(0, 4)}…` : undefined,
-        raw: e,
-      });
+      console.error('Storefront fetch failed', { endpoint, domain: DOMAIN, apiVersion: API_VERSION, tokenPrefix: String(TOKEN).slice(0,4)+'…', error: e });
     }
     const domainTip = IS_MYSHOPIFY ? '' : ' If using a custom domain, set VITE_SHOPIFY_STORE_DOMAIN to your <shop>.myshopify.com domain.';
-    throw new Error(`Shopify Storefront${status ? ' ' + status : ''}: ${base}${hint}. Ensure VITE_SHOPIFY_STORE_DOMAIN points to your shop (often <shop>.myshopify.com) and the token is a Storefront public access token for that shop.${domainTip}`);
+    throw new Error(`Shopify Storefront: ${e?.message || e}${domainTip}`);
   }
-  const { data, errors } = resp ?? {} as any;
   const errs = Array.isArray(errors) ? errors : (errors ? [errors as any] : []);
   if (errs.length) {
     if (DEBUG) {
-      const endpoint = `https://${DOMAIN}/api/${API_VERSION}/graphql.json`;
       // eslint-disable-next-line no-console
       console.error('Shopify Storefront GraphQL errors', {
         endpoint,

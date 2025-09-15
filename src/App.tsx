@@ -120,7 +120,7 @@ export default function App() {
       setProfile(prof);
       try { localStorage.setItem('afrofuture.profile', JSON.stringify(prof)); } catch {}
       // Fetch existing server profile (may include loadout)
-      const serverProf = await fetchServerProfile(token);
+  const serverProf = await fetchServerProfile(token);
       if(serverProf){
         // Merge name/email/picture preference: prefer fresh token payload over stored values
         const mergedProf = { ...serverProf, ...prof };
@@ -135,6 +135,19 @@ export default function App() {
         }
         try { localStorage.setItem('afrofuture.profile', JSON.stringify(mergedProf)); } catch {}
         if(serverProf.loadout){ try { localStorage.setItem('afrofuture.activeLoadout', JSON.stringify(serverProf.loadout)); } catch {} }
+        // Hydrate skills from server if present
+        if (serverProf.skills && typeof serverProf.skills === 'object') {
+          try {
+            const { hydrate } = useSkillStore.getState() as any;
+            if (hydrate) {
+              hydrate({
+                level: typeof serverProf.skills.level === 'number' ? serverProf.skills.level : undefined,
+                unlocked: Array.isArray(serverProf.skills.unlocked) ? serverProf.skills.unlocked : undefined,
+                unlockOrder: Array.isArray(serverProf.skills.unlockOrder) ? serverProf.skills.unlockOrder : undefined,
+              });
+            }
+          } catch (e) { console.warn('[skills] hydrate failed', e); }
+        }
       } else {
         // Create initial profile server-side
         persistServerProfile(token, { ...prof });
@@ -271,7 +284,7 @@ export default function App() {
       merged.portraitUrl = getCharacterPortrait(merged.faction as Faction, merged.archetype as Archetype);
       setActiveLoadout(merged);
       try { localStorage.setItem('afrofuture.activeLoadout', JSON.stringify(merged)); } catch(e){ console.warn('[avatar-persist] save failed', e); }
-      if(idToken) persistServerProfile(idToken, { loadout: merged });
+  if(idToken) persistServerProfile(idToken, { loadout: merged });
       // Broadcast to peers via WebRTC (if data channel open)
       if(rtc?.dc?.readyState === 'open') {
         try { rtc.dc.send(JSON.stringify({ type: 'loadoutUpdate', loadout: merged })); } catch(err){ console.warn('[rtc] broadcast failed', err); }
@@ -283,13 +296,32 @@ export default function App() {
       };
       setActiveLoadout(normalized);
       try { localStorage.setItem('afrofuture.activeLoadout', JSON.stringify(normalized)); } catch(e){ console.warn('[avatar-persist] save failed', e); }
-      if(idToken) persistServerProfile(idToken, { loadout: normalized });
+  if(idToken) persistServerProfile(idToken, { loadout: normalized });
       if(rtc?.dc?.readyState === 'open') {
         try { rtc.dc.send(JSON.stringify({ type: 'loadoutUpdate', loadout: newLoadout })); } catch(err){ console.warn('[rtc] broadcast failed', err); }
       }
     }
     setPhase('main');
   }
+
+  // Persist skills to server whenever they change (after auth)
+  const skillState = useSkillStore();
+  useEffect(() => {
+    if (!idToken) return;
+    try {
+      const payload = {
+        skills: {
+          level: skillState.level,
+          unlocked: skillState.unlocked,
+          unlockOrder: skillState.unlockOrder,
+        }
+      };
+      persistServerProfile(idToken, payload);
+    } catch (e) {
+      console.warn('[skills] persist failed', e);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [idToken, skillState.level, skillState.unlocked, skillState.unlockOrder]);
 
   // Listen for remote loadout updates over WebRTC to keep sessions in sync ("chrome sync webrtc" requirement)
   useEffect(()=>{
@@ -638,7 +670,7 @@ function FirstTimeFlow({ faction, archetype, pet, onFaction, onArchetype, onPet,
             )}
           </div>
         </div>
-        <div className="mt-4 flex-1 min-h-0 overflow-auto">
+  <div className="mt-4 flex-1 min-h-0 overflow-hidden">
         {step === 0 && (
           <div className="mt-6">
             <div className="text-sm opacity-80 mb-2">Choose Faction</div>
@@ -1158,7 +1190,7 @@ function StoreView({ className='' }: { className?: string }) {
           <div className="text-lg font-semibold">Store</div>
           <span className="text-xs opacity-60">Shopify</span>
         </div>
-        <div className="flex-1 overflow-auto p-6 custom-scrollbar">
+  <div className="flex-1 overflow-hidden p-6">
           {error && (
             <div className="text-sm text-rose-300 bg-rose-900/30 border border-rose-500/30 px-4 py-3 rounded-lg">
               {error === 'Shop not configured' ? (
@@ -1206,7 +1238,7 @@ function ProductCard({ product }: { product: ShopifyProduct }) {
 function SettingsView({ className='' }: { className?: string }) {
   return (
     <main className={`col-start-2 px-6 py-5 min-h-0 flex flex-col ${className}`}>
-      <div className="flex-1 rounded-3xl border border-white/10 bg-[#12171f] overflow-auto p-6 space-y-8 custom-scrollbar">
+  <div className="flex-1 rounded-3xl border border-white/10 bg-[#12171f] overflow-hidden p-6 space-y-8">
         <section>
           <h2 className="text-xl font-semibold mb-2">Settings</h2>
           <p className="text-sm opacity-80 leading-relaxed">Configure your experience. (Prototype – values not persisted yet.)</p>

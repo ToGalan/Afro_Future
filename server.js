@@ -1,5 +1,6 @@
 // Minimal snapshot + signaling + (placeholder) auth server
 import 'dotenv/config'; // Loads .env if present
+import dotenv from 'dotenv';
 import express from 'express';
 import { WebSocketServer } from 'ws';
 import cors from 'cors';
@@ -14,6 +15,9 @@ const gzip = promisify(zlib.gzip);
 const PORT = process.env.PORT || 8080;
 const SNAP_DIR = path.join(process.cwd(), 'snapshots');
 const PROFILE_DIR = path.join(process.cwd(), 'profiles');
+
+// Also load .env.local if present to pick up VITE_* vars used by client
+try { dotenv.config({ path: path.join(process.cwd(), '.env.local') }); } catch {}
 
 const app = express();
 app.use(cors());
@@ -151,6 +155,67 @@ app.get('/admin/products', requireAuth, async (req, res) => {
   } catch (e) {
     console.error('shopify_admin_proxy_failed', e);
     res.status(500).json({ error: 'shopify_admin_proxy_failed' });
+  }
+});
+
+// -------- Shopify Storefront proxy (bypass browser CORS) --------
+// Env: VITE_SHOPIFY_STORE_DOMAIN, VITE_SHOPIFY_STOREFRONT_TOKEN, VITE_SHOPIFY_STOREFRONT_API_VERSION
+const SF_DOMAIN = process.env.VITE_SHOPIFY_STORE_DOMAIN || '';
+const SF_TOKEN = process.env.VITE_SHOPIFY_STOREFRONT_TOKEN || '';
+const SF_API_VERSION = process.env.VITE_SHOPIFY_STOREFRONT_API_VERSION || '2025-07';
+
+app.get('/storefront/products', async (req, res) => {
+  try {
+    if (!SF_DOMAIN || !SF_TOKEN) {
+      return res.status(501).json({ error: 'storefront_not_configured' });
+    }
+    if (SF_TOKEN.startsWith('shpat_')) {
+      return res.status(400).json({ error: 'invalid_token_type', message: 'Admin token provided. Use Storefront public token.' });
+    }
+    const limit = Math.min(parseInt(String(req.query.limit || '12'), 10) || 12, 50);
+    const endpoint = `https://${SF_DOMAIN}/api/${SF_API_VERSION}/graphql.json`;
+    const query = `#graphql\nquery Products($first:Int!){\n  products(first:$first){ edges { node { id handle title description images(first:4){edges{node{url altText}}} variants(first:4){edges{node{id title price: priceV2 { amount currencyCode }}}} } } }\n}`;
+    const r = await fetch(endpoint, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Shopify-Storefront-Access-Token': SF_TOKEN,
+        'Accept': 'application/json'
+      },
+      body: JSON.stringify({ query, variables: { first: limit } })
+    });
+    if (!r.ok) {
+      const body = await r.text().catch(() => '');
+      return res.status(502).json({ error: 'storefront_bad_gateway', status: r.status, body: body.slice(0, 512) });
+    }
+    const json = await r.json();
+    const edges = Array.isArray(json?.data?.products?.edges) ? json.data.products.edges : [];
+    const products = edges.map((e) => {
+      const node = e?.node || {};
+      const imageEdges = Array.isArray(node?.images?.edges) ? node.images.edges : [];
+      const variantEdges = Array.isArray(node?.variants?.edges) ? node.variants.edges : [];
+      const images = imageEdges.map((ie) => ({ url: ie?.node?.url || '', altText: ie?.node?.altText })).filter(i => i.url);
+      const variants = variantEdges.map((ve) => ({
+        id: String(ve?.node?.id || ''),
+        title: ve?.node?.title || '',
+        price: {
+          amount: String(ve?.node?.price?.amount || ''),
+          currencyCode: ve?.node?.price?.currencyCode || ''
+        }
+      })).filter(v => v.id);
+      return {
+        id: String(node?.id || ''),
+        handle: node?.handle || '',
+        title: node?.title || '',
+        description: node?.description || '',
+        images,
+        variants
+      };
+    }).filter(p => p.id);
+    res.json({ ok: true, products });
+  } catch (e) {
+    console.error('storefront_proxy_failed', e);
+    res.status(500).json({ error: 'storefront_proxy_failed' });
   }
 });
 
