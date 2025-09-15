@@ -1,16 +1,14 @@
 // Centralized asset path mappings. Public assets are served from /assets/*.
 // Keeping as constants ensures refactors are localized here.
 
-// Base image path (allows future CDN swap). Currently root-served build assets.
-export const BASE_IMG = '' as const; // e.g., set to 'https://cdn.afro-future.app' later
+// Base image path: use Vite's BASE_URL so assets resolve under subpaths (and can be swapped to CDN later)
+const BASE_URL = (import.meta as any)?.env?.BASE_URL ? String((import.meta as any).env.BASE_URL) : '/';
 
 // Helper to prefix path while avoiding double slashes
 function p(rel: string): string {
   const cleaned = rel.startsWith('/') ? rel : '/' + rel.replace(/^\.\//,'');
-  if(!BASE_IMG){
-    return cleaned;
-  }
-  return (BASE_IMG as string).replace(/\/$/,'') + cleaned;
+  const base = BASE_URL.replace(/\/$/,'');
+  return `${base}${cleaned}`;
 }
 
 // Updated to use higher fidelity PNG faction icons bundled locally

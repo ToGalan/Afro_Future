@@ -7,7 +7,6 @@ import { fetchProducts, type ShopifyProduct } from './services/shopify';
 import VariantPreview from './components/VariantPreview';
 import { Archetype, CharacterLoadout, Faction, PetType, uid, now } from './types/loadout';
 import { CharacterPortrait, FactionIcon, ImageAssets, getCharacterPortrait, PetIcon } from './assets/assetPaths';
-import ScaleToFit from './components/ScaleToFit';
 import { joinRoom } from './services/realtimeClient';
 import { initCRDT, attachCRDTChannel, disposeCRDT } from './services/crdt';
 import { useCreatorStore } from './store/creatorStore';
@@ -295,11 +294,11 @@ export default function App() {
     return () => { rtc.dc.removeEventListener('message', onMessage); };
   }, [rtc]);
 
-  if (phase === 'auth') return <GameViewport><AuthGate onSignedIn={handleSignedIn} /></GameViewport>;
-  if (phase === 'boot') return <GameViewport><WelcomeScreen progress={progress} build="v0.2.3 demo • UE5" onSignOut={handleSignOut} /></GameViewport>;
+  if (phase === 'auth') return <GameViewport mode="fit"><AuthGate onSignedIn={handleSignedIn} /></GameViewport>;
+  if (phase === 'boot') return <GameViewport mode="fit"><WelcomeScreen progress={progress} build="v0.2.3 demo • UE5" onSignOut={handleSignOut} /></GameViewport>;
 
   if (phase === 'onboard') return (
-    <GameViewport>
+    <GameViewport mode="fit">
       <FirstTimeFlow
         faction={setupFaction}
         archetype={setupArchetype}
@@ -313,7 +312,7 @@ export default function App() {
   );
 
   if (phase === 'creating') return (
-    <GameViewport>
+    <GameViewport mode="fit">
       <CharacterCreator
         initial={activeLoadout ?? {
           ...defaultLoadout,
@@ -344,7 +343,7 @@ export default function App() {
   );
 
   return (
-    <GameViewport>
+    <GameViewport mode="fit">
       <MainMenu
         playerName={playerName}
         accountLevel={accountLevel}
@@ -537,10 +536,6 @@ function FirstTimeFlow({ faction, archetype, pet, onFaction, onArchetype, onPet,
   // Full Screen support for the setup container
   const containerRef = React.useRef<HTMLDivElement | null>(null);
   const [isFs, setIsFs] = useState(false);
-  // Scale-to-fit support for content area (avoid scrolling)
-  const viewportRef = React.useRef<HTMLDivElement | null>(null);
-  const innerRef = React.useRef<HTMLDivElement | null>(null);
-  const [scale, setScale] = useState(1);
   useEffect(() => {
     function onChange() {
       setIsFs(!!document.fullscreenElement);
@@ -548,35 +543,6 @@ function FirstTimeFlow({ faction, archetype, pet, onFaction, onArchetype, onPet,
     document.addEventListener('fullscreenchange', onChange);
     return () => document.removeEventListener('fullscreenchange', onChange);
   }, []);
-  useEffect(() => {
-    const measure = () => {
-      requestAnimationFrame(() => {
-        const vp = viewportRef.current; const inner = innerRef.current;
-        if (!vp || !inner) return;
-        const vw = vp.clientWidth; const vh = vp.clientHeight;
-        const iw = inner.scrollWidth; const ih = inner.scrollHeight;
-        if (iw && ih && vw && vh) setScale(Math.min(vw / iw, vh / ih, 1));
-        else setScale(1);
-      });
-    };
-    const ro = new ResizeObserver(measure);
-    if (viewportRef.current) ro.observe(viewportRef.current);
-    if (innerRef.current) ro.observe(innerRef.current);
-    window.addEventListener('resize', measure);
-    measure();
-    return () => {
-      ro.disconnect();
-      window.removeEventListener('resize', measure);
-    };
-  }, []);
-  // Recompute when step/content changes
-  useEffect(() => {
-    const vp = viewportRef.current; const inner = innerRef.current;
-    if (!vp || !inner) return;
-    const vw = vp.clientWidth; const vh = vp.clientHeight;
-    const iw = inner.scrollWidth; const ih = inner.scrollHeight;
-    if (iw && ih && vw && vh) setScale(Math.min(vw/iw, vh/ih, 1));
-  }, [step, faction, archetype, pet]);
   function toggleFullscreen() {
     try {
       if (!document.fullscreenElement) {
@@ -654,10 +620,7 @@ function FirstTimeFlow({ faction, archetype, pet, onFaction, onArchetype, onPet,
             )}
           </div>
         </div>
-        <div className="mt-4 flex-1 min-h-0 overflow-hidden relative" ref={viewportRef}>
-          <div style={{ position: 'absolute', inset: 0, display: 'grid', placeItems: 'start center', pointerEvents: 'none' }}>
-            <div style={{ transform: `scale(${scale})`, transformOrigin: 'top center', pointerEvents: 'auto' }}>
-              <div ref={innerRef}>
+        <div className="mt-4 flex-1 min-h-0 overflow-auto">
         {step === 0 && (
           <div className="mt-6">
             <div className="text-sm opacity-80 mb-2">Choose Faction</div>
@@ -676,9 +639,9 @@ function FirstTimeFlow({ faction, archetype, pet, onFaction, onArchetype, onPet,
                 </button>
               ))}
             </div>
-            <div className="mt-4 rounded-xl border border-white/10 bg-white/5 p-4 flex flex-col overflow-hidden max-h-[42vh] md:h-72">
+            <div className="mt-4 rounded-xl border border-white/10 bg-white/5 p-4 flex flex-col">
               {chosenFaction ? (
-                <div className="flex flex-col text-lg leading-relaxed overflow-auto pr-1 custom-scrollbar">
+                <div className="flex flex-col text-base md:text-lg leading-relaxed">
                   <div className="text-base font-semibold flex items-center gap-2 mb-1">
                     <img src={FactionIcon[chosenFaction]} className="w-5 h-5" />
                     {factionDetails[chosenFaction].name}
@@ -728,9 +691,9 @@ function FirstTimeFlow({ faction, archetype, pet, onFaction, onArchetype, onPet,
                 );
               })}
             </div>
-            <div className="mt-4 rounded-xl border border-white/10 bg-white/5 p-4 text-lg flex flex-col overflow-hidden max-h-[36vh] md:h-60">
+            <div className="mt-4 rounded-xl border border-white/10 bg-white/5 p-4 text-base md:text-lg flex flex-col">
               {arch ? (
-                <div className="flex flex-col overflow-auto pr-1 custom-scrollbar">
+                <div className="flex flex-col">
                   <div className="font-semibold text-base mb-2">{arch.title}</div>
                   <div><span className="text-emerald-300 font-medium">Objective:</span> {arch.objective}</div>
                   <div className="mt-2 space-y-1">
@@ -770,15 +733,15 @@ function FirstTimeFlow({ faction, archetype, pet, onFaction, onArchetype, onPet,
                 );
               })}
             </div>
-            <div className="mt-4 rounded-xl border border-white/10 bg-white/5 p-4 text-lg flex flex-col overflow-hidden max-h-[36vh] md:h-60">
+            <div className="mt-4 rounded-xl border border-white/10 bg-white/5 p-4 text-base md:text-lg flex flex-col">
               {petInfo ? (
-                <div className="flex flex-col overflow-auto pr-1 custom-scrollbar">
-                  <div className="font-semibold text-base mb-2">Cyber Companion</div>
+                <div className="flex flex-col">
+                  <div className="font-semibold text-sm md:text-base mb-2">Cyber Companion</div>
                   <div><span className="text-emerald-300 font-medium">Role:</span> {petInfo.role}</div>
                   <div className="mt-2"><span className="text-emerald-300 font-medium">Abilities:</span> {petInfo.abilities.join(', ')}</div>
                   <div className="mt-2 space-y-1">
                     <div className="text-emerald-300 font-medium">Lore:</div>
-                    <div className="opacity-80 text-[17px] leading-snug whitespace-pre-line">{petInfo.lore}</div>
+                    <div className="opacity-80 text-[15px] md:text-[17px] leading-snug whitespace-pre-line">{petInfo.lore}</div>
                   </div>
                 </div>
               ) : (
@@ -791,9 +754,6 @@ function FirstTimeFlow({ faction, archetype, pet, onFaction, onArchetype, onPet,
             </div>
           </div>
         )}
-              </div>
-            </div>
-          </div>
         </div>
       </div>
     </div>
@@ -804,13 +764,13 @@ function MainMenu({ playerName, accountLevel, loadout, onCustomize, heroLocked, 
   return (
     <div className="h-full w-full bg-[#0f1218] text-gray-100">
       <TopNav view={view} onChangeView={onChangeView} profile={profile} onSignOut={onSignOut} />
-      <ScaleToFit className="h-[calc(100%-64px)]" origin="top-center">
-        <div className="grid grid-rows-[1fr]" style={{gridTemplateColumns:'minmax(240px,18%) 1fr minmax(240px,18%)', width: '1200px', maxWidth: '90vw'}}>
+      <div className="h-[calc(100%-64px)]">
+        <div className="h-full grid grid-rows-[1fr]" style={{gridTemplateColumns:'minmax(260px,20%) 1fr minmax(260px,20%)'}}>
           <LeftPlayerPanel className="row-start-1" playerName={playerName} accountLevel={accountLevel} loadout={loadout} heroLocked={heroLocked} />
           <CenterHub className="row-start-1" loadout={loadout} view={view} />
           <RightPlayerPanel className="row-start-1" loadout={loadout} onCustomize={onCustomize} />
         </div>
-      </ScaleToFit>
+      </div>
     </div>
   );
 }
@@ -946,9 +906,9 @@ function LeftPlayerPanel({ className = '', playerName, accountLevel, loadout, he
     <aside className={`col-start-1 h-full min-h-0 ${className} bg-[#0f1218] border-r border-black/40 shadow-inner flex flex-col overflow-hidden`}>      
       <div className="px-4 py-4 border-b border-white/10 flex flex-col items-center shrink-0">
         {/* Character Portrait and Info */}
-        <div className="w-[240px] h-[180px] rounded-3xl border border-white/10 bg-[#12171f] overflow-hidden relative flex flex-col items-center justify-center">
-          {/* Portrait image instead of 3D */}
-          <img className="w-32 h-32 object-cover rounded-2xl border border-white/10 shadow-lg" src={loadout.portraitUrl} alt="portrait" />
+        <div className="w-full max-w-[260px] aspect-[4/3] rounded-3xl border border-white/10 bg-[#12171f] overflow-hidden relative flex flex-col items-center justify-center">
+          {/* Portrait image responsive */}
+          <img className="w-[52%] h-[52%] object-cover rounded-2xl border border-white/10 shadow-lg" src={loadout.portraitUrl} alt="portrait" />
           <div className="mt-2 flex flex-col items-center text-center">
             <div className="flex items-center gap-2">
               <img src={FactionIcon[loadout.faction]} alt={loadout.faction} className="w-5 h-5 drop-shadow" />
@@ -996,33 +956,21 @@ function LeftPlayerPanel({ className = '', playerName, accountLevel, loadout, he
           </div>
         </div>
       </div>
-      <div className="px-4 py-6 flex flex-col items-center gap-4 overflow-auto min-h-0">
-        {/* 240x240 Pet Card matching character */}
-        <div className="w-[240px] h-[240px] rounded-3xl border border-white/10 bg-white/5 overflow-hidden relative flex flex-col items-center justify-center p-4">
+      {/* Pet image card */}
+      <div className="px-4 py-4 flex flex-col items-center gap-4">
+        <div className="w-full max-w-[260px] aspect-[4/3] rounded-3xl border border-white/10 bg-white/5 overflow-hidden relative flex flex-col items-center justify-center p-4">
           <div className="absolute inset-0 bg-gradient-to-tr from-[#0b0e13]/80 via-transparent to-[#0b0e13]/50" />
-          <img className="relative z-10 w-28 h-28 object-contain drop-shadow" src={PetIcon[loadout.pet.type]} alt="pet" />
+          <img className="relative z-10 w-[52%] h-[52%] object-contain drop-shadow" src={PetIcon[loadout.pet.type]} alt="pet" />
           <div className="relative z-10 mt-3 flex flex-col items-center text-center">
-            <div className="font-semibold text-white text-base leading-tight">{loadout.pet.type === 'CYBER_DOG' ? 'Cyber-Dog' : 'Cyber-Cat'}</div>
-            <div className="mt-1 text-[11px] text-gray-300 flex items-center gap-2">
+            <div className="font-semibold text-white text-sm leading-tight tracking-wide">{loadout.pet.type === 'CYBER_DOG' ? 'Cyber-Dog' : 'Cyber-Cat'}</div>
+            <div className="mt-1 text-[10px] text-gray-300 flex items-center gap-2">
               <span className="px-2 py-0.5 rounded-full bg-white/5 border border-white/10 tracking-wide">Lv {loadout.pet.level}</span>
               <span>{loadout.pet.role}</span>
             </div>
           </div>
         </div>
-        {/* Pet stats below */}
-        <div className="grid grid-cols-3 gap-3 w-full">
-          {[
-            { label: 'Attack', value: '●●○○○' },
-            { label: 'Support', value: '●●●○○' },
-            { label: 'Agility', value: '●●●●○' },
-          ].map(s => (
-            <div key={s.label} className="rounded-2xl border border-white/10 bg-white/5 p-3 h-24 flex flex-col items-center justify-center text-[10px] text-center">
-              <div className="opacity-60 mb-1">{s.label}</div>
-              <div className="font-semibold text-[11px] tracking-wider">{s.value}</div>
-            </div>
-          ))}
-        </div>
       </div>
+      {/* Pet stat chips removed per request */}
     </aside>
   );
 }
@@ -1043,42 +991,33 @@ function RightPlayerPanel({ className = '', loadout, onCustomize }: { className?
   ];
   
   return (
-    <aside className={`col-start-3 h-full min-h-0 ${className} bg-[#0f1218] border-l border-black/40 shadow-inner flex flex-col`}>
-        {/* 3D Avatar Section (fixed design height; will scale via parent ScaleToFit) */}
+    <aside className={`col-start-3 h-full min-h-0 ${className} bg-[#0f1218] border-l border-black/40 shadow-inner flex flex-col pr-3`}>
+        {/* 3D Avatar Section – match left character card size */}
         <div className="p-4 border-b border-white/10">
-          <div
-            className="relative rounded-3xl border border-white/10 bg-gradient-to-br from-[#0b0e13] to-[#1a1e29] overflow-hidden flex flex-col"
-            style={{ height: '260px' }}
-          >
-            <div className="absolute inset-0 bg-gradient-to-tr from-[#0b0e13]/80 via-transparent to-[#0b0e13]/50" />
-            {/* Avatar canvas container anchored to bottom */}
-            <div className="relative z-10 flex-1 flex items-end justify-center px-2 pb-2">
-              {/* Shrunk avatar (60% smaller) & anchored to bottom by reducing container height */}
-              <div className="w-full h-[100px] relative">
-              <AvatarScene
-                parts={(loadout as any).threeConfig?.parts}
-                colors={(loadout as any).threeConfig?.colors}
-                debugTint={false}
-                animPaused={false}
-                animSpeed={1}
-                rotateSpeed={0.08}
-                disableControls
-                // Lower camera a bit & lower target so model appears visually grounded
-                cameraPosition={[1.6,1.15,2.1]}
-                cameraFov={32}
-                target={[0,0.75,0]}
-                // Adjust offsets/margin for smaller presentation
-                modelOffset={[0,-0.55,0]}
-                autoFrame
-                frameMargin={0.18}
-              />
+          <div className="w-full flex items-center justify-center">
+            <div className="relative w-full max-w-[260px] aspect-[4/3] rounded-3xl border border-white/10 bg-gradient-to-br from-[#0b0e13] to-[#1a1e29] overflow-hidden">
+              <div className="absolute inset-0 bg-gradient-to-tr from-[#0b0e13]/80 via-transparent to-[#0b0e13]/50" />
+              <div className="absolute inset-x-0 bottom-0 top-[20%]">
+                <AvatarScene
+                  parts={(loadout as any).threeConfig?.parts}
+                  colors={(loadout as any).threeConfig?.colors}
+                  debugTint={false}
+                  animPaused={false}
+                  animSpeed={1}
+                  rotateSpeed={0.08}
+                  disableControls
+                  cameraPosition={[1.6,1.0,2.4]}
+                  cameraFov={30}
+                  target={[0,0.55,0]}
+                  modelOffset={[0,-0.75,0]}
+                  autoFrame
+                  frameMargin={0.12}
+                />
               </div>
             </div>
-            <div className="relative z-20 px-3 pb-3">
-              <Button size="sm" className="w-full text-xs" onClick={onCustomize}>
-                Customize
-              </Button>
-            </div>
+          </div>
+          <div className="mt-2 flex justify-center">
+            <Button size="sm" className="w-full max-w-[260px] text-xs" onClick={onCustomize}>Customize</Button>
           </div>
         </div>
   {/* Game Modes Section */}
@@ -1091,11 +1030,11 @@ function RightPlayerPanel({ className = '', loadout, onCustomize }: { className?
               disabled={!m.enabled}
               onClick={() => m.enabled && setMode(m.key)}
               className={`rounded-2xl px-4 py-4 text-left relative overflow-hidden border transition group
-                h-24 flex items-start
+                h-14 flex items-start
                 ${mode === m.key ? 'bg-emerald-600/30 border-emerald-500/60 shadow-inner' : 'bg-white/5 border-white/10 hover:bg-white/10'}
                 ${!m.enabled ? 'opacity-40 cursor-not-allowed' : ''}`}
             >
-              <div className="flex flex-col">
+              <div className="flex flex-col items-center justify-center w-full text-center">
                 <span className="font-medium text-sm tracking-wide mb-1">{m.label}</span>
                 <span className="text-[11px] opacity-60">{m.enabled ? (m.key === 'single' ? 'Solo mission queue' : 'Feature in development') : 'Unavailable'}</span>
               </div>
@@ -1106,24 +1045,23 @@ function RightPlayerPanel({ className = '', loadout, onCustomize }: { className?
         </div>
   {/* Future sections for Gifts/Battle Pass */}
   <div className="px-4 py-4 border-b border-white/10">
-        <div className="text-lg font-semibold mb-4">Rewards</div>
-        <div className="grid gap-3">
-          <div className="rounded-2xl px-4 py-4 text-left relative overflow-hidden border border-white/10 bg-white/5 opacity-60">
-            <div className="flex flex-col">
-              <span className="font-medium text-sm tracking-wide mb-1">Gifts</span>
-              <span className="text-[11px] opacity-60">Coming Soon</span>
+        <div className="text-lg font-semibold mb-3">Rewards</div>
+        <div className="grid grid-cols-2 gap-3 place-items-center">
+          {[
+            { title: 'Gifts', subtitle: 'Coming Soon' },
+            { title: 'Battle Pass', subtitle: 'Coming Soon' },
+          ].map(card => (
+            <div key={card.title} className="aspect-square rounded-2xl border border-white/10 bg-white/5 overflow-hidden relative flex items-center justify-center" style={{ width: '70%' }}>
+              <div className="flex flex-col items-center text-center p-3 w-full">
+                <span className="font-medium text-[13px] tracking-wide mb-0.5">{card.title}</span>
+                <span className="text-[10px] opacity-60">{card.subtitle}</span>
+              </div>
             </div>
-          </div>
-          <div className="rounded-2xl px-4 py-4 text-left relative overflow-hidden border border-white/10 bg-white/5 opacity-60">
-            <div className="flex flex-col">
-              <span className="font-medium text-sm tracking-wide mb-1">Battle Pass</span>
-              <span className="text-[11px] opacity-60">Coming Soon</span>
-            </div>
-          </div>
+          ))}
         </div>
-        </div>
-        {/* Play footer (inline, no sticky; scaling handles fit) */}
-        <div className="p-4">
+      </div>
+  {/* Play footer */}
+  <div className="p-4 mt-auto">
           <Button className="w-full h-12 text-lg" onClick={startMatch} disabled={mode !== 'single'}>Play</Button>
           <div className="mt-1 text-[11px] text-gray-300 h-4">{queue ?? (mode === 'single' ? 'Ready' : 'Disabled')}</div>
         </div>
@@ -1627,7 +1565,7 @@ function HeroBanner({ loadout }: { loadout: CharacterLoadout }) {
 
 function NewsCard({ title }: { title: string }) {
   return (
-    <div className="rounded-2xl p-4 bg-[#12171f] border border-white/10 min-h-[140px] grid">
+    <div className="rounded-2xl p-4 bg-[#12171f] border border-white/10 min-h-[42px] grid">
       <div>
         <div className="text-[11px] uppercase tracking-wide opacity-60">News</div>
         <div className="text-lg font-semibold mt-1">{title}</div>
