@@ -674,7 +674,8 @@ function FirstTimeFlow({ faction, archetype, pet, onFaction, onArchetype, onPet,
             )}
           </div>
         </div>
-  <div className="mt-4 flex-1 min-h-0 overflow-hidden">
+  {/* Scrollable content region (was overflow-hidden) */}
+  <div className="mt-4 flex-1 min-h-0 overflow-y-auto overscroll-contain pr-1">
         {step === 0 && (
           <div className="mt-6">
             <div className="text-sm opacity-80 mb-2">Choose Faction</div>
@@ -687,15 +688,15 @@ function FirstTimeFlow({ faction, archetype, pet, onFaction, onArchetype, onPet,
                     ${faction === f ? 'bg-emerald-600/30 border-emerald-500/60 shadow-inner' : 'bg-white/5 border-white/10 hover:bg-white/10'}`}
                 >
                   <div className="w-full aspect-square rounded-xl bg-white/5 flex items-center justify-center overflow-hidden ring-1 ring-white/5 relative">
-                    <img src={ImageAssets.faction[f]} alt={f} className="absolute inset-0 w-full h-full object-cover drop-shadow" />
+                    <img src={ImageAssets.faction[f]} alt={f} className="absolute inset-0 w-full h-full object-cover drop-shadow transform scale-[0.75]" />
                   </div>
                   <span className="font-medium tracking-wide">{f}</span>
                 </button>
               ))}
             </div>
-            <div className="mt-4 rounded-xl border border-white/10 bg-white/5 p-4 flex flex-col">
+            <div className="mt-4 rounded-xl border border-white/10 bg-white/5 p-4 flex flex-col max-h-[32vh] md:max-h-none overflow-y-auto">
               {chosenFaction ? (
-                <div className="flex flex-col text-base md:text-lg leading-relaxed">
+                <div className="flex flex-col text-sm sm:text-base md:text-lg leading-relaxed">
                   <div className="text-base font-semibold flex items-center gap-2 mb-1">
                     <img src={FactionIcon[chosenFaction]} className="w-5 h-5" />
                     {factionDetails[chosenFaction].name}
@@ -704,7 +705,7 @@ function FirstTimeFlow({ faction, archetype, pet, onFaction, onArchetype, onPet,
                   <div className="mt-2"><span className="text-emerald-300 font-medium">Objectives:</span> {factionDetails[chosenFaction].objectives}</div>
                   <div className="mt-2 space-y-1">
                     <div className="text-emerald-300 font-medium">Lore:</div>
-                    <div className="opacity-80 text-[17px] leading-snug whitespace-pre-line">{factionDetails[chosenFaction].lore}</div>
+                    <div className="opacity-80 text-xs sm:text-sm md:text-[17px] leading-snug whitespace-pre-line">{factionDetails[chosenFaction].lore}</div>
                   </div>
                 </div>
               ) : (
@@ -738,21 +739,21 @@ function FirstTimeFlow({ faction, archetype, pet, onFaction, onArchetype, onPet,
                       ${active ? 'bg-emerald-600/30 border-emerald-500/60 shadow-inner' : 'bg-white/5 border-white/10 hover:bg-white/10'}`}
                   >
                     <div className="w-full aspect-square rounded-xl bg-white/5 overflow-hidden flex items-center justify-center ring-1 ring-white/5 relative">
-                      <img src={img} alt={label} className="absolute inset-0 w-full h-full object-cover drop-shadow" />
+                      <img src={img} alt={label} className="absolute inset-0 w-full h-full object-cover drop-shadow transform scale-[0.75]" />
                     </div>
                     <span className="font-medium tracking-wide">{label}</span>
                   </button>
                 );
               })}
             </div>
-            <div className="mt-4 rounded-xl border border-white/10 bg-white/5 p-4 text-base md:text-lg flex flex-col">
+            <div className="mt-4 rounded-xl border border-white/10 bg-white/5 p-4 text-sm sm:text-base md:text-lg flex flex-col max-h-[30vh] md:max-h-none overflow-y-auto">
               {arch ? (
                 <div className="flex flex-col">
                   <div className="font-semibold text-base mb-2">{arch.title}</div>
                   <div><span className="text-emerald-300 font-medium">Objective:</span> {arch.objective}</div>
                   <div className="mt-2 space-y-1">
                     <div className="text-emerald-300 font-medium">Lore:</div>
-                    <div className="opacity-80 text-[17px] leading-snug whitespace-pre-line">{arch.lore}</div>
+                    <div className="opacity-80 text-xs sm:text-sm md:text-[17px] leading-snug whitespace-pre-line">{arch.lore}</div>
                   </div>
                 </div>
               ) : (
@@ -780,14 +781,14 @@ function FirstTimeFlow({ faction, archetype, pet, onFaction, onArchetype, onPet,
                         ${active ? 'bg-emerald-600/30 border-emerald-500/60 shadow-inner' : 'bg-white/5 border-white/10 hover:bg-white/10'}`}
                   >
                     <div className="w-full aspect-square rounded-xl bg-white/5 flex items-center justify-center overflow-hidden ring-1 ring-white/5 relative">
-                      <img src={img} alt={p} className="absolute inset-0 w-full h-full object-cover drop-shadow" />
+                      <img src={img} alt={p} className="absolute inset-0 w-full h-full object-cover drop-shadow transform scale-[0.75]" />
                     </div>
                     <span className="font-medium tracking-wide">{p === 'CYBER_DOG' ? 'Cyber‑Dog' : 'Cyber‑Cat'}</span>
                   </button>
                 );
               })}
             </div>
-            <div className="mt-4 rounded-xl border border-white/10 bg-white/5 p-4 text-base md:text-lg flex flex-col">
+            <div className="mt-4 rounded-xl border border-white/10 bg-white/5 p-4 text-sm sm:text-base md:text-lg flex flex-col max-h-[30vh] md:max-h-none overflow-y-auto">
               {petInfo ? (
                 <div className="flex flex-col">
                   <div className="font-semibold text-sm md:text-base mb-2">Cyber Companion</div>
@@ -795,7 +796,7 @@ function FirstTimeFlow({ faction, archetype, pet, onFaction, onArchetype, onPet,
                   <div className="mt-2"><span className="text-emerald-300 font-medium">Abilities:</span> {petInfo.abilities.join(', ')}</div>
                   <div className="mt-2 space-y-1">
                     <div className="text-emerald-300 font-medium">Lore:</div>
-                    <div className="opacity-80 text-[15px] md:text-[17px] leading-snug whitespace-pre-line">{petInfo.lore}</div>
+                    <div className="opacity-80 text-xs sm:text-sm md:text-[17px] leading-snug whitespace-pre-line">{petInfo.lore}</div>
                   </div>
                 </div>
               ) : (

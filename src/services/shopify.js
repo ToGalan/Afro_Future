@@ -7,7 +7,6 @@
 const DOMAIN = import.meta.env.VITE_SHOPIFY_STORE_DOMAIN || 'store.afro-future.app';
 const TOKEN = import.meta.env.VITE_SHOPIFY_STOREFRONT_TOKEN;
 const API_VERSION = import.meta?.env?.VITE_SHOPIFY_STOREFRONT_API_VERSION || '2025-07';
-const API_BASE = import.meta?.env?.VITE_API_BASE || '';
 // DEBUG flag for verbose client errors
 const DEBUG = import.meta?.env?.VITE_SHOPIFY_DEBUG === 'true';
 const IS_MYSHOPIFY = /\.myshopify\.com$/i.test(String(DOMAIN));
@@ -31,33 +30,32 @@ export async function fetchProducts(limit = 12) {
     const t0 = performance.now();
     if (DEBUG) {
         // eslint-disable-next-line no-console
-        console.log('[shopify] fetchProducts start', { limit, DOMAIN, API_VERSION, viaProxy: !!API_BASE });
+        console.log('[shopify] fetchProducts start', { limit, DOMAIN, API_VERSION, viaProxy: true });
     }
-    if (API_BASE) {
-        try {
-            const proxyUrl = `${API_BASE.replace(/\/$/, '')}/storefront/products?limit=${encodeURIComponent(String(limit))}`;
-            if (DEBUG)
-                console.log('[shopify] attempting proxy', proxyUrl);
-            const r = await fetch(proxyUrl, { headers: { 'X-Debug-Trace': 'shopify-proxy-v1' } });
-            if (r.ok) {
-                const json = await r.json();
-                if (json?.ok && Array.isArray(json.products)) {
-                    if (DEBUG)
-                        console.log('[shopify] proxy success', { count: json.products.length, ms: +(performance.now() - t0).toFixed(1) });
-                    return json.products;
-                }
+    // Always attempt relative proxy first (same-origin) to avoid CORS and domain leakage
+    try {
+        const proxyUrl = `/storefront/products?limit=${encodeURIComponent(String(limit))}`;
+        if (DEBUG)
+            console.log('[shopify] attempting proxy', proxyUrl);
+        const r = await fetch(proxyUrl, { headers: { 'X-Debug-Trace': 'shopify-proxy-v1' } });
+        if (r.ok) {
+            const json = await r.json();
+            if (json?.ok && Array.isArray(json.products)) {
+                if (DEBUG)
+                    console.log('[shopify] proxy success', { count: json.products.length, ms: +(performance.now() - t0).toFixed(1) });
+                return json.products;
             }
-            else if (DEBUG) {
-                const text = await r.text().catch(() => '');
-                // eslint-disable-next-line no-console
-                console.warn('[storefront-proxy] non-OK', r.status, text?.slice(0, 200));
-            }
-            // If proxy returns 501 (not configured) or fails, fall through to direct fetch
-        }
-        catch (e) {
             if (DEBUG)
-                console.warn('[storefront-proxy] failed', e);
+                console.warn('[shopify] proxy returned unexpected payload', json);
         }
+        else if (DEBUG) {
+            const text = await r.text().catch(() => '');
+            console.warn('[storefront-proxy] non-OK', r.status, text?.slice(0, 200));
+        }
+    }
+    catch (e) {
+        if (DEBUG)
+            console.warn('[storefront-proxy] failed', e);
     }
     const endpoint = `https://${DOMAIN}/api/${API_VERSION}/graphql.json`;
     let data;
