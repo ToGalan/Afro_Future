@@ -62,6 +62,8 @@ export default function App() {
     // Account level is linked to profile; default to 1 if not persisted yet
     const accountLevel = profile?.accountLevel ?? 1;
     const [activeLoadout, setActiveLoadout] = useState(null);
+    const [runtimeConfig, setRuntimeConfig] = useState(null);
+    const [configLoaded, setConfigLoaded] = useState(false);
     // Hydrate saved avatar (loadout) from localStorage once on mount, normalizing portrait URL
     useEffect(() => {
         try {
@@ -90,11 +92,43 @@ export default function App() {
     useEffect(() => {
         if (phase !== 'boot')
             return;
+        // Kick off runtime-config fetch once when entering boot phase
+        if (!configLoaded) {
+            (async () => {
+                try {
+                    const r = await fetch('/runtime-config', { headers: { 'Accept': 'application/json' } });
+                    if (r.ok) {
+                        const json = await r.json();
+                        if (json?.ok) {
+                            const cfg = {
+                                storeDomain: json.storeDomain || null,
+                                apiVersion: json.apiVersion || 'unknown',
+                                debug: !!json.debug,
+                                buildHash: json.buildHash || null,
+                            };
+                            setRuntimeConfig(cfg);
+                            if (cfg.debug)
+                                console.log('[runtime-config] loaded', cfg);
+                        }
+                    }
+                    else {
+                        console.warn('[runtime-config] non-ok status', r.status);
+                    }
+                }
+                catch (e) {
+                    console.warn('[runtime-config] fetch failed', e);
+                }
+                finally {
+                    setConfigLoaded(true);
+                }
+            })();
+        }
         let pct = 0;
         const id = setInterval(() => {
             pct += Math.random() * 18 + 3;
             setProgress(Math.min(100, Math.floor(pct)));
-            if (pct >= 100) {
+            // Delay finishing boot until runtime config loaded (max ~2s simulated via progress loop)
+            if (pct >= 100 && configLoaded) {
                 clearInterval(id);
                 if (!activeLoadout)
                     setPhase('onboard');
@@ -103,7 +137,7 @@ export default function App() {
             }
         }, 300);
         return () => clearInterval(id);
-    }, [phase, activeLoadout]);
+    }, [phase, activeLoadout, configLoaded]);
     async function fetchServerProfile(idToken) {
         try {
             const res = await fetch('/profile', { headers: { 'Authorization': 'Bearer ' + idToken } });
@@ -787,6 +821,7 @@ function StoreView({ className = '' }) {
     const [products, setProducts] = React.useState(null);
     const [error, setError] = React.useState(null);
     const [loading, setLoading] = React.useState(false);
+    const [ping, setPing] = React.useState(null);
     function authHeaderMaybe() {
         const token = localStorage.getItem('afrofuture.idToken');
         return token ? { Authorization: 'Bearer ' + token } : {};
@@ -796,6 +831,36 @@ function StoreView({ className = '' }) {
         async function load() {
             setLoading(true);
             try {
+                // Perform storefront ping first to validate token/domain configuration
+                try {
+                    const pr = await fetch('/storefront/ping');
+                    const txt = await pr.text();
+                    let pj = null;
+                    try {
+                        pj = JSON.parse(txt);
+                    }
+                    catch { }
+                    if (active) {
+                        if (pr.ok && pj?.ok) {
+                            setPing({ ok: true, shopName: pj.shopName, ms: pj.ms });
+                        }
+                        else {
+                            setPing({ ok: false, error: pj?.error || 'ping_failed', status: pr.status, snippet: (pj?.snippet || txt || '').slice(0, 160), attemptedVersions: pj?.attemptedVersions });
+                            // Abort product load if ping failed for any reason to avoid redundant failures
+                            if (pj?.error === 'storefront_not_configured' || pj?.error === 'invalid_token_type') {
+                                setError('Storefront not configured');
+                            }
+                            else {
+                                setError('Storefront unavailable (ping failed)');
+                            }
+                            return;
+                        }
+                    }
+                }
+                catch (e) {
+                    if (active)
+                        setPing({ ok: false, error: e?.message || 'ping_exception' });
+                }
                 // Prefer Admin REST proxy if available and we are running behind the Node server (not pure file:// or static-only)
                 // Only attempt Admin proxy if explicitly enabled via env. Defaults to off in static-only serving.
                 const allowAdminProxy = (import.meta?.env?.VITE_ENABLE_ADMIN_PROXY === 'true');
@@ -834,7 +899,7 @@ function StoreView({ className = '' }) {
         load();
         return () => { active = false; };
     }, []);
-    return (_jsx("main", { className: `col-start-2 px-6 py-5 min-h-0 flex flex-col ${className}`, children: _jsxs("div", { className: "flex-1 rounded-3xl border border-white/10 bg-[#12171f] overflow-hidden flex flex-col", children: [_jsxs("div", { className: "p-4 border-b border-white/10 flex items-center justify-between", children: [_jsx("div", { className: "text-lg font-semibold", children: "Store" }), _jsx("span", { className: "text-xs opacity-60", children: "Shopify" })] }), _jsxs("div", { className: "flex-1 overflow-hidden p-6", children: [error && (_jsx("div", { className: "text-sm text-rose-300 bg-rose-900/30 border border-rose-500/30 px-4 py-3 rounded-lg", children: error === 'Shop not configured' ? (_jsxs(_Fragment, { children: ["Storefront not configured. Add ", _jsx("code", { className: "font-mono", children: "VITE_SHOPIFY_STORE_DOMAIN" }), " & ", _jsx("code", { className: "font-mono", children: "VITE_SHOPIFY_STOREFRONT_TOKEN" }), " to .env."] })) : error })), loading && !products && (_jsxs("div", { className: "flex items-center gap-3 text-sm opacity-70", children: [_jsx("div", { className: "w-4 h-4 border-2 border-emerald-400 border-t-transparent rounded-full animate-spin" }), " Loading products\u2026"] })), !loading && products && products.length === 0 && !error && _jsx("div", { className: "text-sm opacity-60", children: "No products found." }), products && products.length > 0 && (_jsx("div", { className: "grid gap-5", style: { gridTemplateColumns: 'repeat(auto-fill,minmax(200px,1fr))' }, children: products.map(p => _jsx(ProductCard, { product: p }, p.id)) }))] })] }) }));
+    return (_jsx("main", { className: `col-start-2 px-6 py-5 min-h-0 flex flex-col ${className}`, children: _jsxs("div", { className: "flex-1 rounded-3xl border border-white/10 bg-[#12171f] overflow-hidden flex flex-col", children: [_jsxs("div", { className: "p-4 border-b border-white/10 flex items-center justify-between", children: [_jsx("div", { className: "text-lg font-semibold", children: "Store" }), _jsxs("span", { className: "text-xs opacity-60", children: ["Shopify ", ping?.shopName ? `· ${ping.shopName}` : ''] })] }), _jsxs("div", { className: "flex-1 overflow-hidden p-6", children: [ping && !ping.ok && (_jsxs("div", { className: "mb-4 text-[11px] leading-relaxed rounded-lg border border-amber-400/30 bg-amber-900/20 px-4 py-2 text-amber-200", children: [_jsx("div", { className: "font-semibold mb-1", children: "Storefront Ping Issue" }), _jsxs("div", { children: [_jsx("span", { className: "opacity-70", children: "Error:" }), " ", ping.error || 'unknown'] }), ping.status && _jsxs("div", { children: [_jsx("span", { className: "opacity-70", children: "Status:" }), " ", ping.status] }), ping.snippet && _jsx("div", { className: "mt-1 opacity-70 font-mono break-all max-h-24 overflow-auto", children: ping.snippet }), ping.attemptedVersions && ping.attemptedVersions.length > 0 && (_jsxs("div", { className: "mt-1 opacity-70", children: ["Tried API versions: ", ping.attemptedVersions.join(', ')] }))] })), error && (_jsx("div", { className: "text-sm text-rose-300 bg-rose-900/30 border border-rose-500/30 px-4 py-3 rounded-lg", children: error === 'Shop not configured' ? (_jsxs(_Fragment, { children: ["Storefront not configured. Add ", _jsx("code", { className: "font-mono", children: "VITE_SHOPIFY_STORE_DOMAIN" }), " & ", _jsx("code", { className: "font-mono", children: "VITE_SHOPIFY_STOREFRONT_TOKEN" }), " to .env."] })) : error })), loading && !products && (_jsxs("div", { className: "flex items-center gap-3 text-sm opacity-70", children: [_jsx("div", { className: "w-4 h-4 border-2 border-emerald-400 border-t-transparent rounded-full animate-spin" }), " Loading products\u2026"] })), !loading && products && products.length === 0 && !error && _jsx("div", { className: "text-sm opacity-60", children: "No products found." }), products && products.length > 0 && (_jsx("div", { className: "grid gap-5", style: { gridTemplateColumns: 'repeat(auto-fill,minmax(200px,1fr))' }, children: products.map(p => _jsx(ProductCard, { product: p }, p.id)) }))] })] }) }));
 }
 function ProductCard({ product }) {
     const img = product.images[0];

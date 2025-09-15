@@ -12,6 +12,8 @@ import { initCRDT, attachCRDTChannel, disposeCRDT } from './services/crdt';
 import { useCreatorStore } from './store/creatorStore';
 import { initGoogleIdentity, renderGoogleButton, getGoogleClientId } from './services/googleIdentity';
 import GoogleSignInButton from './components/auth/GoogleSignInButton';
+// Runtime config shape
+interface RuntimeConfig { storeDomain: string | null; apiVersion: string; debug: boolean; buildHash?: string | null; }
 
 const defaultLoadout: CharacterLoadout = {
   id: uid('char'),
@@ -56,6 +58,8 @@ export default function App() {
   // Account level is linked to profile; default to 1 if not persisted yet
   const accountLevel = profile?.accountLevel ?? 1;
   const [activeLoadout, setActiveLoadout] = useState<CharacterLoadout | null>(null);
+  const [runtimeConfig, setRuntimeConfig] = useState<RuntimeConfig | null>(null);
+  const [configLoaded, setConfigLoaded] = useState(false);
 
   // Hydrate saved avatar (loadout) from localStorage once on mount, normalizing portrait URL
   useEffect(()=>{
@@ -84,17 +88,42 @@ export default function App() {
 
   useEffect(() => {
     if (phase !== 'boot') return;
+    // Kick off runtime-config fetch once when entering boot phase
+    if(!configLoaded){
+      (async () => {
+        try {
+          const r = await fetch('/runtime-config', { headers: { 'Accept': 'application/json' } });
+          if(r.ok){
+            const json = await r.json();
+            if(json?.ok){
+              const cfg: RuntimeConfig = {
+                storeDomain: json.storeDomain || null,
+                apiVersion: json.apiVersion || 'unknown',
+                debug: !!json.debug,
+                buildHash: json.buildHash || null,
+              };
+              setRuntimeConfig(cfg);
+              if(cfg.debug) console.log('[runtime-config] loaded', cfg);
+            }
+          } else {
+            console.warn('[runtime-config] non-ok status', r.status);
+          }
+        } catch(e){ console.warn('[runtime-config] fetch failed', e); }
+        finally { setConfigLoaded(true); }
+      })();
+    }
     let pct = 0;
     const id = setInterval(() => {
       pct += Math.random() * 18 + 3;
       setProgress(Math.min(100, Math.floor(pct)));
-      if (pct >= 100) {
+      // Delay finishing boot until runtime config loaded (max ~2s simulated via progress loop)
+      if (pct >= 100 && configLoaded) {
         clearInterval(id);
         if (!activeLoadout) setPhase('onboard'); else setPhase('main');
       }
     }, 300);
     return () => clearInterval(id);
-  }, [phase, activeLoadout]);
+  }, [phase, activeLoadout, configLoaded]);
 
   async function fetchServerProfile(idToken: string){
     try {
@@ -1151,6 +1180,7 @@ function StoreView({ className='' }: { className?: string }) {
   const [products, setProducts] = React.useState<ShopifyProduct[]|null>(null);
   const [error, setError] = React.useState<string|null>(null);
   const [loading, setLoading] = React.useState(false);
+  const [ping, setPing] = React.useState<{ ok: boolean; shopName?: string|null; ms?: number; error?: string; status?: number; snippet?: string; attemptedVersions?: string[] }|null>(null);
   function authHeaderMaybe(){
     const token = localStorage.getItem('afrofuture.idToken');
     return token ? { Authorization: 'Bearer '+token } : {} as Record<string,string>;
@@ -1160,6 +1190,28 @@ function StoreView({ className='' }: { className?: string }) {
     async function load(){
       setLoading(true);
       try {
+        // Perform storefront ping first to validate token/domain configuration
+        try {
+          const pr = await fetch('/storefront/ping');
+          const txt = await pr.text();
+          let pj:any = null; try { pj = JSON.parse(txt); } catch {}
+          if(active){
+            if(pr.ok && pj?.ok){
+              setPing({ ok:true, shopName: pj.shopName, ms: pj.ms });
+            } else {
+              setPing({ ok:false, error: pj?.error || 'ping_failed', status: pr.status, snippet: (pj?.snippet || txt || '').slice(0,160), attemptedVersions: pj?.attemptedVersions });
+              // Abort product load if ping failed for any reason to avoid redundant failures
+              if(pj?.error === 'storefront_not_configured' || pj?.error === 'invalid_token_type'){
+                setError('Storefront not configured');
+              } else {
+                setError('Storefront unavailable (ping failed)');
+              }
+              return;
+            }
+          }
+        } catch (e:any) {
+          if(active) setPing({ ok:false, error: e?.message || 'ping_exception' });
+        }
         // Prefer Admin REST proxy if available and we are running behind the Node server (not pure file:// or static-only)
         // Only attempt Admin proxy if explicitly enabled via env. Defaults to off in static-only serving.
         const allowAdminProxy = ((import.meta as any)?.env?.VITE_ENABLE_ADMIN_PROXY === 'true');
@@ -1193,9 +1245,20 @@ function StoreView({ className='' }: { className?: string }) {
       <div className="flex-1 rounded-3xl border border-white/10 bg-[#12171f] overflow-hidden flex flex-col">
         <div className="p-4 border-b border-white/10 flex items-center justify-between">
           <div className="text-lg font-semibold">Store</div>
-          <span className="text-xs opacity-60">Shopify</span>
+          <span className="text-xs opacity-60">Shopify {ping?.shopName ? `· ${ping.shopName}` : ''}</span>
         </div>
   <div className="flex-1 overflow-hidden p-6">
+          {ping && !ping.ok && (
+            <div className="mb-4 text-[11px] leading-relaxed rounded-lg border border-amber-400/30 bg-amber-900/20 px-4 py-2 text-amber-200">
+              <div className="font-semibold mb-1">Storefront Ping Issue</div>
+              <div><span className="opacity-70">Error:</span> {ping.error || 'unknown'}</div>
+              {ping.status && <div><span className="opacity-70">Status:</span> {ping.status}</div>}
+              {ping.snippet && <div className="mt-1 opacity-70 font-mono break-all max-h-24 overflow-auto">{ping.snippet}</div>}
+              {ping.attemptedVersions && ping.attemptedVersions.length>0 && (
+                <div className="mt-1 opacity-70">Tried API versions: {ping.attemptedVersions.join(', ')}</div>
+              )}
+            </div>
+          )}
           {error && (
             <div className="text-sm text-rose-300 bg-rose-900/30 border border-rose-500/30 px-4 py-3 rounded-lg">
               {error === 'Shop not configured' ? (

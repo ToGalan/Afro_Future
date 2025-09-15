@@ -163,6 +163,70 @@ app.get('/admin/products', requireAuth, async (req, res) => {
 const SF_DOMAIN = process.env.VITE_SHOPIFY_STORE_DOMAIN || '';
 const SF_TOKEN = process.env.VITE_SHOPIFY_STOREFRONT_TOKEN || '';
 const SF_API_VERSION = process.env.VITE_SHOPIFY_STOREFRONT_API_VERSION || '2025-07';
+const SF_FALLBACK_VERSIONS = [SF_API_VERSION, '2025-04', '2025-01', '2024-10'].filter((v, i, a) => v && a.indexOf(v) === i);
+
+async function storefrontRequest({ query, variables, version }){
+  const endpoint = `https://${SF_DOMAIN}/api/${version}/graphql.json`;
+  const r = await fetch(endpoint, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'X-Shopify-Storefront-Access-Token': SF_TOKEN,
+      'Accept': 'application/json'
+    },
+    body: JSON.stringify({ query, variables })
+  });
+  const text = await r.text().catch(()=> '');
+  let json = null; try { json = JSON.parse(text); } catch {}
+  return { r, text, json, endpoint };
+}
+
+// -------- Runtime configuration endpoint --------
+// Provides non-sensitive runtime values so client builds can be domain-agnostic
+app.get('/runtime-config', (req, res) => {
+  res.json({
+    ok: true,
+    storeDomain: SF_DOMAIN || null,
+    apiVersion: SF_API_VERSION,
+    debug: process.env.VITE_SHOPIFY_DEBUG === 'true',
+    buildHash: process.env.BUILD_HASH || null,
+    time: Date.now()
+  });
+});
+
+// -------- Storefront token verification (lightweight) --------
+// Uses a minimal query to validate token early; excluded if not configured
+app.get('/storefront/ping', async (req, res) => {
+  const started = Date.now();
+  try {
+    if (!SF_DOMAIN || !SF_TOKEN) {
+      return res.status(501).json({ ok:false, error: 'storefront_not_configured' });
+    }
+    if (SF_TOKEN.startsWith('shpat_')) {
+      return res.status(400).json({ ok:false, error: 'invalid_token_type', message: 'Admin token provided. Use Storefront public token.' });
+    }
+    const query = 'query ShopName { shop { name } }';
+    let lastErr = null;
+    for (const ver of SF_FALLBACK_VERSIONS) {
+      const { r, text, json, endpoint } = await storefrontRequest({ query, variables: undefined, version: ver });
+      if (!r.ok) {
+        lastErr = { status: r.status, text, endpoint, version: ver };
+        if (r.status === 404) continue; // try next version
+        try { const j = JSON.parse(text); if (Array.isArray(j?.errors) && j.errors.some(e=> e?.extensions?.code === 'NOT_FOUND')) continue; } catch {}
+        break;
+      }
+      if (json?.errors) {
+        return res.status(200).json({ ok:false, error: 'graphql_errors', errors: json.errors, ms: Date.now()-started, version: ver });
+      }
+      const name = json?.data?.shop?.name || null;
+      return res.json({ ok:true, shopName: name, ms: Date.now()-started, version: ver });
+    }
+    return res.status(502).json({ ok:false, error: 'storefront_bad_gateway', status: lastErr?.status || 502, snippet: (lastErr?.text||'').slice(0,200), endpoint: lastErr?.endpoint, attemptedVersions: SF_FALLBACK_VERSIONS });
+  } catch (e) {
+    console.error('[storefront-ping] failed', e?.message || e);
+    res.status(500).json({ ok:false, error: 'storefront_ping_failed' });
+  }
+});
 
 app.get('/storefront/products', async (req, res) => {
   const started = Date.now();
@@ -174,49 +238,46 @@ app.get('/storefront/products', async (req, res) => {
       return res.status(400).json({ error: 'invalid_token_type', message: 'Admin token provided. Use Storefront public token.' });
     }
     const limit = Math.min(parseInt(String(req.query.limit || '12'), 10) || 12, 50);
-    const endpoint = `https://${SF_DOMAIN}/api/${SF_API_VERSION}/graphql.json`;
     const query = `#graphql\nquery Products($first:Int!){\n  products(first:$first){ edges { node { id handle title description images(first:4){edges{node{url altText}}} variants(first:4){edges{node{id title price: priceV2 { amount currencyCode }}}} } } }\n}`;
-    console.log('[storefront-proxy] request', { limit, endpoint, tokenPrefix: SF_TOKEN.slice(0,4)+'…' });
-    const r = await fetch(endpoint, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'X-Shopify-Storefront-Access-Token': SF_TOKEN,
-        'Accept': 'application/json'
-      },
-      body: JSON.stringify({ query, variables: { first: limit } })
-    });
-    if (!r.ok) {
-      const body = await r.text().catch(() => '');
-      console.warn('[storefront-proxy] upstream non-OK', { status: r.status, statusText: r.statusText, snippet: body.slice(0,180) });
-      return res.status(502).json({ error: 'storefront_bad_gateway', status: r.status, body: body.slice(0, 512) });
+    let lastErr = null;
+    for (const ver of SF_FALLBACK_VERSIONS) {
+      console.log('[storefront-proxy] request', { limit, version: ver, tokenPrefix: SF_TOKEN.slice(0,4)+'…' });
+      const { r, text, json, endpoint } = await storefrontRequest({ query, variables: { first: limit }, version: ver });
+      if (!r.ok) {
+        console.warn('[storefront-proxy] upstream non-OK', { version: ver, status: r.status, statusText: r.statusText, snippet: text.slice(0,180) });
+        lastErr = { status: r.status, body: text, endpoint, version: ver };
+        if (r.status === 404) continue;
+        try { const j = JSON.parse(text); if (Array.isArray(j?.errors) && j.errors.some(e=> e?.extensions?.code === 'NOT_FOUND')) continue; } catch {}
+        break;
+      }
+      const edges = Array.isArray(json?.data?.products?.edges) ? json.data.products.edges : [];
+      const products = edges.map((e) => {
+        const node = e?.node || {};
+        const imageEdges = Array.isArray(node?.images?.edges) ? node.images.edges : [];
+        const variantEdges = Array.isArray(node?.variants?.edges) ? node.variants.edges : [];
+        const images = imageEdges.map((ie) => ({ url: ie?.node?.url || '', altText: ie?.node?.altText })).filter(i => i.url);
+        const variants = variantEdges.map((ve) => ({
+          id: String(ve?.node?.id || ''),
+          title: ve?.node?.title || '',
+          price: {
+            amount: String(ve?.node?.price?.amount || ''),
+            currencyCode: ve?.node?.price?.currencyCode || ''
+          }
+        })).filter(v => v.id);
+        return {
+          id: String(node?.id || ''),
+          handle: node?.handle || '',
+          title: node?.title || '',
+          description: node?.description || '',
+          images,
+          variants
+        };
+      }).filter(p => p.id);
+      console.log('[storefront-proxy] success', { count: products.length, ms: Date.now()-started, version: ver });
+      return res.json({ ok: true, products, ms: Date.now()-started, version: ver });
     }
-    const json = await r.json();
-    const edges = Array.isArray(json?.data?.products?.edges) ? json.data.products.edges : [];
-    const products = edges.map((e) => {
-      const node = e?.node || {};
-      const imageEdges = Array.isArray(node?.images?.edges) ? node.images.edges : [];
-      const variantEdges = Array.isArray(node?.variants?.edges) ? node.variants.edges : [];
-      const images = imageEdges.map((ie) => ({ url: ie?.node?.url || '', altText: ie?.node?.altText })).filter(i => i.url);
-      const variants = variantEdges.map((ve) => ({
-        id: String(ve?.node?.id || ''),
-        title: ve?.node?.title || '',
-        price: {
-          amount: String(ve?.node?.price?.amount || ''),
-          currencyCode: ve?.node?.price?.currencyCode || ''
-        }
-      })).filter(v => v.id);
-      return {
-        id: String(node?.id || ''),
-        handle: node?.handle || '',
-        title: node?.title || '',
-        description: node?.description || '',
-        images,
-        variants
-      };
-    }).filter(p => p.id);
-    console.log('[storefront-proxy] success', { count: products.length, ms: Date.now()-started });
-    res.json({ ok: true, products, ms: Date.now()-started });
+    const out = { error: 'storefront_bad_gateway', status: lastErr?.status || 502, body: (lastErr?.body || '').slice(0,512), endpoint: lastErr?.endpoint, attemptedVersions: SF_FALLBACK_VERSIONS };
+    return res.status(502).json(out);
   } catch (e) {
     console.error('[storefront-proxy] failed', { error: e?.message || e, ms: Date.now()-started });
     res.status(500).json({ error: 'storefront_proxy_failed' });
