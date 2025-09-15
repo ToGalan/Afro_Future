@@ -7,6 +7,7 @@ import { fetchProducts, type ShopifyProduct } from './services/shopify';
 import VariantPreview from './components/VariantPreview';
 import { Archetype, CharacterLoadout, Faction, PetType, uid, now } from './types/loadout';
 import { CharacterPortrait, FactionIcon, ImageAssets, getCharacterPortrait, PetIcon } from './assets/assetPaths';
+import ScaleToFit from './components/ScaleToFit';
 import { joinRoom } from './services/realtimeClient';
 import { initCRDT, attachCRDTChannel, disposeCRDT } from './services/crdt';
 import { useCreatorStore } from './store/creatorStore';
@@ -294,11 +295,11 @@ export default function App() {
     return () => { rtc.dc.removeEventListener('message', onMessage); };
   }, [rtc]);
 
-  if (phase === 'auth') return <GameViewport mode="fit"><AuthGate onSignedIn={handleSignedIn} /></GameViewport>;
-  if (phase === 'boot') return <GameViewport mode="fit"><WelcomeScreen progress={progress} build="v0.2.3 demo • UE5" onSignOut={handleSignOut} /></GameViewport>;
+  if (phase === 'auth') return <GameViewport><AuthGate onSignedIn={handleSignedIn} /></GameViewport>;
+  if (phase === 'boot') return <GameViewport><WelcomeScreen progress={progress} build="v0.2.3 demo • UE5" onSignOut={handleSignOut} /></GameViewport>;
 
   if (phase === 'onboard') return (
-    <GameViewport mode="fit">
+    <GameViewport>
       <FirstTimeFlow
         faction={setupFaction}
         archetype={setupArchetype}
@@ -312,7 +313,7 @@ export default function App() {
   );
 
   if (phase === 'creating') return (
-    <GameViewport mode="fit">
+    <GameViewport>
       <CharacterCreator
         initial={activeLoadout ?? {
           ...defaultLoadout,
@@ -343,7 +344,7 @@ export default function App() {
   );
 
   return (
-    <GameViewport mode="fit">
+    <GameViewport>
       <MainMenu
         playerName={playerName}
         accountLevel={accountLevel}
@@ -419,7 +420,7 @@ function WelcomeScreen({ progress, build, onSignOut }: { progress: number; build
   }
 
   return (
-    <div className="w-screen h-screen bg-[#0b0e13] relative text-gray-100 overflow-hidden">
+    <div className="w-full h-full bg-[#0b0e13] relative text-gray-100 overflow-hidden">
       <div className="absolute inset-0 bg-[radial-gradient(circle_at_30%_30%,rgba(16,185,129,0.15),transparent_60%)]" />
       <div className="absolute inset-0 bg-[radial-gradient(circle_at_70%_70%,rgba(56,189,248,0.12),transparent_65%)]" />
       <div className="relative h-full grid place-items-center p-6">
@@ -495,7 +496,7 @@ function AuthGate({ onSignedIn }: { onSignedIn: (token:string)=>void }) {
   }
 
   return (
-    <div className="w-screen h-screen flex items-center justify-center bg-[#0b0e13] text-gray-100">
+    <div className="w-full h-full flex items-center justify-center bg-[#0b0e13] text-gray-100">
       <div className="w-full max-w-md p-8 rounded-2xl bg-[#12171f]/90 border border-white/10 shadow-xl flex flex-col items-center">
         <h1 className="text-3xl font-semibold tracking-wide mb-4">Afro‑Future Rising</h1>
         {mode==='idle' && (
@@ -536,6 +537,10 @@ function FirstTimeFlow({ faction, archetype, pet, onFaction, onArchetype, onPet,
   // Full Screen support for the setup container
   const containerRef = React.useRef<HTMLDivElement | null>(null);
   const [isFs, setIsFs] = useState(false);
+  // Scale-to-fit support for content area (avoid scrolling)
+  const viewportRef = React.useRef<HTMLDivElement | null>(null);
+  const innerRef = React.useRef<HTMLDivElement | null>(null);
+  const [scale, setScale] = useState(1);
   useEffect(() => {
     function onChange() {
       setIsFs(!!document.fullscreenElement);
@@ -543,6 +548,35 @@ function FirstTimeFlow({ faction, archetype, pet, onFaction, onArchetype, onPet,
     document.addEventListener('fullscreenchange', onChange);
     return () => document.removeEventListener('fullscreenchange', onChange);
   }, []);
+  useEffect(() => {
+    const measure = () => {
+      requestAnimationFrame(() => {
+        const vp = viewportRef.current; const inner = innerRef.current;
+        if (!vp || !inner) return;
+        const vw = vp.clientWidth; const vh = vp.clientHeight;
+        const iw = inner.scrollWidth; const ih = inner.scrollHeight;
+        if (iw && ih && vw && vh) setScale(Math.min(vw / iw, vh / ih, 1));
+        else setScale(1);
+      });
+    };
+    const ro = new ResizeObserver(measure);
+    if (viewportRef.current) ro.observe(viewportRef.current);
+    if (innerRef.current) ro.observe(innerRef.current);
+    window.addEventListener('resize', measure);
+    measure();
+    return () => {
+      ro.disconnect();
+      window.removeEventListener('resize', measure);
+    };
+  }, []);
+  // Recompute when step/content changes
+  useEffect(() => {
+    const vp = viewportRef.current; const inner = innerRef.current;
+    if (!vp || !inner) return;
+    const vw = vp.clientWidth; const vh = vp.clientHeight;
+    const iw = inner.scrollWidth; const ih = inner.scrollHeight;
+    if (iw && ih && vw && vh) setScale(Math.min(vw/iw, vh/ih, 1));
+  }, [step, faction, archetype, pet]);
   function toggleFullscreen() {
     try {
       if (!document.fullscreenElement) {
@@ -620,7 +654,10 @@ function FirstTimeFlow({ faction, archetype, pet, onFaction, onArchetype, onPet,
             )}
           </div>
         </div>
-        <div className="mt-4 flex-1 min-h-0 overflow-auto pr-1 custom-scrollbar">
+        <div className="mt-4 flex-1 min-h-0 overflow-hidden relative" ref={viewportRef}>
+          <div style={{ position: 'absolute', inset: 0, display: 'grid', placeItems: 'start center', pointerEvents: 'none' }}>
+            <div style={{ transform: `scale(${scale})`, transformOrigin: 'top center', pointerEvents: 'auto' }}>
+              <div ref={innerRef}>
         {step === 0 && (
           <div className="mt-6">
             <div className="text-sm opacity-80 mb-2">Choose Faction</div>
@@ -754,6 +791,9 @@ function FirstTimeFlow({ faction, archetype, pet, onFaction, onArchetype, onPet,
             </div>
           </div>
         )}
+              </div>
+            </div>
+          </div>
         </div>
       </div>
     </div>
@@ -761,13 +801,16 @@ function FirstTimeFlow({ faction, archetype, pet, onFaction, onArchetype, onPet,
 }
 
 function MainMenu({ playerName, accountLevel, loadout, onCustomize, heroLocked, view, onChangeView, profile, onSignOut }: { playerName: string; accountLevel: number; loadout: CharacterLoadout; onCustomize: () => void; heroLocked: boolean; view: 'dashboard' | 'skills' | 'store' | 'help'; onChangeView: (v: 'dashboard' | 'skills' | 'store' | 'help') => void; profile?: { sub: string; name?: string; email?: string; picture?: string } | null; onSignOut?: () => void; }) {
-  // Added min-h-0 on container children (panels) so flex overflow works, and responsive column collapse below 1100px.
   return (
-    <div className="h-full w-full bg-[#0f1218] text-gray-100 grid grid-rows-[64px_1fr] min-h-0" style={{gridTemplateColumns:'minmax(240px,18%) 1fr minmax(240px,18%)'}}>
+    <div className="h-full w-full bg-[#0f1218] text-gray-100">
       <TopNav view={view} onChangeView={onChangeView} profile={profile} onSignOut={onSignOut} />
-      <LeftPlayerPanel className="row-start-2" playerName={playerName} accountLevel={accountLevel} loadout={loadout} heroLocked={heroLocked} />
-      <CenterHub className="row-start-2" loadout={loadout} view={view} />
-      <RightPlayerPanel className="row-start-2" loadout={loadout} onCustomize={onCustomize} />
+      <ScaleToFit className="h-[calc(100%-64px)]" origin="top-center">
+        <div className="grid grid-rows-[1fr]" style={{gridTemplateColumns:'minmax(240px,18%) 1fr minmax(240px,18%)', width: '1200px', maxWidth: '90vw'}}>
+          <LeftPlayerPanel className="row-start-1" playerName={playerName} accountLevel={accountLevel} loadout={loadout} heroLocked={heroLocked} />
+          <CenterHub className="row-start-1" loadout={loadout} view={view} />
+          <RightPlayerPanel className="row-start-1" loadout={loadout} onCustomize={onCustomize} />
+        </div>
+      </ScaleToFit>
     </div>
   );
 }
@@ -964,11 +1007,9 @@ function RightPlayerPanel({ className = '', loadout, onCustomize }: { className?
   ];
   
   return (
-    <aside className={`col-start-3 h-full min-h-0 ${className} bg-[#0f1218] border-l border-black/40 shadow-inner flex flex-col overflow-hidden`}>
-      {/* Scrollable content container */}
-      <div className="flex-1 flex flex-col min-h-0 overflow-auto custom-scrollbar">
-        {/* 3D Avatar Section (responsive height) */}
-        <div className="p-4 border-b border-white/10 shrink-0">
+    <aside className={`col-start-3 h-full min-h-0 ${className} bg-[#0f1218] border-l border-black/40 shadow-inner flex flex-col`}>
+        {/* 3D Avatar Section (fixed design height; will scale via parent ScaleToFit) */}
+        <div className="p-4 border-b border-white/10">
           <div
             className="relative rounded-3xl border border-white/10 bg-gradient-to-br from-[#0b0e13] to-[#1a1e29] overflow-hidden flex flex-col"
             style={{ height: '260px' }}
@@ -1004,8 +1045,8 @@ function RightPlayerPanel({ className = '', loadout, onCustomize }: { className?
             </div>
           </div>
         </div>
-        {/* Game Modes Section */}
-        <div className="px-4 py-4 border-b border-white/10">
+  {/* Game Modes Section */}
+  <div className="px-4 py-4 border-b border-white/10">
         <div className="text-lg font-semibold mb-4">Game Modes</div>
         <div className="grid gap-3">
           {modes.map(m => (
@@ -1027,8 +1068,8 @@ function RightPlayerPanel({ className = '', loadout, onCustomize }: { className?
           ))}
           </div>
         </div>
-        {/* Future sections for Gifts/Battle Pass */}
-        <div className="px-4 py-4 border-b border-white/10">
+  {/* Future sections for Gifts/Battle Pass */}
+  <div className="px-4 py-4 border-b border-white/10">
         <div className="text-lg font-semibold mb-4">Rewards</div>
         <div className="grid gap-3">
           <div className="rounded-2xl px-4 py-4 text-left relative overflow-hidden border border-white/10 bg-white/5 opacity-60">
@@ -1045,13 +1086,11 @@ function RightPlayerPanel({ className = '', loadout, onCustomize }: { className?
           </div>
         </div>
         </div>
-        <div className="h-20" /> {/* spacer to avoid last section being hidden behind sticky footer */}
-      </div>
-      {/* Sticky Play footer */}
-      <div className="p-4 border-t border-white/10 bg-[#0f1218]/95 backdrop-blur supports-[backdrop-filter]:backdrop-blur sticky bottom-0">
-        <Button className="w-full h-12 text-lg" onClick={startMatch} disabled={mode !== 'single'}>Play</Button>
-        <div className="mt-1 text-[11px] text-gray-300 h-4">{queue ?? (mode === 'single' ? 'Ready' : 'Disabled')}</div>
-      </div>
+        {/* Play footer (inline, no sticky; scaling handles fit) */}
+        <div className="p-4">
+          <Button className="w-full h-12 text-lg" onClick={startMatch} disabled={mode !== 'single'}>Play</Button>
+          <div className="mt-1 text-[11px] text-gray-300 h-4">{queue ?? (mode === 'single' ? 'Ready' : 'Disabled')}</div>
+        </div>
     </aside>
   );
 }
@@ -1289,7 +1328,7 @@ function CharacterCreator({ onSave, onBack, initial, locked }: { onSave: (payloa
     onSave(payload);
   }
   return (
-    <div className="w-screen h-screen bg-[#0b0e13] text-gray-100 relative flex flex-col">
+    <div className="w-full h-full bg-[#0b0e13] text-gray-100 relative flex flex-col">
       <div className="absolute top-4 left-6 flex items-center gap-2 z-10">
         <Button variant="ghost" onClick={onBack}>Back</Button>
       </div>
