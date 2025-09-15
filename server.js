@@ -12,7 +12,7 @@ import { OAuth2Client } from 'google-auth-library';
 const gzip = promisify(zlib.gzip);
 
 // Config precedence: explicit process.env overrides .env file.
-const PORT = process.env.PORT || 8080;
+const PORT = process.env.PORT || 1002;
 const SNAP_DIR = path.join(process.cwd(), 'snapshots');
 const PROFILE_DIR = path.join(process.cwd(), 'profiles');
 
@@ -273,3 +273,10 @@ server.on('upgrade', (req, socket, head) => {
     socket.destroy();
   }
 });
+
+// Static serving for production build (after APIs and upgrade handlers are set)
+try {
+  const dist = path.join(process.cwd(), 'dist');
+  app.use(express.static(dist));
+  app.get('*', (req, res) => res.sendFile(path.join(dist, 'index.html')));
+} catch {}

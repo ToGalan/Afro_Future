@@ -43,17 +43,18 @@ export default function App() {
   const [recentRooms, setRecentRooms] = useState<string[]>(() => {
     try { return JSON.parse(localStorage.getItem('afrofuture.recentRooms')||'[]'); } catch { return []; }
   });
-  const [profile, setProfile] = useState<{ sub: string; name?: string; email?: string; picture?: string } | null>(() => {
+  const [profile, setProfile] = useState<{ sub: string; name?: string; email?: string; picture?: string; accountLevel?: number } | null>(() => {
     try {
       const raw = localStorage.getItem('afrofuture.profile');
       if(raw) return JSON.parse(raw);
     } catch {}
     return null;
   });
-  const [mainView, setMainView] = useState<'dashboard' | 'skills' | 'store' | 'help'>('dashboard');
+  const [mainView, setMainView] = useState<'dashboard' | 'skills' | 'store' | 'help'>('store');
   const [progress, setProgress] = useState(0);
   const [playerName] = useState('PlayerOne');
-  const [accountLevel] = useState(1);
+  // Account level is linked to profile; default to 1 if not persisted yet
+  const accountLevel = profile?.accountLevel ?? 1;
   const [activeLoadout, setActiveLoadout] = useState<CharacterLoadout | null>(null);
 
   // Hydrate saved avatar (loadout) from localStorage once on mount, normalizing portrait URL
@@ -116,14 +117,14 @@ export default function App() {
     setPhase('boot');
     try {
       const payload = JSON.parse(atob(token.split('.')[1] || 'e30='));
-      const prof = { sub: payload.sub, name: payload.name || payload.given_name || payload.family_name, email: payload.email, picture: payload.picture };
+  const prof = { sub: payload.sub, name: payload.name || payload.given_name || payload.family_name, email: payload.email, picture: payload.picture };
       setProfile(prof);
       try { localStorage.setItem('afrofuture.profile', JSON.stringify(prof)); } catch {}
       // Fetch existing server profile (may include loadout)
   const serverProf = await fetchServerProfile(token);
       if(serverProf){
         // Merge name/email/picture preference: prefer fresh token payload over stored values
-        const mergedProf = { ...serverProf, ...prof };
+  const mergedProf = { ...serverProf, ...prof };
         setProfile(mergedProf);
         if(serverProf.loadout){
           const l = serverProf.loadout as CharacterLoadout;
@@ -308,18 +309,21 @@ export default function App() {
   const skillState = useSkillStore();
   useEffect(() => {
     if (!idToken) return;
-    try {
-      const payload = {
-        skills: {
-          level: skillState.level,
-          unlocked: skillState.unlocked,
-          unlockOrder: skillState.unlockOrder,
-        }
-      };
-      persistServerProfile(idToken, payload);
-    } catch (e) {
-      console.warn('[skills] persist failed', e);
-    }
+    const handle = setTimeout(() => {
+      try {
+        const payload = {
+          skills: {
+            level: skillState.level,
+            unlocked: skillState.unlocked,
+            unlockOrder: skillState.unlockOrder,
+          }
+        };
+        persistServerProfile(idToken, payload);
+      } catch (e) {
+        console.warn('[skills] persist failed', e);
+      }
+    }, 500);
+    return () => clearTimeout(handle);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [idToken, skillState.level, skillState.unlocked, skillState.unlockOrder]);
 

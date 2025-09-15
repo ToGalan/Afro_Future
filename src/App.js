@@ -56,10 +56,11 @@ export default function App() {
         catch { }
         return null;
     });
-    const [mainView, setMainView] = useState('dashboard');
+    const [mainView, setMainView] = useState('store');
     const [progress, setProgress] = useState(0);
     const [playerName] = useState('PlayerOne');
-    const [accountLevel] = useState(1);
+    // Account level is linked to profile; default to 1 if not persisted yet
+    const accountLevel = profile?.accountLevel ?? 1;
     const [activeLoadout, setActiveLoadout] = useState(null);
     // Hydrate saved avatar (loadout) from localStorage once on mount, normalizing portrait URL
     useEffect(() => {
@@ -158,6 +159,22 @@ export default function App() {
                         localStorage.setItem('afrofuture.activeLoadout', JSON.stringify(serverProf.loadout));
                     }
                     catch { }
+                }
+                // Hydrate skills from server if present
+                if (serverProf.skills && typeof serverProf.skills === 'object') {
+                    try {
+                        const { hydrate } = useSkillStore.getState();
+                        if (hydrate) {
+                            hydrate({
+                                level: typeof serverProf.skills.level === 'number' ? serverProf.skills.level : undefined,
+                                unlocked: Array.isArray(serverProf.skills.unlocked) ? serverProf.skills.unlocked : undefined,
+                                unlockOrder: Array.isArray(serverProf.skills.unlockOrder) ? serverProf.skills.unlockOrder : undefined,
+                            });
+                        }
+                    }
+                    catch (e) {
+                        console.warn('[skills] hydrate failed', e);
+                    }
                 }
             }
             else {
@@ -396,6 +413,29 @@ export default function App() {
         }
         setPhase('main');
     }
+    // Persist skills to server whenever they change (after auth)
+    const skillState = useSkillStore();
+    useEffect(() => {
+        if (!idToken)
+            return;
+        const handle = setTimeout(() => {
+            try {
+                const payload = {
+                    skills: {
+                        level: skillState.level,
+                        unlocked: skillState.unlocked,
+                        unlockOrder: skillState.unlockOrder,
+                    }
+                };
+                persistServerProfile(idToken, payload);
+            }
+            catch (e) {
+                console.warn('[skills] persist failed', e);
+            }
+        }, 500);
+        return () => clearTimeout(handle);
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [idToken, skillState.level, skillState.unlocked, skillState.unlockOrder]);
     // Listen for remote loadout updates over WebRTC to keep sessions in sync ("chrome sync webrtc" requirement)
     useEffect(() => {
         if (!rtc?.dc)

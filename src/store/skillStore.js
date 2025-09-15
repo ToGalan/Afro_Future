@@ -46,6 +46,26 @@ export const useSkillStore = create((set, get) => ({
     traitTags: INIT_TRAITS.tags,
     primaryBranch: INIT_TRAITS.topBranch,
     primaryType: INIT_TRAITS.topType,
+    hydrate: (data) => set((state) => {
+        const nextUnlocked = Array.isArray(data.unlocked) && data.unlocked.length ? data.unlocked : state.unlocked;
+        const nextOrder = Array.isArray(data.unlockOrder) ? data.unlockOrder : state.unlockOrder;
+        const nextLevel = typeof data.level === 'number' ? Math.max(1, data.level) : state.level;
+        const stats = deriveStats(nextUnlocked);
+        const traits = deriveTraits(nextUnlocked, TREE);
+        const spent = Math.max(0, nextUnlocked.length - 1); // exclude root
+        return {
+            level: nextLevel,
+            unlocked: nextUnlocked,
+            unlockOrder: nextOrder,
+            spent,
+            attack: stats.attack,
+            defense: stats.defense,
+            utility: stats.utility,
+            primaryBranch: traits.topBranch,
+            primaryType: traits.topType,
+            traitTags: traits.tags,
+        };
+    }),
     unlock: (id) => set(state => {
         if (state.unlocked.includes(id)) {
             console.debug('[skillStore.unlock] already unlocked', { id });
