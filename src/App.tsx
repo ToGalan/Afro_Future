@@ -8,6 +8,7 @@ import VariantPreview from './components/VariantPreview';
 import { Archetype, CharacterLoadout, Faction, PetType, uid, now } from './types/loadout';
 import { CharacterPortrait, FactionIcon, ImageAssets, getCharacterPortrait, PetIcon } from './assets/assetPaths';
 import { joinRoom } from './services/realtimeClient';
+import { initCRDT, attachCRDTChannel, disposeCRDT } from './services/crdt';
 import { useCreatorStore } from './store/creatorStore';
 import { initGoogleIdentity, renderGoogleButton, getGoogleClientId } from './services/googleIdentity';
 import GoogleSignInButton from './components/auth/GoogleSignInButton';
@@ -127,10 +128,21 @@ export default function App() {
         persistServerProfile(token, { ...prof });
       }
     } catch {}
-    // Join a default room (e.g., 'lobby') for demonstration
+    // Initialize collaborative CRDT state then join a default room (e.g., 'lobby')
     try {
+      await initCRDT({ idToken: token, world: 'global' });
       const room = joinRoom(roomId, {}, token);
       setRtc(room);
+      const maybeAttach = () => {
+        if(room.dc.readyState === 'open'){
+          try { attachCRDTChannel({ dc: room.dc }); } catch(e){ console.warn('[crdt] attach failed', e); }
+        } else {
+          room.dc.addEventListener('open', ()=>{
+            try { attachCRDTChannel({ dc: room.dc }); } catch(e){ console.warn('[crdt] attach failed (late)', e); }
+          }, { once:true });
+        }
+      };
+      maybeAttach();
       try {
         localStorage.setItem('afrofuture.rtcState', JSON.stringify({ roomId, joinedAt: Date.now(), pcState: room.pc.connectionState, iceState: room.pc.iceConnectionState }));
       } catch {}
@@ -147,6 +159,7 @@ export default function App() {
       try { rtc.ws.close(); } catch {}
       setRtc(null);
     }
+    try { disposeCRDT(); } catch {}
   }
   function switchRoom(newRoom: string){
     if(newRoom === roomId) return;
@@ -520,6 +533,27 @@ function AuthGate({ onSignedIn }: { onSignedIn: (token:string)=>void }) {
 
 function FirstTimeFlow({ faction, archetype, pet, onFaction, onArchetype, onPet, onContinue }: { faction: Faction | null; archetype: Archetype | null; pet: PetType | null; onFaction: (f: Faction) => void; onArchetype: (a: Archetype) => void; onPet: (p: PetType) => void; onContinue: () => void; }) {
   const [step, setStep] = useState(0);
+  // Full Screen support for the setup container
+  const containerRef = React.useRef<HTMLDivElement | null>(null);
+  const [isFs, setIsFs] = useState(false);
+  useEffect(() => {
+    function onChange() {
+      setIsFs(!!document.fullscreenElement);
+    }
+    document.addEventListener('fullscreenchange', onChange);
+    return () => document.removeEventListener('fullscreenchange', onChange);
+  }, []);
+  function toggleFullscreen() {
+    try {
+      if (!document.fullscreenElement) {
+        containerRef.current?.requestFullscreen?.();
+      } else {
+        document.exitFullscreen?.();
+      }
+    } catch (err) {
+      console.warn('Fullscreen toggle failed', err);
+    }
+  }
   const factionDetails: Record<Faction, { name: string; mission: string; objectives: string; lore: string; }> = {
     PAA: {
       name: 'PAA – Pan-African Alliance',
@@ -564,10 +598,27 @@ function FirstTimeFlow({ faction, archetype, pet, onFaction, onArchetype, onPet,
   const petInfo = pet ? petDetails[pet] : null;
   return (
     <div className="w-full h-full bg-[#0b0e13] text-gray-100 flex flex-col items-center p-6">
-      <div className="w-full max-w-5xl bg-[#12171f] rounded-2xl p-6 border border-white/10 shadow-2xl flex flex-col" style={{height:'100%'}}>
+      <div ref={containerRef} className="w-full max-w-5xl bg-[#12171f] rounded-2xl p-6 border border-white/10 shadow-2xl flex flex-col" style={{height:'100%'}}>
         <div className="flex items-center justify-between">
           <h2 className="text-2xl font-semibold tracking-wide">Create Your Character</h2>
-          <div className="text-sm opacity-70">Step {step + 1} / {steps.length}</div>
+          <div className="flex items-center gap-3">
+            <div className="text-sm opacity-70">Step {step + 1} / {steps.length}</div>
+            {step === 0 && (
+              <button
+                onClick={toggleFullscreen}
+                className="w-8 h-8 inline-flex items-center justify-center rounded-lg border border-white/10 bg-white/5 hover:bg-white/10 transition"
+                aria-label={isFs ? 'Exit Full Screen' : 'Full Screen'}
+                title={isFs ? 'Exit Full Screen' : 'Full Screen'}
+              >
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                  <path d="M4 9V5h4"/>
+                  <path d="M20 9V5h-4"/>
+                  <path d="M4 15v4h4"/>
+                  <path d="M20 15v4h-4"/>
+                </svg>
+              </button>
+            )}
+          </div>
         </div>
         {step === 0 && (
           <div className="mt-6">
@@ -708,8 +759,9 @@ function FirstTimeFlow({ faction, archetype, pet, onFaction, onArchetype, onPet,
 }
 
 function MainMenu({ playerName, accountLevel, loadout, onCustomize, heroLocked, view, onChangeView, profile, onSignOut }: { playerName: string; accountLevel: number; loadout: CharacterLoadout; onCustomize: () => void; heroLocked: boolean; view: 'dashboard' | 'skills' | 'store' | 'help'; onChangeView: (v: 'dashboard' | 'skills' | 'store' | 'help') => void; profile?: { sub: string; name?: string; email?: string; picture?: string } | null; onSignOut?: () => void; }) {
+  // Added min-h-0 on container children (panels) so flex overflow works, and responsive column collapse below 1100px.
   return (
-    <div className="h-full w-full bg-[#0f1218] text-gray-100 grid grid-rows-[64px_1fr]" style={{gridTemplateColumns:'minmax(260px,20%) 1fr minmax(260px,20%)'}}>
+    <div className="h-full w-full bg-[#0f1218] text-gray-100 grid grid-rows-[64px_1fr] min-h-0" style={{gridTemplateColumns:'minmax(240px,18%) 1fr minmax(240px,18%)'}}>
       <TopNav view={view} onChangeView={onChangeView} profile={profile} onSignOut={onSignOut} />
       <LeftPlayerPanel className="row-start-2" playerName={playerName} accountLevel={accountLevel} loadout={loadout} heroLocked={heroLocked} />
       <CenterHub className="row-start-2" loadout={loadout} view={view} />
@@ -810,8 +862,8 @@ function LeftPlayerPanel({ className = '', playerName, accountLevel, loadout, he
   const HP = baseHP + (skillLevel-1)*hpPerLevel;
   const EP = baseEP + (skillLevel-1)*epPerLevel;
   return (
-    <aside className={`col-start-1 h-full ${className} bg-[#0f1218] border-r border-black/40 shadow-inner flex flex-col`}>      
-      <div className="px-4 py-4 border-b border-white/10 flex flex-col items-center">
+    <aside className={`col-start-1 h-full min-h-0 ${className} bg-[#0f1218] border-r border-black/40 shadow-inner flex flex-col overflow-hidden`}>      
+      <div className="px-4 py-4 border-b border-white/10 flex flex-col items-center shrink-0">
         {/* Character Portrait and Info */}
         <div className="w-[240px] h-[180px] rounded-3xl border border-white/10 bg-[#12171f] overflow-hidden relative flex flex-col items-center justify-center">
           {/* Portrait image instead of 3D */}
@@ -863,7 +915,7 @@ function LeftPlayerPanel({ className = '', playerName, accountLevel, loadout, he
           </div>
         </div>
       </div>
-      <div className="px-4 py-6 flex flex-col items-center gap-4">
+      <div className="px-4 py-6 flex flex-col items-center gap-4 overflow-auto min-h-0">
         {/* 240x240 Pet Card matching character */}
         <div className="w-[240px] h-[240px] rounded-3xl border border-white/10 bg-white/5 overflow-hidden relative flex flex-col items-center justify-center p-4">
           <div className="absolute inset-0 bg-gradient-to-tr from-[#0b0e13]/80 via-transparent to-[#0b0e13]/50" />
@@ -910,18 +962,20 @@ function RightPlayerPanel({ className = '', loadout, onCustomize }: { className?
   ];
   
   return (
-    <aside className={`col-start-3 h-full ${className} bg-[#0f1218] border-l border-black/40 shadow-inner flex flex-col`}>
-      {/* 3D Avatar Section */}
-      <div className="p-4 border-b border-white/10">
-        <div
-          className="relative rounded-3xl border border-white/10 bg-gradient-to-br from-[#0b0e13] to-[#1a1e29] overflow-hidden flex flex-col"
-          style={{ height: '300px' }}
-        >
-          <div className="absolute inset-0 bg-gradient-to-tr from-[#0b0e13]/80 via-transparent to-[#0b0e13]/50" />
-          {/* Avatar canvas container anchored to bottom */}
-          <div className="relative z-10 flex-1 flex items-end justify-center px-2 pb-2">
-            {/* Shrunk avatar (60% smaller) & anchored to bottom by reducing container height */}
-            <div className="w-full h-[100px] relative">
+    <aside className={`col-start-3 h-full min-h-0 ${className} bg-[#0f1218] border-l border-black/40 shadow-inner flex flex-col overflow-hidden`}>
+      {/* Scrollable content container */}
+      <div className="flex-1 flex flex-col min-h-0 overflow-auto custom-scrollbar">
+        {/* 3D Avatar Section (responsive height) */}
+        <div className="p-4 border-b border-white/10 shrink-0">
+          <div
+            className="relative rounded-3xl border border-white/10 bg-gradient-to-br from-[#0b0e13] to-[#1a1e29] overflow-hidden flex flex-col"
+            style={{ height: '260px' }}
+          >
+            <div className="absolute inset-0 bg-gradient-to-tr from-[#0b0e13]/80 via-transparent to-[#0b0e13]/50" />
+            {/* Avatar canvas container anchored to bottom */}
+            <div className="relative z-10 flex-1 flex items-end justify-center px-2 pb-2">
+              {/* Shrunk avatar (60% smaller) & anchored to bottom by reducing container height */}
+              <div className="w-full h-[100px] relative">
               <AvatarScene
                 parts={(loadout as any).threeConfig?.parts}
                 colors={(loadout as any).threeConfig?.colors}
@@ -939,18 +993,17 @@ function RightPlayerPanel({ className = '', loadout, onCustomize }: { className?
                 autoFrame
                 frameMargin={0.18}
               />
+              </div>
+            </div>
+            <div className="relative z-20 px-3 pb-3">
+              <Button size="sm" className="w-full text-xs" onClick={onCustomize}>
+                Customize
+              </Button>
             </div>
           </div>
-          <div className="relative z-20 px-3 pb-3">
-            <Button size="sm" className="w-full text-xs" onClick={onCustomize}>
-              Customize
-            </Button>
-          </div>
         </div>
-      </div>
-      
-      {/* Game Modes Section */}
-      <div className="px-4 py-4 border-b border-white/10">
+        {/* Game Modes Section */}
+        <div className="px-4 py-4 border-b border-white/10">
         <div className="text-lg font-semibold mb-4">Game Modes</div>
         <div className="grid gap-3">
           {modes.map(m => (
@@ -970,11 +1023,10 @@ function RightPlayerPanel({ className = '', loadout, onCustomize }: { className?
               {mode === m.key && <div className="absolute top-2 right-2 text-[10px] px-2 py-0.5 rounded bg-emerald-500/20 border border-emerald-400/40 text-emerald-200">Active</div>}
             </button>
           ))}
+          </div>
         </div>
-      </div>
-      
-      {/* Future sections for Gifts/Battle Pass */}
-      <div className="px-4 py-4 border-b border-white/10">
+        {/* Future sections for Gifts/Battle Pass */}
+        <div className="px-4 py-4 border-b border-white/10">
         <div className="text-lg font-semibold mb-4">Rewards</div>
         <div className="grid gap-3">
           <div className="rounded-2xl px-4 py-4 text-left relative overflow-hidden border border-white/10 bg-white/5 opacity-60">
@@ -990,12 +1042,13 @@ function RightPlayerPanel({ className = '', loadout, onCustomize }: { className?
             </div>
           </div>
         </div>
+        </div>
+        <div className="h-20" /> {/* spacer to avoid last section being hidden behind sticky footer */}
       </div>
-      
-      {/* Play Button */}
-      <div className="mt-auto p-4">
-        <Button className="w-full h-14 text-xl" onClick={startMatch} disabled={mode !== 'single'}>Play</Button>
-        <div className="mt-2 text-xs text-gray-300 h-4">{queue ?? (mode === 'single' ? 'Ready' : 'Disabled')}</div>
+      {/* Sticky Play footer */}
+      <div className="p-4 border-t border-white/10 bg-[#0f1218]/95 backdrop-blur supports-[backdrop-filter]:backdrop-blur sticky bottom-0">
+        <Button className="w-full h-12 text-lg" onClick={startMatch} disabled={mode !== 'single'}>Play</Button>
+        <div className="mt-1 text-[11px] text-gray-300 h-4">{queue ?? (mode === 'single' ? 'Ready' : 'Disabled')}</div>
       </div>
     </aside>
   );

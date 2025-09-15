@@ -22,7 +22,8 @@
     "react-dom": "^18.3.1",
   "three": "^0.160.0",
   "google-auth-library": "^9.14.1",
-  "dotenv": "^16.4.5"
+  "dotenv": "^16.4.5",
+  "yjs": "^13.6.15"
   },
   "devDependencies": {
     "concurrently": "^8.2.2",
