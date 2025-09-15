@@ -165,6 +165,7 @@ const SF_TOKEN = process.env.VITE_SHOPIFY_STOREFRONT_TOKEN || '';
 const SF_API_VERSION = process.env.VITE_SHOPIFY_STOREFRONT_API_VERSION || '2025-07';
 
 app.get('/storefront/products', async (req, res) => {
+  const started = Date.now();
   try {
     if (!SF_DOMAIN || !SF_TOKEN) {
       return res.status(501).json({ error: 'storefront_not_configured' });
@@ -175,6 +176,7 @@ app.get('/storefront/products', async (req, res) => {
     const limit = Math.min(parseInt(String(req.query.limit || '12'), 10) || 12, 50);
     const endpoint = `https://${SF_DOMAIN}/api/${SF_API_VERSION}/graphql.json`;
     const query = `#graphql\nquery Products($first:Int!){\n  products(first:$first){ edges { node { id handle title description images(first:4){edges{node{url altText}}} variants(first:4){edges{node{id title price: priceV2 { amount currencyCode }}}} } } }\n}`;
+    console.log('[storefront-proxy] request', { limit, endpoint, tokenPrefix: SF_TOKEN.slice(0,4)+'…' });
     const r = await fetch(endpoint, {
       method: 'POST',
       headers: {
@@ -186,6 +188,7 @@ app.get('/storefront/products', async (req, res) => {
     });
     if (!r.ok) {
       const body = await r.text().catch(() => '');
+      console.warn('[storefront-proxy] upstream non-OK', { status: r.status, statusText: r.statusText, snippet: body.slice(0,180) });
       return res.status(502).json({ error: 'storefront_bad_gateway', status: r.status, body: body.slice(0, 512) });
     }
     const json = await r.json();
@@ -212,9 +215,10 @@ app.get('/storefront/products', async (req, res) => {
         variants
       };
     }).filter(p => p.id);
-    res.json({ ok: true, products });
+    console.log('[storefront-proxy] success', { count: products.length, ms: Date.now()-started });
+    res.json({ ok: true, products, ms: Date.now()-started });
   } catch (e) {
-    console.error('storefront_proxy_failed', e);
+    console.error('[storefront-proxy] failed', { error: e?.message || e, ms: Date.now()-started });
     res.status(500).json({ error: 'storefront_proxy_failed' });
   }
 });

@@ -28,12 +28,22 @@ export async function fetchProducts(limit = 12) {
         throw new Error('Invalid token for Storefront API: received an Admin token (shpat_...). Please use a Storefront public access token instead.');
     }
     // Prefer server proxy when API_BASE is configured to avoid browser CORS issues
+    const t0 = performance.now();
+    if (DEBUG) {
+        // eslint-disable-next-line no-console
+        console.log('[shopify] fetchProducts start', { limit, DOMAIN, API_VERSION, viaProxy: !!API_BASE });
+    }
     if (API_BASE) {
         try {
-            const r = await fetch(`${API_BASE.replace(/\/$/, '')}/storefront/products?limit=${encodeURIComponent(String(limit))}`);
+            const proxyUrl = `${API_BASE.replace(/\/$/, '')}/storefront/products?limit=${encodeURIComponent(String(limit))}`;
+            if (DEBUG)
+                console.log('[shopify] attempting proxy', proxyUrl);
+            const r = await fetch(proxyUrl, { headers: { 'X-Debug-Trace': 'shopify-proxy-v1' } });
             if (r.ok) {
                 const json = await r.json();
                 if (json?.ok && Array.isArray(json.products)) {
+                    if (DEBUG)
+                        console.log('[shopify] proxy success', { count: json.products.length, ms: +(performance.now() - t0).toFixed(1) });
                     return json.products;
                 }
             }
@@ -53,6 +63,8 @@ export async function fetchProducts(limit = 12) {
     let data;
     let errors;
     try {
+        if (DEBUG)
+            console.log('[shopify] direct fetch begin', endpoint);
         const r = await fetch(endpoint, {
             method: 'POST',
             mode: 'cors',
@@ -61,22 +73,27 @@ export async function fetchProducts(limit = 12) {
                 'Content-Type': 'application/json',
                 'X-Shopify-Storefront-Access-Token': String(TOKEN),
                 'Accept': 'application/json',
+                'X-Debug-Trace': 'shopify-direct-v1'
             },
             body: JSON.stringify({ query: PRODUCTS_QUERY, variables: { first: limit } })
         });
         if (!r.ok) {
             const text = await r.text().catch(() => '');
             const hint = r.status === 401 ? ' (check Storefront token and store domain)' : '';
+            if (DEBUG)
+                console.warn('[shopify] direct non-OK', { status: r.status, statusText: r.statusText, snippet: text.slice(0, 200) });
             throw new Error(`HTTP ${r.status} ${r.statusText}${hint} • ${text?.slice(0, 200)}`);
         }
         const json = await r.json().catch(() => ({}));
         data = json.data;
         errors = json.errors;
+        if (DEBUG)
+            console.log('[shopify] direct fetch OK', { ms: +(performance.now() - t0).toFixed(1) });
     }
     catch (e) {
         if (DEBUG) {
             // eslint-disable-next-line no-console
-            console.error('Storefront fetch failed', { endpoint, domain: DOMAIN, apiVersion: API_VERSION, tokenPrefix: String(TOKEN).slice(0, 4) + '…', error: e });
+            console.error('Storefront fetch failed', { endpoint, domain: DOMAIN, apiVersion: API_VERSION, tokenPrefix: String(TOKEN).slice(0, 4) + '…', elapsedMs: +(performance.now() - t0).toFixed(1), error: e });
         }
         const domainTip = IS_MYSHOPIFY ? '' : ' If using a custom domain, set VITE_SHOPIFY_STORE_DOMAIN to your <shop>.myshopify.com domain.';
         throw new Error(`Shopify Storefront: ${e?.message || e}${domainTip}`);
@@ -121,5 +138,7 @@ export async function fetchProducts(limit = 12) {
             variants,
         };
     }).filter((p) => !!p.id);
+    if (DEBUG)
+        console.log('[shopify] success', { count: products.length, ms: +(performance.now() - t0).toFixed(1) });
     return products;
 }
