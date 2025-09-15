@@ -598,8 +598,8 @@ function FirstTimeFlow({ faction, archetype, pet, onFaction, onArchetype, onPet,
   const petInfo = pet ? petDetails[pet] : null;
   return (
     <div className="w-full h-full bg-[#0b0e13] text-gray-100 flex flex-col items-center p-6">
-      <div ref={containerRef} className="w-full max-w-5xl bg-[#12171f] rounded-2xl p-6 border border-white/10 shadow-2xl flex flex-col" style={{height:'100%'}}>
-        <div className="flex items-center justify-between">
+      <div ref={containerRef} className="w-full max-w-5xl bg-[#12171f] rounded-2xl p-6 border border-white/10 shadow-2xl flex flex-col min-h-0" style={{height:'100%'}}>
+        <div className="flex items-center justify-between shrink-0">
           <h2 className="text-2xl font-semibold tracking-wide">Create Your Character</h2>
           <div className="flex items-center gap-3">
             <div className="text-sm opacity-70">Step {step + 1} / {steps.length}</div>
@@ -620,10 +620,11 @@ function FirstTimeFlow({ faction, archetype, pet, onFaction, onArchetype, onPet,
             )}
           </div>
         </div>
+        <div className="mt-4 flex-1 min-h-0 overflow-auto pr-1 custom-scrollbar">
         {step === 0 && (
           <div className="mt-6">
             <div className="text-sm opacity-80 mb-2">Choose Faction</div>
-            <div className="grid grid-cols-3 gap-4">
+            <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-4">
               {(['PAA', 'ASF', 'WC'] as Faction[]).map((f) => (
                 <button
                   key={f}
@@ -638,7 +639,7 @@ function FirstTimeFlow({ faction, archetype, pet, onFaction, onArchetype, onPet,
                 </button>
               ))}
             </div>
-            <div className="mt-4 rounded-xl border border-white/10 bg-white/5 p-4 h-72 flex flex-col overflow-hidden">
+            <div className="mt-4 rounded-xl border border-white/10 bg-white/5 p-4 flex flex-col overflow-hidden max-h-[42vh] md:h-72">
               {chosenFaction ? (
                 <div className="flex flex-col text-lg leading-relaxed overflow-auto pr-1 custom-scrollbar">
                   <div className="text-base font-semibold flex items-center gap-2 mb-1">
@@ -664,7 +665,7 @@ function FirstTimeFlow({ faction, archetype, pet, onFaction, onArchetype, onPet,
         {step === 1 && (
           <div className="mt-6">
             <div className="text-sm opacity-80 mb-2">Choose Archetype</div>
-            <div className="grid grid-cols-2 gap-4 max-w-[640px]">
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 max-w-[640px]">
               {(['MALE','FEMALE'] as Archetype[]).map(g => {
                 const img = chosenFaction ? getCharacterPortrait(chosenFaction, g) : (g === 'MALE' ? CharacterPortrait.MALE : CharacterPortrait.FEMALE);
                 const active = archetype === g;
@@ -690,7 +691,7 @@ function FirstTimeFlow({ faction, archetype, pet, onFaction, onArchetype, onPet,
                 );
               })}
             </div>
-            <div className="mt-4 rounded-xl border border-white/10 bg-white/5 p-4 text-lg h-60 flex flex-col overflow-hidden">
+            <div className="mt-4 rounded-xl border border-white/10 bg-white/5 p-4 text-lg flex flex-col overflow-hidden max-h-[36vh] md:h-60">
               {arch ? (
                 <div className="flex flex-col overflow-auto pr-1 custom-scrollbar">
                   <div className="font-semibold text-base mb-2">{arch.title}</div>
@@ -713,7 +714,7 @@ function FirstTimeFlow({ faction, archetype, pet, onFaction, onArchetype, onPet,
         {step === 2 && (
           <div className="mt-6">
             <div className="text-sm opacity-80 mb-2">Choose Pet</div>
-            <div className="grid grid-cols-2 gap-4 max-w-[640px]">
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 max-w-[640px]">
               {(['CYBER_DOG', 'CYBER_CAT'] as PetType[]).map(p => {
                 const img = ImageAssets.pets[p];
                 const active = pet === p;
@@ -732,7 +733,7 @@ function FirstTimeFlow({ faction, archetype, pet, onFaction, onArchetype, onPet,
                 );
               })}
             </div>
-            <div className="mt-4 rounded-xl border border-white/10 bg-white/5 p-4 text-lg h-60 flex flex-col overflow-hidden">
+            <div className="mt-4 rounded-xl border border-white/10 bg-white/5 p-4 text-lg flex flex-col overflow-hidden max-h-[36vh] md:h-60">
               {petInfo ? (
                 <div className="flex flex-col overflow-auto pr-1 custom-scrollbar">
                   <div className="font-semibold text-base mb-2">Cyber Companion</div>
@@ -753,6 +754,7 @@ function FirstTimeFlow({ faction, archetype, pet, onFaction, onArchetype, onPet,
             </div>
           </div>
         )}
+        </div>
       </div>
     </div>
   );
