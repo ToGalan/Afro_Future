@@ -172,7 +172,7 @@ export default function SnowflakeSkillTree({ initialLevel = 1, onClose }: Snowfl
   return (
     <div className="w-full h-full bg-[#0f1218] text-gray-100 p-4 overflow-hidden relative">
       <div className="flex items-center justify-between mb-3">
-        <div className="text-xl font-semibold">Skill Snowflake</div>
+        <div className="text-xl font-semibold">Skills & Traits Map</div>
   <div className="text-sm opacity-80">Spent: {spent} • Points Left: {ptsLeft}</div>
       </div>
       <div className="grid grid-cols-12 gap-4">

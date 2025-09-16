@@ -102,7 +102,11 @@ app.get('/profile', requireAuth, async (req, res) => {
   try {
     const file = path.join(PROFILE_DIR, req.userId + '.json');
     const data = await fs.readFile(file, 'utf8').catch(()=>null);
-    if(!data) return res.json({ ok:true, profile:null });
+    if(!data) {
+      console.log('[profile:get] miss', { userId: req.userId });
+      return res.json({ ok:true, profile:null });
+    }
+    console.log('[profile:get] hit', { userId: req.userId });
     res.json({ ok:true, profile: JSON.parse(data) });
   } catch(e){
     res.status(500).json({ error:'profile_read_failed' });
@@ -117,6 +121,14 @@ app.put('/profile', requireAuth, async (req, res) => {
     const existing = existingRaw ? JSON.parse(existingRaw) : { userId: req.userId };
     const merged = { ...existing, ...incoming, userId: req.userId, updatedAt: Date.now() };
     await fs.writeFile(file, JSON.stringify(merged, null, 2));
+    try {
+      const summary = {
+        hasLoadout: Boolean(incoming && typeof incoming.loadout === 'object'),
+        hasSkills: Boolean(incoming && typeof incoming.skills === 'object'),
+        keys: Object.keys(incoming || {}).slice(0, 8)
+      };
+      console.log('[profile:put] saved', { userId: req.userId, ...summary });
+    } catch {}
     res.json({ ok:true, profile: merged });
   } catch(e){
     console.error('profile_write_failed', e);

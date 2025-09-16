@@ -11,6 +11,7 @@ import { joinRoom } from './services/realtimeClient';
 import { initCRDT, attachCRDTChannel, disposeCRDT } from './services/crdt';
 import { useCreatorStore } from './store/creatorStore';
 import { initGoogleIdentity, renderGoogleButton, getGoogleClientId } from './services/googleIdentity';
+import { chromeSyncGet, chromeSyncSet, chromeSyncClear } from './services/chromeSync';
 import GoogleSignInButton from './components/auth/GoogleSignInButton';
 // Runtime config shape
 interface RuntimeConfig { storeDomain: string | null; apiVersion: string; debug: boolean; buildHash?: string | null; }
@@ -63,6 +64,33 @@ export default function App() {
 
   // Hydrate saved avatar (loadout) from localStorage once on mount, normalizing portrait URL
   useEffect(()=>{
+    // Optional Chrome Sync hydration (if extension installed and Chrome account signed in)
+    (async () => {
+      try {
+        const synced = await chromeSyncGet();
+        if (synced) {
+          const { ['afrofuture.profile']: prof, ['afrofuture.loadout']: loadout, ['afrofuture.skills']: skills } = synced as any;
+          if (prof && typeof prof === 'object' && !profile) {
+            setProfile(prof);
+            try { localStorage.setItem('afrofuture.profile', JSON.stringify(prof)); } catch {}
+          }
+          if (loadout && loadout.id && !activeLoadout) {
+            const normalized: CharacterLoadout = {
+              ...loadout,
+              portraitUrl: getCharacterPortrait(loadout.faction as Faction, loadout.archetype as Archetype),
+            };
+            setActiveLoadout(normalized);
+            try { localStorage.setItem('afrofuture.activeLoadout', JSON.stringify(normalized)); } catch {}
+          }
+          if (skills && typeof skills === 'object') {
+            try {
+              const { hydrate } = useSkillStore.getState() as any;
+              hydrate?.({ level: skills.level, unlocked: skills.unlocked, unlockOrder: skills.unlockOrder });
+            } catch {}
+          }
+        }
+      } catch {}
+    })();
     try {
       const raw = localStorage.getItem('afrofuture.activeLoadout');
       if(raw){
@@ -149,12 +177,15 @@ export default function App() {
   const prof = { sub: payload.sub, name: payload.name || payload.given_name || payload.family_name, email: payload.email, picture: payload.picture };
       setProfile(prof);
       try { localStorage.setItem('afrofuture.profile', JSON.stringify(prof)); } catch {}
+      // Mirror base profile to Chrome Sync (best-effort)
+      chromeSyncSet({ 'afrofuture.profile': prof }).catch(()=>{});
       // Fetch existing server profile (may include loadout)
   const serverProf = await fetchServerProfile(token);
       if(serverProf){
         // Merge name/email/picture preference: prefer fresh token payload over stored values
   const mergedProf = { ...serverProf, ...prof };
         setProfile(mergedProf);
+        chromeSyncSet({ 'afrofuture.profile': mergedProf }).catch(()=>{});
         if(serverProf.loadout){
           const l = serverProf.loadout as CharacterLoadout;
           const normalized: CharacterLoadout = {
@@ -162,6 +193,7 @@ export default function App() {
             portraitUrl: getCharacterPortrait(l.faction as Faction, l.archetype as Archetype),
           };
           setActiveLoadout(normalized);
+          chromeSyncSet({ 'afrofuture.loadout': normalized }).catch(()=>{});
         }
         try { localStorage.setItem('afrofuture.profile', JSON.stringify(mergedProf)); } catch {}
         if(serverProf.loadout){ try { localStorage.setItem('afrofuture.activeLoadout', JSON.stringify(serverProf.loadout)); } catch {} }
@@ -175,6 +207,11 @@ export default function App() {
                 unlocked: Array.isArray(serverProf.skills.unlocked) ? serverProf.skills.unlocked : undefined,
                 unlockOrder: Array.isArray(serverProf.skills.unlockOrder) ? serverProf.skills.unlockOrder : undefined,
               });
+              chromeSyncSet({ 'afrofuture.skills': {
+                level: serverProf.skills.level,
+                unlocked: serverProf.skills.unlocked,
+                unlockOrder: serverProf.skills.unlockOrder,
+              }}).catch(()=>{});
             }
           } catch (e) { console.warn('[skills] hydrate failed', e); }
         }
@@ -208,6 +245,8 @@ export default function App() {
     setIdToken(null);
     setPhase('auth');
     setProfile(null);
+    // Clear Chrome Sync copies to avoid cross-account confusion
+    chromeSyncClear().catch(()=>{});
     if(rtc){
       try { rtc.dc.close(); } catch {}
       try { rtc.pc.close(); } catch {}
@@ -251,6 +290,7 @@ export default function App() {
         const prof = { sub: payload.sub, name: payload.name || payload.given_name || payload.family_name, email: payload.email, picture: payload.picture };
         setProfile(prof);
         try { localStorage.setItem('afrofuture.profile', JSON.stringify(prof)); } catch {}
+        chromeSyncSet({ 'afrofuture.profile': prof }).catch(()=>{});
       } catch {}
     }
     // Auto-rejoin logic
@@ -313,7 +353,9 @@ export default function App() {
       // Always derive portraitUrl from canonical mapping (avoids stale /src paths)
       merged.portraitUrl = getCharacterPortrait(merged.faction as Faction, merged.archetype as Archetype);
       setActiveLoadout(merged);
-      try { localStorage.setItem('afrofuture.activeLoadout', JSON.stringify(merged)); } catch(e){ console.warn('[avatar-persist] save failed', e); }
+  try { localStorage.setItem('afrofuture.activeLoadout', JSON.stringify(merged)); } catch(e){ console.warn('[avatar-persist] save failed', e); }
+  // Mirror to Chrome Sync (best-effort)
+  chromeSyncSet({ 'afrofuture.loadout': merged }).catch(()=>{});
   if(idToken) persistServerProfile(idToken, { loadout: merged });
       // Broadcast to peers via WebRTC (if data channel open)
       if(rtc?.dc?.readyState === 'open') {
@@ -325,7 +367,8 @@ export default function App() {
         portraitUrl: getCharacterPortrait(newLoadout.faction as Faction, newLoadout.archetype as Archetype),
       };
       setActiveLoadout(normalized);
-      try { localStorage.setItem('afrofuture.activeLoadout', JSON.stringify(normalized)); } catch(e){ console.warn('[avatar-persist] save failed', e); }
+  try { localStorage.setItem('afrofuture.activeLoadout', JSON.stringify(normalized)); } catch(e){ console.warn('[avatar-persist] save failed', e); }
+  chromeSyncSet({ 'afrofuture.loadout': normalized }).catch(()=>{});
   if(idToken) persistServerProfile(idToken, { loadout: normalized });
       if(rtc?.dc?.readyState === 'open') {
         try { rtc.dc.send(JSON.stringify({ type: 'loadoutUpdate', loadout: newLoadout })); } catch(err){ console.warn('[rtc] broadcast failed', err); }
@@ -347,6 +390,8 @@ export default function App() {
             unlockOrder: skillState.unlockOrder,
           }
         };
+        // Mirror to Chrome Sync (best-effort)
+        chromeSyncSet({ 'afrofuture.skills': payload.skills }).catch(()=>{});
         persistServerProfile(idToken, payload);
       } catch (e) {
         console.warn('[skills] persist failed', e);
