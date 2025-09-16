@@ -1478,13 +1478,33 @@ function CharacterCreator({ onSave, onBack, initial, locked }: { onSave: (payloa
   const [tab, setTab] = useState<string>(GROUP_ORDER[0]);
   const tabs: string[] = [...GROUP_ORDER, 'Colors'];
   // Store picked variant id per group locally (could be moved to zustand later)
-  const [picked, setPicked] = useState<Record<string,string|undefined>>({});
-  const [colorState, setColorState] = useState<{primary:string;secondary:string;skin:string}>(
-    { primary: '#00A37A', secondary: '#F5F5F5', skin: '#c58b66' }
-  );
+  const [picked, setPicked] = useState<Record<string,string|undefined>>(() => {
+    const parts = (initial as any)?.threeConfig?.parts;
+    return (parts && typeof parts === 'object') ? { ...parts } : {};
+  });
+  const [colorState, setColorState] = useState<{primary:string;secondary:string;skin:string}>(() => {
+    const colors = (initial as any)?.threeConfig?.colors;
+    return {
+      primary: (colors?.primary as string) || '#00A37A',
+      secondary: (colors?.secondary as string) || '#F5F5F5',
+      skin: (colors?.skin as string) || '#c58b66',
+    };
+  });
   // Link skin picker to central creator store so shared skin material updates live in preview
   const setSkinColor = useCreatorStore(s => s.setSkinColor);
   useEffect(()=>{ setSkinColor(colorState.skin); },[colorState.skin,setSkinColor]);
+  // Keep local state in sync if parent provides a different initial loadout
+  useEffect(() => {
+    const parts = (initial as any)?.threeConfig?.parts;
+    const colors = (initial as any)?.threeConfig?.colors;
+    if (parts && typeof parts === 'object') setPicked({ ...parts });
+    if (colors && typeof colors === 'object') setColorState(prev => ({
+      primary: (colors.primary as string) || prev.primary,
+      secondary: (colors.secondary as string) || prev.secondary,
+      skin: (colors.skin as string) || prev.skin,
+    }));
+  }, [initial]);
+
   // Animation preview controls
   const [animPaused, setAnimPaused] = useState(false);
   const [animSpeed, setAnimSpeed] = useState(1);
