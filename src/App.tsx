@@ -13,6 +13,7 @@ import { useCreatorStore } from './store/creatorStore';
 import { initGoogleIdentity, renderGoogleButton, getGoogleClientId } from './services/googleIdentity';
 import { chromeSyncGet, chromeSyncSet, chromeSyncClear } from './services/chromeSync';
 import GoogleSignInButton from './components/auth/GoogleSignInButton';
+import SoloMissionMap3D from './components/SoloMissionMap3D';
 // Runtime config shape
 interface RuntimeConfig { storeDomain: string | null; apiVersion: string; debug: boolean; buildHash?: string | null; }
 const APP_VERSION_FALLBACK = 'v0.2.3';
@@ -54,7 +55,7 @@ export default function App() {
     } catch {}
     return null;
   });
-  const [mainView, setMainView] = useState<'dashboard' | 'skills' | 'store' | 'help' | 'settings'>('store');
+  const [mainView, setMainView] = useState<'dashboard' | 'skills' | 'store' | 'help' | 'settings' | 'mission'>('store');
   const [progress, setProgress] = useState(0);
   const [playerName] = useState('PlayerOne');
   // Account level is linked to profile; default to 1 if not persisted yet
@@ -472,19 +473,40 @@ export default function App() {
   );
 
   return (
-    <GameViewport mode="fit">
-      <MainMenu
-        playerName={playerName}
-        accountLevel={accountLevel}
-        loadout={activeLoadout ?? defaultLoadout}
-        onCustomize={() => setPhase('creating')}
-        heroLocked={heroLocked}
-        view={mainView}
-        onChangeView={setMainView}
-        profile={profile}
-        onSignOut={handleSignOut}
-      />
-    </GameViewport>
+    mainView === 'mission' ? (
+      <MissionScreen onExit={() => setMainView('dashboard')} />
+    ) : (
+      <GameViewport mode="fit">
+        <MainMenu
+          playerName={playerName}
+          accountLevel={accountLevel}
+          loadout={activeLoadout ?? defaultLoadout}
+          onCustomize={() => setPhase('creating')}
+          heroLocked={heroLocked}
+          view={mainView}
+          onChangeView={setMainView}
+          profile={profile}
+          onSignOut={handleSignOut}
+        />
+      </GameViewport>
+    )
+  );
+}
+
+function MissionScreen({ onExit }: { onExit: () => void }){
+  return (
+    <div className="fixed inset-0 bg-[#06080c] text-gray-100">
+      {/* Minimal HUD */}
+      <div className="absolute top-0 left-0 right-0 h-12 px-4 flex items-center justify-between bg-black/40 backdrop-blur border-b border-white/10 z-10">
+        <div className="text-sm opacity-80">Solo Mission</div>
+        <div className="flex items-center gap-2">
+          <button className="h-8 px-3 rounded-lg bg-white/10 border border-white/15 hover:bg-white/15 text-sm" onClick={onExit}>Exit</button>
+        </div>
+      </div>
+      <div className="absolute inset-0 pt-12">
+        <SoloMissionMap3D />
+      </div>
+    </div>
   );
 }
 
@@ -890,25 +912,25 @@ function FirstTimeFlow({ faction, archetype, pet, onFaction, onArchetype, onPet,
   );
 }
 
-function MainMenu({ playerName, accountLevel, loadout, onCustomize, heroLocked, view, onChangeView, profile, onSignOut }: { playerName: string; accountLevel: number; loadout: CharacterLoadout; onCustomize: () => void; heroLocked: boolean; view: 'dashboard' | 'skills' | 'store' | 'help' | 'settings'; onChangeView: (v: 'dashboard' | 'skills' | 'store' | 'help' | 'settings') => void; profile?: { sub: string; name?: string; email?: string; picture?: string } | null; onSignOut?: () => void; }) {
+function MainMenu({ playerName, accountLevel, loadout, onCustomize, heroLocked, view, onChangeView, profile, onSignOut }: { playerName: string; accountLevel: number; loadout: CharacterLoadout; onCustomize: () => void; heroLocked: boolean; view: 'dashboard' | 'skills' | 'store' | 'help' | 'settings' | 'mission'; onChangeView: (v: 'dashboard' | 'skills' | 'store' | 'help' | 'settings' | 'mission') => void; profile?: { sub: string; name?: string; email?: string; picture?: string } | null; onSignOut?: () => void; }) {
   // Ensure skill store level matches active loadout level even when Skills view isn't open
   const setSkillLevel = useSkillStore(s=>s.setLevel);
   useEffect(()=>{ setSkillLevel(loadout.level); }, [loadout.level, setSkillLevel]);
   return (
     <div className="h-full w-full bg-[#0f1218] text-gray-100">
-      <TopNav view={view} onChangeView={onChangeView} profile={profile} onSignOut={onSignOut} />
+  <TopNav view={view} onChangeView={onChangeView} profile={profile} onSignOut={onSignOut} />
       <div className="h-[calc(100%-64px)]">
         <div className="h-full grid grid-rows-[1fr]" style={{gridTemplateColumns:'minmax(260px,20%) 1fr minmax(260px,20%)'}}>
           <LeftPlayerPanel className="row-start-1" playerName={playerName} accountLevel={accountLevel} loadout={loadout} heroLocked={heroLocked} />
           <CenterHub className="row-start-1" loadout={loadout} view={view} />
-          <RightPlayerPanel className="row-start-1" loadout={loadout} onCustomize={onCustomize} />
+          <RightPlayerPanel className="row-start-1" loadout={loadout} onCustomize={onCustomize} onPlay={()=>onChangeView('mission')} />
         </div>
       </div>
     </div>
   );
 }
 
-function TopNav({ view, onChangeView, profile, onSignOut }: { view: 'dashboard' | 'skills' | 'store' | 'help' | 'settings'; onChangeView: (v: 'dashboard' | 'skills' | 'store' | 'help' | 'settings') => void; profile?: { sub: string; name?: string; email?: string; picture?: string } | null; onSignOut?: () => void; }) {
+function TopNav({ view, onChangeView, profile, onSignOut }: { view: 'dashboard' | 'skills' | 'store' | 'help' | 'settings' | 'mission'; onChangeView: (v: 'dashboard' | 'skills' | 'store' | 'help' | 'settings' | 'mission') => void; profile?: { sub: string; name?: string; email?: string; picture?: string } | null; onSignOut?: () => void; }) {
   const [open, setOpen] = React.useState(false);
   const menuRef = React.useRef<HTMLDivElement|null>(null);
   const [isFs, setIsFs] = React.useState<boolean>(!!document.fullscreenElement);
@@ -951,10 +973,10 @@ function TopNav({ view, onChangeView, profile, onSignOut }: { view: 'dashboard' 
           <span className="text-sm font-semibold tracking-wide bg-gradient-to-r from-emerald-300 to-sky-300 bg-clip-text text-transparent hidden xl:inline-block">Afro‑Future</span>
         </button>
       </div>
-      <div className="flex items-center justify-center gap-6">
+  <div className="flex items-center justify-center gap-6">
         <button className={`opacity-80 hover:opacity-100 transition ${view==='dashboard' ? 'text-emerald-400' : ''}`} onClick={()=>onChangeView('dashboard')}>Dashboard</button>
         <button className={`opacity-80 hover:opacity-100 transition ${view==='skills' ? 'text-emerald-400' : ''}`} onClick={()=>onChangeView('skills')}>Skills</button>
-        <button className={`opacity-80 hover:opacity-100 transition ${view==='store' ? 'text-emerald-400' : ''}`} onClick={()=>onChangeView('store')}>Store</button>
+  <button className={`opacity-80 hover:opacity-100 transition ${view==='store' ? 'text-emerald-400' : ''}`} onClick={()=>onChangeView('store')}>Store</button>
   <button className={`opacity-80 hover:opacity-100 transition ${view==='help' ? 'text-emerald-400' : ''}`} onClick={()=>onChangeView('help')}>Help</button>
         {/* Room selector removed per request */}
       </div>
@@ -1114,14 +1136,14 @@ function LeftPlayerPanel({ className = '', playerName, accountLevel, loadout, he
   );
 }
 
-function RightPlayerPanel({ className = '', loadout, onCustomize }: { className?: string; loadout: CharacterLoadout; onCustomize: () => void }) {
+function RightPlayerPanel({ className = '', loadout, onCustomize, onPlay }: { className?: string; loadout: CharacterLoadout; onCustomize: () => void; onPlay?: ()=>void }) {
   const [mode, setMode] = useState<'single' | 'multi'>('single');
   const [queue, setQueue] = useState<string | null>(null);
   
   function startMatch() {
     if (mode !== 'single') return; // only single-player active right now
-    setQueue('~ Est. 0:25');
-    setTimeout(()=> setQueue('Searching…'), 1200);
+    // Immediately open mission map instead of fake queue
+    onPlay?.();
   }
   
   const modes: { key: 'single' | 'multi'; label: string; enabled: boolean }[] = [
@@ -1191,7 +1213,7 @@ function RightPlayerPanel({ className = '', loadout, onCustomize }: { className?
   );
 }
 
-function CenterHub({ className = '', loadout, view }: { className?: string; loadout: CharacterLoadout; view: 'dashboard' | 'skills' | 'store' | 'help' | 'settings' }) {
+function CenterHub({ className = '', loadout, view }: { className?: string; loadout: CharacterLoadout; view: 'dashboard' | 'skills' | 'store' | 'help' | 'settings' | 'mission' }) {
   if (view === 'skills') {
     return (
       <main className={`col-start-2 px-6 py-5 min-h-0 flex flex-col ${className}`}>
@@ -1203,6 +1225,17 @@ function CenterHub({ className = '', loadout, view }: { className?: string; load
   }
   if (view === 'store') {
     return <StoreView className={className} />;
+  }
+  if (view === 'mission') {
+    return (
+      <main className={`col-start-2 px-6 py-5 min-h-0 flex flex-col ${className}`}>
+        <div className="flex-1 rounded-3xl border border-white/10 bg-[#12171f] overflow-hidden">
+          <div className="w-full h-full">
+            <SoloMissionMap3D />
+          </div>
+        </div>
+      </main>
+    );
   }
   if (view === 'help') {
     return <HelpView className={className} />;
@@ -1394,6 +1427,23 @@ function SettingsView({ className='' }: { className?: string }) {
 
 // --- Help View ---
 function HelpView({ className='' }: { className?: string }) {
+  const items = [
+    { title: 'Choose Your Faction', desc: 'Pick PAA, ASF, or WC — each with unique strengths and lore.', icon: '🏳️' },
+    { title: 'Select Archetype', desc: 'Male or Female hero. Your archetype sets your starting presence.', icon: '🧍' },
+    { title: 'Customize Avatar', desc: 'Tweak parts and colors. Save to lock in your hero.', icon: '🎨' },
+    { title: 'Unlock Skills', desc: 'Spend points along branches to unlock combat and utility perks.', icon: '🌿' },
+    { title: 'Enter Missions', desc: 'Single-player for now. Multiplayer coming soon.', icon: '🎯' },
+    { title: 'Earn & Progress', desc: 'Level up and expand your build over time.', icon: '⬆️' },
+  ];
+  // Two-card pager
+  const [page, setPage] = React.useState(0);
+  const pages = Math.ceil(items.length / 2);
+  const chunks = React.useMemo(() => {
+    const out: typeof items[] = [] as any;
+    for (let i = 0; i < pages; i++) out.push(items.slice(i * 2, i * 2 + 2));
+    return out;
+  }, [pages, items.length]);
+  const go = (d: number) => setPage(p => Math.max(0, Math.min(p + d, pages - 1)));
   return (
     <main className={`col-start-2 px-6 py-5 min-h-0 flex flex-col ${className}`}>
       <div className="flex-1 rounded-3xl border border-white/10 bg-[#12171f] overflow-hidden p-0">
@@ -1404,22 +1454,46 @@ function HelpView({ className='' }: { className?: string }) {
             <div className="text-xs opacity-80">A quick visual guide to get you started</div>
           </div>
         </div>
-        <div className="p-6 grid gap-4 md:gap-6" style={{gridTemplateColumns:'repeat(auto-fit,minmax(220px,1fr))'}}>
-          {[
-            { title: 'Choose Your Faction', desc: 'Pick PAA, ASF, or WC — each with unique strengths and lore.', icon: '🏳️' },
-            { title: 'Select Archetype', desc: 'Male or Female hero. Your archetype sets your starting presence.', icon: '🧍' },
-            { title: 'Customize Avatar', desc: 'Tweak parts and colors. Save to lock in your hero.', icon: '🎨' },
-            { title: 'Unlock Skills', desc: 'Spend points along branches to unlock combat and utility perks.', icon: '🌿' },
-            { title: 'Enter Missions', desc: 'Single-player for now. Multiplayer coming soon.', icon: '🎯' },
-            { title: 'Earn & Progress', desc: 'Level up and expand your build over time.', icon: '⬆️' },
-          ].map((s, i) => (
-            <div key={i} className="rounded-2xl border border-white/10 bg-white/[0.04] p-5 flex flex-col gap-3">
-              <div className="text-2xl select-none">{s.icon}</div>
-              <div className="text-sm font-semibold tracking-wide">{s.title}</div>
-              <div className="text-xs opacity-75 leading-relaxed">{s.desc}</div>
-              <div className="mt-2 h-24 rounded-lg bg-gradient-to-br from-black/10 to-white/5 border border-white/10 flex items-center justify-center text-[10px] opacity-60">Illustration</div>
+        <div className="relative p-6">
+          {/* Arrow controls */}
+          <button
+            aria-label="Prev"
+            onClick={()=>go(-1)}
+            disabled={page===0}
+            className="absolute left-3 top-1/2 -translate-y-1/2 h-9 w-9 rounded-full bg-black/40 border border-white/10 hover:bg-black/50 disabled:opacity-40 disabled:cursor-not-allowed grid place-items-center z-10"
+          >‹</button>
+          <button
+            aria-label="Next"
+            onClick={()=>go(1)}
+            disabled={page>=pages-1}
+            className="absolute right-3 top-1/2 -translate-y-1/2 h-9 w-9 rounded-full bg-black/40 border border-white/10 hover:bg-black/50 disabled:opacity-40 disabled:cursor-not-allowed grid place-items-center z-10"
+          >›</button>
+          {/* Two-card paged slider */}
+          <div className="overflow-hidden">
+            <div className="flex transition-transform duration-300"
+              style={{ transform: `translateX(-${page * 100}%)` }}>
+              {chunks.map((group, idx) => (
+                <div key={idx} className="w-full shrink-0 px-1">
+                  <div className="grid grid-cols-2 gap-4">
+                    {group.map((s, i) => (
+                      <div key={i} className="rounded-2xl border border-white/10 bg-white/[0.04] p-5 flex flex-col gap-3">
+                        <div className="text-2xl select-none">{s.icon}</div>
+                        <div className="text-sm font-semibold tracking-wide">{s.title}</div>
+                        <div className="text-xs opacity-75 leading-relaxed">{s.desc}</div>
+                        <div className="mt-2 h-24 rounded-lg bg-gradient-to-br from-black/10 to-white/5 border border-white/10 flex items-center justify-center text-[10px] opacity-60">Illustration</div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              ))}
             </div>
-          ))}
+          </div>
+          {/* Optional: tiny pager dots */}
+          <div className="mt-4 flex items-center justify-center gap-2">
+            {Array.from({ length: pages }).map((_, i) => (
+              <span key={i} className={`w-1.5 h-1.5 rounded-full ${i===page ? 'bg-white/80' : 'bg-white/30'}`} />
+            ))}
+          </div>
         </div>
       </div>
     </main>

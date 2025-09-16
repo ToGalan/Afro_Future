@@ -1,4 +1,4 @@
-import { jsx as _jsx, Fragment as _Fragment, jsxs as _jsxs } from "react/jsx-runtime";
+import { jsx as _jsx, jsxs as _jsxs, Fragment as _Fragment } from "react/jsx-runtime";
 import React, { useEffect, useState } from 'react';
 import { useSkillStore } from './store/skillStore';
 import { GROUP_ORDER, getVariantsByGroup } from './assets/threeParts';
@@ -12,7 +12,10 @@ import { joinRoom } from './services/realtimeClient';
 import { initCRDT, attachCRDTChannel, disposeCRDT } from './services/crdt';
 import { useCreatorStore } from './store/creatorStore';
 import { initGoogleIdentity, renderGoogleButton, getGoogleClientId } from './services/googleIdentity';
+import { chromeSyncGet, chromeSyncSet, chromeSyncClear } from './services/chromeSync';
 import GoogleSignInButton from './components/auth/GoogleSignInButton';
+import SoloMissionMap3D from './components/SoloMissionMap3D';
+const APP_VERSION_FALLBACK = 'v0.2.3';
 const defaultLoadout = {
     id: uid('char'),
     name: 'Nia',
@@ -66,6 +69,41 @@ export default function App() {
     const [configLoaded, setConfigLoaded] = useState(false);
     // Hydrate saved avatar (loadout) from localStorage once on mount, normalizing portrait URL
     useEffect(() => {
+        // Optional Chrome Sync hydration (if extension installed and Chrome account signed in)
+        (async () => {
+            try {
+                const synced = await chromeSyncGet();
+                if (synced) {
+                    const { ['afrofuture.profile']: prof, ['afrofuture.loadout']: loadout, ['afrofuture.skills']: skills } = synced;
+                    if (prof && typeof prof === 'object' && !profile) {
+                        setProfile(prof);
+                        try {
+                            localStorage.setItem('afrofuture.profile', JSON.stringify(prof));
+                        }
+                        catch { }
+                    }
+                    if (loadout && loadout.id && !activeLoadout) {
+                        const normalized = {
+                            ...loadout,
+                            portraitUrl: getCharacterPortrait(loadout.faction, loadout.archetype),
+                        };
+                        setActiveLoadout(normalized);
+                        try {
+                            localStorage.setItem('afrofuture.activeLoadout', JSON.stringify(normalized));
+                        }
+                        catch { }
+                    }
+                    if (skills && typeof skills === 'object') {
+                        try {
+                            const { hydrate } = useSkillStore.getState();
+                            hydrate?.({ level: skills.level, unlocked: skills.unlocked, unlockOrder: skills.unlockOrder });
+                        }
+                        catch { }
+                    }
+                }
+            }
+            catch { }
+        })();
         try {
             const raw = localStorage.getItem('afrofuture.activeLoadout');
             if (raw) {
@@ -170,12 +208,15 @@ export default function App() {
                 localStorage.setItem('afrofuture.profile', JSON.stringify(prof));
             }
             catch { }
+            // Mirror base profile to Chrome Sync (best-effort)
+            chromeSyncSet({ 'afrofuture.profile': prof }).catch(() => { });
             // Fetch existing server profile (may include loadout)
             const serverProf = await fetchServerProfile(token);
             if (serverProf) {
                 // Merge name/email/picture preference: prefer fresh token payload over stored values
                 const mergedProf = { ...serverProf, ...prof };
                 setProfile(mergedProf);
+                chromeSyncSet({ 'afrofuture.profile': mergedProf }).catch(() => { });
                 if (serverProf.loadout) {
                     const l = serverProf.loadout;
                     const normalized = {
@@ -183,6 +224,7 @@ export default function App() {
                         portraitUrl: getCharacterPortrait(l.faction, l.archetype),
                     };
                     setActiveLoadout(normalized);
+                    chromeSyncSet({ 'afrofuture.loadout': normalized }).catch(() => { });
                 }
                 try {
                     localStorage.setItem('afrofuture.profile', JSON.stringify(mergedProf));
@@ -204,6 +246,11 @@ export default function App() {
                                 unlocked: Array.isArray(serverProf.skills.unlocked) ? serverProf.skills.unlocked : undefined,
                                 unlockOrder: Array.isArray(serverProf.skills.unlockOrder) ? serverProf.skills.unlockOrder : undefined,
                             });
+                            chromeSyncSet({ 'afrofuture.skills': {
+                                    level: serverProf.skills.level,
+                                    unlocked: serverProf.skills.unlocked,
+                                    unlockOrder: serverProf.skills.unlockOrder,
+                                } }).catch(() => { });
                         }
                     }
                     catch (e) {
@@ -257,6 +304,8 @@ export default function App() {
         setIdToken(null);
         setPhase('auth');
         setProfile(null);
+        // Clear Chrome Sync copies to avoid cross-account confusion
+        chromeSyncClear().catch(() => { });
         if (rtc) {
             try {
                 rtc.dc.close();
@@ -331,6 +380,7 @@ export default function App() {
                     localStorage.setItem('afrofuture.profile', JSON.stringify(prof));
                 }
                 catch { }
+                chromeSyncSet({ 'afrofuture.profile': prof }).catch(() => { });
             }
             catch { }
         }
@@ -410,6 +460,8 @@ export default function App() {
             catch (e) {
                 console.warn('[avatar-persist] save failed', e);
             }
+            // Mirror to Chrome Sync (best-effort)
+            chromeSyncSet({ 'afrofuture.loadout': merged }).catch(() => { });
             if (idToken)
                 persistServerProfile(idToken, { loadout: merged });
             // Broadcast to peers via WebRTC (if data channel open)
@@ -434,6 +486,7 @@ export default function App() {
             catch (e) {
                 console.warn('[avatar-persist] save failed', e);
             }
+            chromeSyncSet({ 'afrofuture.loadout': normalized }).catch(() => { });
             if (idToken)
                 persistServerProfile(idToken, { loadout: normalized });
             if (rtc?.dc?.readyState === 'open') {
@@ -461,6 +514,8 @@ export default function App() {
                         unlockOrder: skillState.unlockOrder,
                     }
                 };
+                // Mirror to Chrome Sync (best-effort)
+                chromeSyncSet({ 'afrofuture.skills': payload.skills }).catch(() => { });
                 persistServerProfile(idToken, payload);
             }
             catch (e) {
@@ -523,7 +578,10 @@ export default function App() {
                         return getCharacterPortrait(f, a);
                     })(),
                 }, locked: heroLocked, onBack: () => heroLocked ? setPhase('main') : setPhase('onboard'), onSave: handleCreatorSave }) }));
-    return (_jsx(GameViewport, { mode: "fit", children: _jsx(MainMenu, { playerName: playerName, accountLevel: accountLevel, loadout: activeLoadout ?? defaultLoadout, onCustomize: () => setPhase('creating'), heroLocked: heroLocked, view: mainView, onChangeView: setMainView, profile: profile, onSignOut: handleSignOut }) }));
+    return (mainView === 'mission' ? (_jsx(MissionScreen, { onExit: () => setMainView('dashboard') })) : (_jsx(GameViewport, { mode: "fit", children: _jsx(MainMenu, { playerName: playerName, accountLevel: accountLevel, loadout: activeLoadout ?? defaultLoadout, onCustomize: () => setPhase('creating'), heroLocked: heroLocked, view: mainView, onChangeView: setMainView, profile: profile, onSignOut: handleSignOut }) })));
+}
+function MissionScreen({ onExit }) {
+    return (_jsxs("div", { className: "fixed inset-0 bg-[#06080c] text-gray-100", children: [_jsxs("div", { className: "absolute top-0 left-0 right-0 h-12 px-4 flex items-center justify-between bg-black/40 backdrop-blur border-b border-white/10 z-10", children: [_jsx("div", { className: "text-sm opacity-80", children: "Solo Mission" }), _jsx("div", { className: "flex items-center gap-2", children: _jsx("button", { className: "h-8 px-3 rounded-lg bg-white/10 border border-white/15 hover:bg-white/15 text-sm", onClick: onExit, children: "Exit" }) })] }), _jsx("div", { className: "absolute inset-0 pt-12", children: _jsx(SoloMissionMap3D, {}) })] }));
 }
 function GameViewport({ children, mode = 'fixed', allowUpscale = true, minScale = 0.5, maxScale = 2, designWidth = 1920, designHeight = 1080 }) {
     const DESIGN_W = designWidth;
@@ -714,7 +772,7 @@ function MainMenu({ playerName, accountLevel, loadout, onCustomize, heroLocked, 
     // Ensure skill store level matches active loadout level even when Skills view isn't open
     const setSkillLevel = useSkillStore(s => s.setLevel);
     useEffect(() => { setSkillLevel(loadout.level); }, [loadout.level, setSkillLevel]);
-    return (_jsxs("div", { className: "h-full w-full bg-[#0f1218] text-gray-100", children: [_jsx(TopNav, { view: view, onChangeView: onChangeView, profile: profile, onSignOut: onSignOut }), _jsx("div", { className: "h-[calc(100%-64px)]", children: _jsxs("div", { className: "h-full grid grid-rows-[1fr]", style: { gridTemplateColumns: 'minmax(260px,20%) 1fr minmax(260px,20%)' }, children: [_jsx(LeftPlayerPanel, { className: "row-start-1", playerName: playerName, accountLevel: accountLevel, loadout: loadout, heroLocked: heroLocked }), _jsx(CenterHub, { className: "row-start-1", loadout: loadout, view: view }), _jsx(RightPlayerPanel, { className: "row-start-1", loadout: loadout, onCustomize: onCustomize })] }) })] }));
+    return (_jsxs("div", { className: "h-full w-full bg-[#0f1218] text-gray-100", children: [_jsx(TopNav, { view: view, onChangeView: onChangeView, profile: profile, onSignOut: onSignOut }), _jsx("div", { className: "h-[calc(100%-64px)]", children: _jsxs("div", { className: "h-full grid grid-rows-[1fr]", style: { gridTemplateColumns: 'minmax(260px,20%) 1fr minmax(260px,20%)' }, children: [_jsx(LeftPlayerPanel, { className: "row-start-1", playerName: playerName, accountLevel: accountLevel, loadout: loadout, heroLocked: heroLocked }), _jsx(CenterHub, { className: "row-start-1", loadout: loadout, view: view }), _jsx(RightPlayerPanel, { className: "row-start-1", loadout: loadout, onCustomize: onCustomize, onPlay: () => onChangeView('mission') })] }) })] }));
 }
 function TopNav({ view, onChangeView, profile, onSignOut }) {
     const [open, setOpen] = React.useState(false);
@@ -752,7 +810,7 @@ function TopNav({ view, onChangeView, profile, onSignOut }) {
         window.addEventListener('keydown', handleKey);
         return () => { window.removeEventListener('mousedown', handle); window.removeEventListener('keydown', handleKey); };
     }, [open]);
-    return (_jsxs("div", { className: "col-span-3 grid grid-cols-3 items-center px-6 bg-[#141924] border-b border-white/10 h-16 relative", children: [_jsx("div", { className: "flex items-center", children: _jsxs("button", { onClick: () => onChangeView('dashboard'), className: "flex items-center gap-2 group", title: "Home", children: [_jsx("div", { className: "w-9 h-9 rounded-lg bg-gradient-to-br from-emerald-500/30 to-sky-500/30 border border-white/10 flex items-center justify-center font-bold text-sm tracking-wide text-emerald-200 group-hover:from-emerald-500/50 group-hover:to-sky-500/50 transition", children: "AF" }), _jsx("span", { className: "text-sm font-semibold tracking-wide bg-gradient-to-r from-emerald-300 to-sky-300 bg-clip-text text-transparent hidden xl:inline-block", children: "Afro\u2011Future" })] }) }), _jsxs("div", { className: "flex items-center justify-center gap-6", children: [_jsx("button", { className: `opacity-80 hover:opacity-100 transition ${view === 'dashboard' ? 'text-emerald-400' : ''}`, onClick: () => onChangeView('dashboard'), children: "Dashboard" }), _jsx("button", { className: `opacity-80 hover:opacity-100 transition ${view === 'skills' ? 'text-emerald-400' : ''}`, onClick: () => onChangeView('skills'), children: "Skills" }), _jsx("button", { className: `opacity-80 hover:opacity-100 transition ${view === 'store' ? 'text-emerald-400' : ''}`, onClick: () => onChangeView('store'), children: "Store" }), _jsx("button", { className: `opacity-80 hover:opacity-100 transition ${view === 'help' ? 'text-emerald-400' : ''}`, onClick: () => onChangeView('help'), children: "Help" })] }), _jsxs("div", { className: "ml-auto flex items-center justify-end gap-4", children: [_jsxs(Chip, { children: ["1,458 ", _jsx("span", { className: "opacity-70", children: "shards" })] }), _jsx(IconButton, { label: "Notifications", children: "\uD83D\uDD14" }), _jsx(IconButton, { label: isFs ? 'Exit Fullscreen' : 'Enter Fullscreen', onClick: toggleFullscreen, children: _jsx("svg", { width: "14", height: "14", viewBox: "0 0 24 24", fill: "none", stroke: "currentColor", strokeWidth: "2", strokeLinecap: "round", strokeLinejoin: "round", "aria-hidden": "true", children: isFs ? (_jsxs(_Fragment, { children: [_jsx("path", { d: "M9 9H5V5" }), _jsx("path", { d: "M15 9h4V5" }), _jsx("path", { d: "M9 15H5v4" }), _jsx("path", { d: "M15 15h4v4" })] })) : (_jsxs(_Fragment, { children: [_jsx("path", { d: "M4 9V5h4" }), _jsx("path", { d: "M20 9V5h-4" }), _jsx("path", { d: "M4 15v4h4" }), _jsx("path", { d: "M20 15v4h-4" })] })) }) }), profile ? (_jsxs("div", { className: "relative", ref: menuRef, children: [_jsxs("button", { onClick: () => setOpen(o => !o), className: "flex items-center gap-2 group", children: [profile.picture ? _jsx("img", { className: "w-9 h-9 rounded object-cover border border-white/10", src: profile.picture, alt: profile.name || 'avatar' }) : (_jsx("div", { className: "w-9 h-9 rounded-lg bg-white/10 border border-white/10 flex items-center justify-center text-xs font-semibold", children: (profile.name || profile.email || 'U').slice(0, 1).toUpperCase() })), _jsx("div", { className: "hidden md:flex flex-col leading-tight text-left", children: _jsx("span", { className: "text-xs font-medium truncate max-w-[120px]", title: profile.name || profile.email, children: profile.name || 'User' }) }), _jsx("svg", { className: `w-3 h-3 transition ${open ? 'rotate-180' : ''}`, viewBox: "0 0 20 20", fill: "currentColor", children: _jsx("path", { d: "M5.23 7.21a.75.75 0 011.06.02L10 11.168l3.71-3.938a.75.75 0 111.08 1.04l-4.25 4.51a.75.75 0 01-1.08 0l-4.25-4.51a.75.75 0 01.02-1.06z" }) })] }), open && (_jsxs("div", { className: "absolute right-0 mt-2 w-64 rounded-xl border border-white/10 bg-[#1b222c] shadow-xl shadow-black/40 p-3 flex flex-col gap-2 z-50", children: [_jsxs("div", { className: "flex items-center gap-3 pb-3 border-b border-white/10", children: [profile.picture ? _jsx("img", { className: "w-10 h-10 rounded object-cover border border-white/10", src: profile.picture, alt: profile.name || 'avatar' }) : (_jsx("div", { className: "w-10 h-10 rounded-lg bg-white/10 border border-white/10 flex items-center justify-center text-sm font-semibold", children: (profile.name || profile.email || 'U').slice(0, 1).toUpperCase() })), _jsxs("div", { className: "flex flex-col leading-tight", children: [_jsx("span", { className: "text-xs font-semibold", children: profile.name || 'User' }), profile.email && _jsx("span", { className: "text-[10px] opacity-60", children: profile.email })] })] }), _jsx("button", { className: "text-left text-xs px-3 py-2 rounded-lg hover:bg-white/10 transition", onClick: () => { setOpen(false); onChangeView('dashboard'); }, children: "Account" }), _jsx("button", { className: "text-left text-xs px-3 py-2 rounded-lg hover:bg-white/10 transition", onClick: () => { setOpen(false); onChangeView('help'); }, children: "Settings" }), _jsx("button", { className: "text-left text-xs px-3 py-2 rounded-lg hover:bg-rose-600/30 hover:text-rose-200 transition border border-transparent hover:border-rose-500/40", onClick: () => { setOpen(false); onSignOut?.(); }, children: "Log out" })] }))] })) : (_jsx("div", { className: "text-[11px] opacity-60", children: "Not signed in" }))] })] }));
+    return (_jsxs("div", { className: "col-span-3 grid grid-cols-3 items-center px-6 bg-[#141924] border-b border-white/10 h-16 relative", children: [_jsx("div", { className: "flex items-center", children: _jsxs("button", { onClick: () => onChangeView('dashboard'), className: "flex items-center gap-2 group", title: "Home", children: [_jsx("div", { className: "w-9 h-9 rounded-lg bg-gradient-to-br from-emerald-500/30 to-sky-500/30 border border-white/10 flex items-center justify-center font-bold text-sm tracking-wide text-emerald-200 group-hover:from-emerald-500/50 group-hover:to-sky-500/50 transition", children: "AF" }), _jsx("span", { className: "text-sm font-semibold tracking-wide bg-gradient-to-r from-emerald-300 to-sky-300 bg-clip-text text-transparent hidden xl:inline-block", children: "Afro\u2011Future" })] }) }), _jsxs("div", { className: "flex items-center justify-center gap-6", children: [_jsx("button", { className: `opacity-80 hover:opacity-100 transition ${view === 'dashboard' ? 'text-emerald-400' : ''}`, onClick: () => onChangeView('dashboard'), children: "Dashboard" }), _jsx("button", { className: `opacity-80 hover:opacity-100 transition ${view === 'skills' ? 'text-emerald-400' : ''}`, onClick: () => onChangeView('skills'), children: "Skills" }), _jsx("button", { className: `opacity-80 hover:opacity-100 transition ${view === 'store' ? 'text-emerald-400' : ''}`, onClick: () => onChangeView('store'), children: "Store" }), _jsx("button", { className: `opacity-80 hover:opacity-100 transition ${view === 'help' ? 'text-emerald-400' : ''}`, onClick: () => onChangeView('help'), children: "Help" })] }), _jsxs("div", { className: "ml-auto flex items-center justify-end gap-4", children: [_jsxs(Chip, { children: ["1,458 ", _jsx("span", { className: "opacity-70", children: "shards" })] }), _jsx(IconButton, { label: "Notifications", children: "\uD83D\uDD14" }), _jsx(IconButton, { label: isFs ? 'Exit Fullscreen' : 'Enter Fullscreen', onClick: toggleFullscreen, children: _jsx("svg", { width: "14", height: "14", viewBox: "0 0 24 24", fill: "none", stroke: "currentColor", strokeWidth: "2", strokeLinecap: "round", strokeLinejoin: "round", "aria-hidden": "true", children: isFs ? (_jsxs(_Fragment, { children: [_jsx("path", { d: "M9 9H5V5" }), _jsx("path", { d: "M15 9h4V5" }), _jsx("path", { d: "M9 15H5v4" }), _jsx("path", { d: "M15 15h4v4" })] })) : (_jsxs(_Fragment, { children: [_jsx("path", { d: "M4 9V5h4" }), _jsx("path", { d: "M20 9V5h-4" }), _jsx("path", { d: "M4 15v4h4" }), _jsx("path", { d: "M20 15v4h-4" })] })) }) }), profile ? (_jsxs("div", { className: "relative", ref: menuRef, children: [_jsxs("button", { onClick: () => setOpen(o => !o), className: "flex items-center gap-2 group", children: [profile.picture ? _jsx("img", { className: "w-9 h-9 rounded object-cover border border-white/10", src: profile.picture, alt: profile.name || 'avatar' }) : (_jsx("div", { className: "w-9 h-9 rounded-lg bg-white/10 border border-white/10 flex items-center justify-center text-xs font-semibold", children: (profile.name || profile.email || 'U').slice(0, 1).toUpperCase() })), _jsx("div", { className: "hidden md:flex flex-col leading-tight text-left", children: _jsx("span", { className: "text-xs font-medium truncate max-w-[120px]", title: profile.name || profile.email, children: profile.name || 'User' }) }), _jsx("svg", { className: `w-3 h-3 transition ${open ? 'rotate-180' : ''}`, viewBox: "0 0 20 20", fill: "currentColor", children: _jsx("path", { d: "M5.23 7.21a.75.75 0 011.06.02L10 11.168l3.71-3.938a.75.75 0 111.08 1.04l-4.25 4.51a.75.75 0 01-1.08 0l-4.25-4.51a.75.75 0 01.02-1.06z" }) })] }), open && (_jsxs("div", { className: "absolute right-0 mt-2 w-64 rounded-xl border border-white/10 bg-[#1b222c] shadow-xl shadow-black/40 p-3 flex flex-col gap-2 z-50", children: [_jsxs("div", { className: "flex items-center gap-3 pb-3 border-b border-white/10", children: [profile.picture ? _jsx("img", { className: "w-10 h-10 rounded object-cover border border-white/10", src: profile.picture, alt: profile.name || 'avatar' }) : (_jsx("div", { className: "w-10 h-10 rounded-lg bg-white/10 border border-white/10 flex items-center justify-center text-sm font-semibold", children: (profile.name || profile.email || 'U').slice(0, 1).toUpperCase() })), _jsxs("div", { className: "flex flex-col leading-tight", children: [_jsx("span", { className: "text-xs font-semibold", children: profile.name || 'User' }), profile.email && _jsx("span", { className: "text-[10px] opacity-60", children: profile.email })] })] }), _jsx("button", { className: "text-left text-xs px-3 py-2 rounded-lg hover:bg-white/10 transition", onClick: () => { setOpen(false); onChangeView('dashboard'); }, children: "Account" }), _jsx("button", { className: "text-left text-xs px-3 py-2 rounded-lg hover:bg-white/10 transition", onClick: () => { setOpen(false); onChangeView('settings'); }, children: "Settings" }), _jsx("button", { className: "text-left text-xs px-3 py-2 rounded-lg hover:bg-rose-600/30 hover:text-rose-200 transition border border-transparent hover:border-rose-500/40", onClick: () => { setOpen(false); onSignOut?.(); }, children: "Log out" })] }))] })) : (_jsx("div", { className: "text-[11px] opacity-60", children: "Not signed in" }))] })] }));
 }
 function LeftPlayerPanel({ className = '', playerName, accountLevel, loadout, heroLocked }) {
     // Skill / stat integration
@@ -786,14 +844,14 @@ function LeftPlayerPanel({ className = '', playerName, accountLevel, loadout, he
                                         return; if (confirm('Respec will refund all spent tokens. Proceed?'))
                                         respec(); }, className: "px-2.5 py-1 rounded-lg border text-[10px] tracking-wide disabled:opacity-40 disabled:cursor-not-allowed bg-white/5 border-white/10 hover:bg-white/10", children: "Respec" }) })] })] }), _jsx("div", { className: "px-4 py-4 flex flex-col items-center gap-4", children: _jsxs("div", { className: "w-full max-w-[260px] aspect-[4/3] rounded-3xl border border-white/10 bg-white/5 overflow-hidden relative flex flex-col items-center justify-center p-4", children: [_jsx("div", { className: "absolute inset-0 bg-gradient-to-tr from-[#0b0e13]/80 via-transparent to-[#0b0e13]/50" }), _jsx("img", { className: "relative z-10 w-[52%] h-[52%] object-contain drop-shadow", src: PetIcon[loadout.pet.type], alt: "pet" }), _jsxs("div", { className: "relative z-10 mt-3 flex flex-col items-center text-center", children: [_jsx("div", { className: "font-semibold text-white text-sm leading-tight tracking-wide", children: loadout.pet.type === 'CYBER_DOG' ? 'Cyber-Dog' : 'Cyber-Cat' }), _jsxs("div", { className: "mt-1 text-[10px] text-gray-300 flex items-center gap-2", children: [_jsxs("span", { className: "px-2 py-0.5 rounded-full bg-white/5 border border-white/10 tracking-wide", children: ["Lv ", loadout.pet.level] }), _jsx("span", { children: loadout.pet.role })] })] })] }) })] }));
 }
-function RightPlayerPanel({ className = '', loadout, onCustomize }) {
+function RightPlayerPanel({ className = '', loadout, onCustomize, onPlay }) {
     const [mode, setMode] = useState('single');
     const [queue, setQueue] = useState(null);
     function startMatch() {
         if (mode !== 'single')
             return; // only single-player active right now
-        setQueue('~ Est. 0:25');
-        setTimeout(() => setQueue('Searching…'), 1200);
+        // Immediately open mission map instead of fake queue
+        onPlay?.();
     }
     const modes = [
         { key: 'single', label: 'Single Player', enabled: true },
@@ -811,7 +869,13 @@ function CenterHub({ className = '', loadout, view }) {
     if (view === 'store') {
         return _jsx(StoreView, { className: className });
     }
+    if (view === 'mission') {
+        return (_jsx("main", { className: `col-start-2 px-6 py-5 min-h-0 flex flex-col ${className}`, children: _jsx("div", { className: "flex-1 rounded-3xl border border-white/10 bg-[#12171f] overflow-hidden", children: _jsx("div", { className: "w-full h-full", children: _jsx(SoloMissionMap3D, {}) }) }) }));
+    }
     if (view === 'help') {
+        return _jsx(HelpView, { className: className });
+    }
+    if (view === 'settings') {
         return _jsx(SettingsView, { className: className });
     }
     return (_jsxs("main", { className: `col-start-2 px-6 py-5 min-h-0 flex flex-col gap-5 ${className}`, children: [_jsx("div", { className: "relative", style: { flex: '0 0 50%' }, children: _jsx(HeroBanner, { loadout: loadout }) }), _jsxs("div", { className: "flex-1 grid grid-cols-3 gap-5 min-h-0", children: [_jsx(NewsCard, { title: "Season 1: Terraformers" }), _jsx(NewsCard, { title: "Patch 0.2.3 Notes" }), _jsx(NewsCard, { title: "Community Spotlight" })] })] }));
@@ -906,9 +970,34 @@ function ProductCard({ product }) {
     const variant = product.variants[0];
     return (_jsxs("div", { className: "rounded-2xl border border-white/10 bg-white/5 overflow-hidden flex flex-col group hover:bg-white/10 transition", children: [_jsxs("div", { className: "aspect-square w-full relative overflow-hidden bg-[#0f141a]", children: [img ? _jsx("img", { src: img.url, alt: img.altText || product.title, className: "absolute inset-0 w-full h-full object-cover group-hover:scale-105 transition" }) : (_jsx("div", { className: "absolute inset-0 flex items-center justify-center text-[11px] opacity-40", children: "No Image" })), _jsx("div", { className: "absolute top-2 left-2 text-[10px] px-2 py-0.5 rounded bg-black/50 backdrop-blur border border-white/10", children: variant && variant.price ? `${variant.price.amount}${variant.price.currencyCode ? ' ' + variant.price.currencyCode : ''}` : '—' })] }), _jsxs("div", { className: "p-3 flex flex-col gap-1", children: [_jsx("div", { className: "text-xs font-semibold tracking-wide line-clamp-2 leading-snug min-h-[2rem]", children: product.title }), _jsx("button", { disabled: true, className: "mt-1 text-[11px] px-2 py-1 rounded bg-emerald-600/30 border border-emerald-500/40 text-emerald-200 cursor-not-allowed uppercase tracking-wide", children: "Preview" })] })] }));
 }
-// --- Settings (repurposed Help) View ---
+// --- Settings View ---
 function SettingsView({ className = '' }) {
-    return (_jsx("main", { className: `col-start-2 px-6 py-5 min-h-0 flex flex-col ${className}`, children: _jsxs("div", { className: "flex-1 rounded-3xl border border-white/10 bg-[#12171f] overflow-hidden p-6 space-y-8", children: [_jsxs("section", { children: [_jsx("h2", { className: "text-xl font-semibold mb-2", children: "Settings" }), _jsx("p", { className: "text-sm opacity-80 leading-relaxed", children: "Configure your experience. (Prototype \u2013 values not persisted yet.)" })] }), _jsxs("section", { className: "space-y-4", children: [_jsxs("div", { className: "rounded-xl border border-white/10 bg-white/5 p-4 flex flex-col gap-3", children: [_jsx("div", { className: "text-sm font-semibold tracking-wide", children: "Audio" }), _jsxs("div", { className: "flex items-center justify-between text-xs", children: [_jsx("span", { className: "opacity-70", children: "Master Volume" }), _jsx("input", { type: "range", min: 0, max: 100, defaultValue: 70, className: "w-40" })] }), _jsxs("div", { className: "flex items-center justify-between text-xs", children: [_jsx("span", { className: "opacity-70", children: "Music Volume" }), _jsx("input", { type: "range", min: 0, max: 100, defaultValue: 55, className: "w-40" })] })] }), _jsxs("div", { className: "rounded-xl border border-white/10 bg-white/5 p-4 flex flex-col gap-3", children: [_jsx("div", { className: "text-sm font-semibold tracking-wide", children: "Graphics" }), _jsxs("div", { className: "flex items-center justify-between text-xs", children: [_jsx("span", { className: "opacity-70", children: "Quality" }), _jsxs("select", { className: "bg-[#1b222c] border border-white/10 rounded px-2 py-1 text-xs", children: [_jsx("option", { children: "Auto" }), _jsx("option", { children: "Low" }), _jsx("option", { children: "Medium" }), _jsx("option", { children: "High" })] })] }), _jsxs("div", { className: "flex items-center justify-between text-xs", children: [_jsx("span", { className: "opacity-70", children: "Show FPS" }), _jsx("input", { type: "checkbox" })] })] }), _jsxs("div", { className: "rounded-xl border border-white/10 bg-white/5 p-4 flex flex-col gap-3", children: [_jsx("div", { className: "text-sm font-semibold tracking-wide", children: "Account" }), _jsx("div", { className: "text-xs opacity-70", children: "More account controls coming soon." })] })] })] }) }));
+    const version = (typeof window !== 'undefined' && window.__AF_ENV?.buildHash)
+        ? window.__AF_ENV.buildHash
+        : APP_VERSION_FALLBACK;
+    return (_jsx("main", { className: `col-start-2 px-6 py-5 min-h-0 flex flex-col ${className}`, children: _jsxs("div", { className: "flex-1 rounded-3xl border border-white/10 bg-[#12171f] overflow-hidden p-6 space-y-8", children: [_jsxs("section", { children: [_jsx("h2", { className: "text-xl font-semibold mb-2", children: "Settings" }), _jsx("p", { className: "text-sm opacity-80 leading-relaxed", children: "Configure your experience. (Prototype \u2013 values may not persist yet.)" })] }), _jsxs("section", { className: "space-y-4", children: [_jsxs("div", { className: "rounded-xl border border-white/10 bg-white/5 p-4 flex flex-col gap-3", children: [_jsx("div", { className: "text-sm font-semibold tracking-wide", children: "Audio" }), _jsxs("div", { className: "flex items-center justify-between text-xs", children: [_jsx("span", { children: "Master Volume" }), _jsx("input", { "aria-label": "Master Volume", type: "range", min: 0, max: 100, defaultValue: 80 })] }), _jsxs("div", { className: "flex items-center justify-between text-xs", children: [_jsx("span", { children: "Music" }), _jsx("input", { "aria-label": "Music Volume", type: "range", min: 0, max: 100, defaultValue: 60 })] })] }), _jsxs("div", { className: "rounded-xl border border-white/10 bg-white/5 p-4 flex flex-col gap-3", children: [_jsx("div", { className: "text-sm font-semibold tracking-wide", children: "Graphics" }), _jsxs("div", { className: "flex items-center justify-between text-xs", children: [_jsx("span", { children: "Quality" }), _jsxs("select", { className: "bg-transparent border border-white/20 rounded px-2 py-1 text-xs", children: [_jsx("option", { children: "Auto" }), _jsx("option", { children: "Low" }), _jsx("option", { children: "Medium" }), _jsx("option", { children: "High" })] })] })] }), _jsxs("div", { className: "rounded-xl border border-white/10 bg-white/5 p-4 flex flex-col gap-3", children: [_jsx("div", { className: "text-sm font-semibold tracking-wide", children: "Account" }), _jsx("div", { className: "text-xs opacity-70", children: "More account controls coming soon." })] })] }), _jsx("div", { className: "mt-8 text-[4pt] leading-none opacity-60 select-text", children: version })] }) }));
+}
+// --- Help View ---
+function HelpView({ className = '' }) {
+    const items = [
+        { title: 'Choose Your Faction', desc: 'Pick PAA, ASF, or WC — each with unique strengths and lore.', icon: '🏳️' },
+        { title: 'Select Archetype', desc: 'Male or Female hero. Your archetype sets your starting presence.', icon: '🧍' },
+        { title: 'Customize Avatar', desc: 'Tweak parts and colors. Save to lock in your hero.', icon: '🎨' },
+        { title: 'Unlock Skills', desc: 'Spend points along branches to unlock combat and utility perks.', icon: '🌿' },
+        { title: 'Enter Missions', desc: 'Single-player for now. Multiplayer coming soon.', icon: '🎯' },
+        { title: 'Earn & Progress', desc: 'Level up and expand your build over time.', icon: '⬆️' },
+    ];
+    // Two-card pager
+    const [page, setPage] = React.useState(0);
+    const pages = Math.ceil(items.length / 2);
+    const chunks = React.useMemo(() => {
+        const out = [];
+        for (let i = 0; i < pages; i++)
+            out.push(items.slice(i * 2, i * 2 + 2));
+        return out;
+    }, [pages, items.length]);
+    const go = (d) => setPage(p => Math.max(0, Math.min(p + d, pages - 1)));
+    return (_jsx("main", { className: `col-start-2 px-6 py-5 min-h-0 flex flex-col ${className}`, children: _jsxs("div", { className: "flex-1 rounded-3xl border border-white/10 bg-[#12171f] overflow-hidden p-0", children: [_jsxs("div", { className: "relative h-48 sm:h-56 md:h-64 bg-gradient-to-r from-emerald-600/30 via-sky-600/20 to-indigo-600/20 border-b border-white/10", children: [_jsx("div", { className: "absolute inset-0 bg-[radial-gradient(ellipse_at_top_left,rgba(16,185,129,0.25),transparent_60%)]" }), _jsxs("div", { className: "absolute bottom-4 left-6", children: [_jsx("h2", { className: "text-2xl md:text-3xl font-semibold", children: "How to Play" }), _jsx("div", { className: "text-xs opacity-80", children: "A quick visual guide to get you started" })] })] }), _jsxs("div", { className: "relative p-6", children: [_jsx("button", { "aria-label": "Prev", onClick: () => go(-1), disabled: page === 0, className: "absolute left-3 top-1/2 -translate-y-1/2 h-9 w-9 rounded-full bg-black/40 border border-white/10 hover:bg-black/50 disabled:opacity-40 disabled:cursor-not-allowed grid place-items-center z-10", children: "\u2039" }), _jsx("button", { "aria-label": "Next", onClick: () => go(1), disabled: page >= pages - 1, className: "absolute right-3 top-1/2 -translate-y-1/2 h-9 w-9 rounded-full bg-black/40 border border-white/10 hover:bg-black/50 disabled:opacity-40 disabled:cursor-not-allowed grid place-items-center z-10", children: "\u203A" }), _jsx("div", { className: "overflow-hidden", children: _jsx("div", { className: "flex transition-transform duration-300", style: { transform: `translateX(-${page * 100}%)` }, children: chunks.map((group, idx) => (_jsx("div", { className: "w-full shrink-0 px-1", children: _jsx("div", { className: "grid grid-cols-2 gap-4", children: group.map((s, i) => (_jsxs("div", { className: "rounded-2xl border border-white/10 bg-white/[0.04] p-5 flex flex-col gap-3", children: [_jsx("div", { className: "text-2xl select-none", children: s.icon }), _jsx("div", { className: "text-sm font-semibold tracking-wide", children: s.title }), _jsx("div", { className: "text-xs opacity-75 leading-relaxed", children: s.desc }), _jsx("div", { className: "mt-2 h-24 rounded-lg bg-gradient-to-br from-black/10 to-white/5 border border-white/10 flex items-center justify-center text-[10px] opacity-60", children: "Illustration" })] }, i))) }) }, idx))) }) }), _jsx("div", { className: "mt-4 flex items-center justify-center gap-2", children: Array.from({ length: pages }).map((_, i) => (_jsx("span", { className: `w-1.5 h-1.5 rounded-full ${i === page ? 'bg-white/80' : 'bg-white/30'}` }, i))) })] })] }) }));
 }
 function RightStartPanel({ className = '' }) {
     const [mode, setMode] = useState('single');
@@ -934,11 +1023,34 @@ function CharacterCreator({ onSave, onBack, initial, locked }) {
     const [tab, setTab] = useState(GROUP_ORDER[0]);
     const tabs = [...GROUP_ORDER, 'Colors'];
     // Store picked variant id per group locally (could be moved to zustand later)
-    const [picked, setPicked] = useState({});
-    const [colorState, setColorState] = useState({ primary: '#00A37A', secondary: '#F5F5F5', skin: '#c58b66' });
+    const [picked, setPicked] = useState(() => {
+        const parts = initial?.threeConfig?.parts;
+        return (parts && typeof parts === 'object') ? { ...parts } : {};
+    });
+    const [colorState, setColorState] = useState(() => {
+        const colors = initial?.threeConfig?.colors;
+        return {
+            primary: colors?.primary || '#00A37A',
+            secondary: colors?.secondary || '#F5F5F5',
+            skin: colors?.skin || '#c58b66',
+        };
+    });
     // Link skin picker to central creator store so shared skin material updates live in preview
     const setSkinColor = useCreatorStore(s => s.setSkinColor);
     useEffect(() => { setSkinColor(colorState.skin); }, [colorState.skin, setSkinColor]);
+    // Keep local state in sync if parent provides a different initial loadout
+    useEffect(() => {
+        const parts = initial?.threeConfig?.parts;
+        const colors = initial?.threeConfig?.colors;
+        if (parts && typeof parts === 'object')
+            setPicked({ ...parts });
+        if (colors && typeof colors === 'object')
+            setColorState(prev => ({
+                primary: colors.primary || prev.primary,
+                secondary: colors.secondary || prev.secondary,
+                skin: colors.skin || prev.skin,
+            }));
+    }, [initial]);
     // Animation preview controls
     const [animPaused, setAnimPaused] = useState(false);
     const [animSpeed, setAnimSpeed] = useState(1);
@@ -970,18 +1082,12 @@ function CharacterCreator({ onSave, onBack, initial, locked }) {
     return (_jsxs("div", { className: "w-full h-full bg-[#0b0e13] text-gray-100 relative flex flex-col", children: [_jsx("div", { className: "absolute top-4 left-6 flex items-center gap-2 z-10", children: _jsx(Button, { variant: "ghost", onClick: onBack, children: "Back" }) }), _jsxs("div", { className: "flex-1 flex flex-col", children: [_jsx("div", { className: "flex-1 flex items-center justify-center px-8 py-8", children: _jsxs("div", { className: "relative w-full h-full max-h-[55vh] rounded-[32px] bg-[#12171f] border border-white/10 shadow-2xl overflow-hidden flex items-center justify-center", children: [_jsx("div", { className: "absolute inset-0 bg-gradient-to-tr from-emerald-500/5 via-transparent to-sky-500/5 pointer-events-none" }), _jsxs("div", { className: "absolute inset-0", children: [_jsx(AvatarScene, { parts: picked, colors: colorState, debugTint: false, animPaused: animPaused, animSpeed: animSpeed, 
                                             // Reduce overall avatar size by 20%
                                             modelScale: 0.8, modelOffset: [0, -0.25, 0] }), _jsxs("div", { className: "absolute top-3 left-3 flex items-center gap-2 bg-black/40 backdrop-blur-sm px-3 py-2 rounded-xl border border-white/10 text-[11px]", children: [_jsx("button", { onClick: () => setAnimPaused(p => !p), className: "px-2 py-1 rounded bg-white/10 hover:bg-white/15 border border-white/10", children: animPaused ? 'Play' : 'Pause' }), _jsxs("div", { className: "flex items-center gap-1", children: [_jsx("span", { className: "opacity-60", children: "Speed" }), _jsx("input", { type: "range", min: 0.25, max: 1.5, step: 0.05, value: animSpeed, onChange: e => setAnimSpeed(parseFloat(e.target.value)), className: "w-24" }), _jsxs("span", { className: "tabular-nums w-8 text-right", children: [animSpeed.toFixed(2), "x"] })] })] })] }), _jsx("div", { className: "absolute bottom-4 right-4 text-[11px] px-2 py-1 rounded bg-white/5 border border-white/10 uppercase tracking-wide", children: "Preview 3D" })] }) }), _jsxs("div", { className: "w-full bg-[#12171f]/95 backdrop-blur-sm border-t border-white/10 flex flex-col max-h-[45vh]", children: [_jsx("div", { className: "px-8 pt-4 flex flex-wrap justify-center gap-2", children: tabs.map((t) => (_jsx("button", { onClick: () => setTab(t), className: `px-4 py-2 rounded-xl text-sm border transition
-                  ${tab === t ? 'bg-emerald-600/30 text-emerald-200 border-emerald-500/60 shadow-inner' : 'bg-white/5 border-white/10 hover:bg-white/10 text-gray-300'}`, children: t }, t))) }), _jsx("div", { className: "flex-1 px-8 pt-6 pb-20 flex items-start justify-center w-full", children: tab === 'Colors' ? (_jsxs("div", { className: "w-full max-w-5xl grid gap-6", style: { gridTemplateColumns: 'repeat(auto-fit,minmax(180px,1fr))' }, children: [[
-                                            { key: 'primary', label: 'Primary' },
-                                            { key: 'secondary', label: 'Secondary' },
-                                            { key: 'skin', label: 'Skin Tone' },
-                                        ].map(c => (_jsxs("div", { className: "rounded-2xl border border-white/10 bg-gradient-to-br from-white/5 to-white/[0.02] p-5 flex flex-col items-center gap-4 relative overflow-hidden", children: [_jsx("div", { className: "absolute inset-0 pointer-events-none bg-[radial-gradient(circle_at_30%_30%,rgba(16,185,129,0.08),transparent_60%)]" }), _jsx("div", { className: "text-sm font-medium tracking-wide relative z-10", children: c.label }), _jsxs("div", { className: "relative z-10 flex flex-col items-center gap-3", children: [_jsx("input", { "aria-label": c.label, type: "color", value: colorState[c.key], onChange: e => setColorState(s => ({ ...s, [c.key]: e.target.value })), className: "w-20 h-20 md:w-24 md:h-24 rounded-2xl cursor-pointer border border-white/20 bg-[#0f141a] p-1 shadow-inner shadow-black/40" }), _jsx("div", { className: "text-[11px] opacity-70 font-mono tracking-wide select-all", children: colorState[c.key] })] })] }, c.key))), _jsxs("div", { className: "rounded-2xl border border-white/10 bg-white/5 p-4 flex flex-col gap-3", children: [_jsx("div", { className: "text-xs uppercase tracking-wider opacity-60", children: "Quick Palettes" }), _jsx("div", { className: "flex flex-wrap gap-2", children: [
-                                                        { primary: '#00A37A', secondary: '#F5F5F5', skin: '#c58b66' },
-                                                        { primary: '#d97706', secondary: '#111827', skin: '#b0734e' },
-                                                        { primary: '#3b82f6', secondary: '#1e293b', skin: '#c58b66' },
-                                                        { primary: '#a855f7', secondary: '#0f172a', skin: '#d19d74' },
-                                                        { primary: '#ef4444', secondary: '#111827', skin: '#c58b66' },
-                                                        { primary: '#10b981', secondary: '#0f172a', skin: '#c58b66' },
-                                                    ].map((p, i) => (_jsxs("button", { onClick: () => setColorState(p), className: "group w-14 h-14 rounded-lg border border-white/10 overflow-hidden relative flex", title: "Apply palette", children: [_jsx("div", { className: "flex-1 h-full", style: { background: p.primary } }), _jsx("div", { className: "flex-1 h-full", style: { background: p.secondary } }), _jsx("div", { className: "flex-1 h-full", style: { background: p.skin } }), _jsx("div", { className: "absolute inset-0 opacity-0 group-hover:opacity-100 transition text-[9px] font-semibold tracking-wide flex items-center justify-center bg-black/50 text-white", children: "Use" })] }, i))) })] })] })) : (_jsxs("div", { className: "relative flex gap-4 overflow-x-auto no-scrollbar py-2 px-1 items-stretch scroll-smooth snap-x snap-mandatory group", id: "variant-row", children: [_jsx("div", { className: "pointer-events-none absolute left-0 top-0 bottom-0 w-8 bg-gradient-to-r from-[#12171f] to-transparent opacity-70 group-hover:opacity-90" }), _jsx("div", { className: "pointer-events-none absolute right-0 top-0 bottom-0 w-8 bg-gradient-to-l from-[#12171f] to-transparent opacity-70 group-hover:opacity-90" }), getVariantsByGroup(tab).map((v, idx) => {
+                  ${tab === t ? 'bg-emerald-600/30 text-emerald-200 border-emerald-500/60 shadow-inner' : 'bg-white/5 border-white/10 hover:bg-white/10 text-gray-300'}`, children: t }, t))) }), _jsx("div", { className: "px-8 pb-4", children: tab === 'Colors' ? (_jsx("div", { className: "flex gap-3 justify-center items-center", children: [
+                                        { primary: '#00A37A', secondary: '#F5F5F5', skin: '#c58b66' },
+                                        { primary: '#a855f7', secondary: '#0f172a', skin: '#d19d74' },
+                                        { primary: '#ef4444', secondary: '#111827', skin: '#c58b66' },
+                                        { primary: '#10b981', secondary: '#0f172a', skin: '#c58b66' },
+                                    ].map((p, i) => (_jsxs("button", { onClick: () => setColorState(p), className: "group w-14 h-14 rounded-lg border border-white/10 overflow-hidden relative flex", title: "Apply palette", children: [_jsx("div", { className: "flex-1 h-full", style: { background: p.primary } }), _jsx("div", { className: "flex-1 h-full", style: { background: p.secondary } }), _jsx("div", { className: "flex-1 h-full", style: { background: p.skin } }), _jsx("div", { className: "absolute inset-0 opacity-0 group-hover:opacity-100 transition text-[9px] font-semibold tracking-wide flex items-center justify-center bg-black/50 text-white", children: "Use" })] }, i))) })) : (_jsxs("div", { className: "relative flex gap-4 overflow-x-auto no-scrollbar py-2 px-1 items-stretch scroll-smooth snap-x snap-mandatory group", id: "variant-row", children: [_jsx("div", { className: "pointer-events-none absolute left-0 top-0 bottom-0 w-8 bg-gradient-to-r from-[#12171f] to-transparent opacity-70 group-hover:opacity-90" }), _jsx("div", { className: "pointer-events-none absolute right-0 top-0 bottom-0 w-8 bg-gradient-to-l from-[#12171f] to-transparent opacity-70 group-hover:opacity-90" }), getVariantsByGroup(tab).map((v, idx) => {
                                             const active = picked[tab] === v.id;
                                             return (_jsx(VariantCard, { v: v, active: active, onSelect: () => selectVariant(tab, v.id), eager: idx < 6 }, v.id));
                                         }), getVariantsByGroup(tab).length === 0 && (_jsxs("div", { className: "text-xs opacity-50 px-4 py-6", children: ["No variants for ", tab] }))] })) }), _jsxs("div", { className: "px-8 py-5 flex justify-end gap-3 border-t border-white/10 bg-[#12171f]/95 sticky bottom-0", children: [_jsx(Button, { variant: "ghost", onClick: onBack, children: "Previous" }), _jsx(Button, { onClick: exportPayload, children: "Save & Continue" })] })] })] })] }));
