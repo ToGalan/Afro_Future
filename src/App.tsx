@@ -15,6 +15,7 @@ import { chromeSyncGet, chromeSyncSet, chromeSyncClear } from './services/chrome
 import GoogleSignInButton from './components/auth/GoogleSignInButton';
 // Runtime config shape
 interface RuntimeConfig { storeDomain: string | null; apiVersion: string; debug: boolean; buildHash?: string | null; }
+const APP_VERSION_FALLBACK = 'v0.2.3';
 
 const defaultLoadout: CharacterLoadout = {
   id: uid('char'),
@@ -53,7 +54,7 @@ export default function App() {
     } catch {}
     return null;
   });
-  const [mainView, setMainView] = useState<'dashboard' | 'skills' | 'store' | 'help'>('store');
+  const [mainView, setMainView] = useState<'dashboard' | 'skills' | 'store' | 'help' | 'settings'>('store');
   const [progress, setProgress] = useState(0);
   const [playerName] = useState('PlayerOne');
   // Account level is linked to profile; default to 1 if not persisted yet
@@ -889,7 +890,7 @@ function FirstTimeFlow({ faction, archetype, pet, onFaction, onArchetype, onPet,
   );
 }
 
-function MainMenu({ playerName, accountLevel, loadout, onCustomize, heroLocked, view, onChangeView, profile, onSignOut }: { playerName: string; accountLevel: number; loadout: CharacterLoadout; onCustomize: () => void; heroLocked: boolean; view: 'dashboard' | 'skills' | 'store' | 'help'; onChangeView: (v: 'dashboard' | 'skills' | 'store' | 'help') => void; profile?: { sub: string; name?: string; email?: string; picture?: string } | null; onSignOut?: () => void; }) {
+function MainMenu({ playerName, accountLevel, loadout, onCustomize, heroLocked, view, onChangeView, profile, onSignOut }: { playerName: string; accountLevel: number; loadout: CharacterLoadout; onCustomize: () => void; heroLocked: boolean; view: 'dashboard' | 'skills' | 'store' | 'help' | 'settings'; onChangeView: (v: 'dashboard' | 'skills' | 'store' | 'help' | 'settings') => void; profile?: { sub: string; name?: string; email?: string; picture?: string } | null; onSignOut?: () => void; }) {
   // Ensure skill store level matches active loadout level even when Skills view isn't open
   const setSkillLevel = useSkillStore(s=>s.setLevel);
   useEffect(()=>{ setSkillLevel(loadout.level); }, [loadout.level, setSkillLevel]);
@@ -907,7 +908,7 @@ function MainMenu({ playerName, accountLevel, loadout, onCustomize, heroLocked, 
   );
 }
 
-function TopNav({ view, onChangeView, profile, onSignOut }: { view: 'dashboard' | 'skills' | 'store' | 'help'; onChangeView: (v: 'dashboard' | 'skills' | 'store' | 'help') => void; profile?: { sub: string; name?: string; email?: string; picture?: string } | null; onSignOut?: () => void; }) {
+function TopNav({ view, onChangeView, profile, onSignOut }: { view: 'dashboard' | 'skills' | 'store' | 'help' | 'settings'; onChangeView: (v: 'dashboard' | 'skills' | 'store' | 'help' | 'settings') => void; profile?: { sub: string; name?: string; email?: string; picture?: string } | null; onSignOut?: () => void; }) {
   const [open, setOpen] = React.useState(false);
   const menuRef = React.useRef<HTMLDivElement|null>(null);
   const [isFs, setIsFs] = React.useState<boolean>(!!document.fullscreenElement);
@@ -954,7 +955,7 @@ function TopNav({ view, onChangeView, profile, onSignOut }: { view: 'dashboard' 
         <button className={`opacity-80 hover:opacity-100 transition ${view==='dashboard' ? 'text-emerald-400' : ''}`} onClick={()=>onChangeView('dashboard')}>Dashboard</button>
         <button className={`opacity-80 hover:opacity-100 transition ${view==='skills' ? 'text-emerald-400' : ''}`} onClick={()=>onChangeView('skills')}>Skills</button>
         <button className={`opacity-80 hover:opacity-100 transition ${view==='store' ? 'text-emerald-400' : ''}`} onClick={()=>onChangeView('store')}>Store</button>
-        <button className={`opacity-80 hover:opacity-100 transition ${view==='help' ? 'text-emerald-400' : ''}`} onClick={()=>onChangeView('help')}>Help</button>
+  <button className={`opacity-80 hover:opacity-100 transition ${view==='help' ? 'text-emerald-400' : ''}`} onClick={()=>onChangeView('help')}>Help</button>
         {/* Room selector removed per request */}
       </div>
       <div className="ml-auto flex items-center justify-end gap-4">
@@ -1003,7 +1004,7 @@ function TopNav({ view, onChangeView, profile, onSignOut }: { view: 'dashboard' 
                   </div>
                 </div>
                 <button className="text-left text-xs px-3 py-2 rounded-lg hover:bg-white/10 transition" onClick={()=>{ setOpen(false); onChangeView('dashboard'); }}>Account</button>
-                <button className="text-left text-xs px-3 py-2 rounded-lg hover:bg-white/10 transition" onClick={()=>{ setOpen(false); onChangeView('help'); }}>Settings</button>
+                <button className="text-left text-xs px-3 py-2 rounded-lg hover:bg-white/10 transition" onClick={()=>{ setOpen(false); onChangeView('settings'); }}>Settings</button>
                 <button className="text-left text-xs px-3 py-2 rounded-lg hover:bg-rose-600/30 hover:text-rose-200 transition border border-transparent hover:border-rose-500/40" onClick={()=>{ setOpen(false); onSignOut?.(); }}>Log out</button>
               </div>
             )}
@@ -1190,7 +1191,7 @@ function RightPlayerPanel({ className = '', loadout, onCustomize }: { className?
   );
 }
 
-function CenterHub({ className = '', loadout, view }: { className?: string; loadout: CharacterLoadout; view: 'dashboard' | 'skills' | 'store' | 'help' }) {
+function CenterHub({ className = '', loadout, view }: { className?: string; loadout: CharacterLoadout; view: 'dashboard' | 'skills' | 'store' | 'help' | 'settings' }) {
   if (view === 'skills') {
     return (
       <main className={`col-start-2 px-6 py-5 min-h-0 flex flex-col ${className}`}>
@@ -1204,6 +1205,9 @@ function CenterHub({ className = '', loadout, view }: { className?: string; load
     return <StoreView className={className} />;
   }
   if (view === 'help') {
+    return <HelpView className={className} />;
+  }
+  if (view === 'settings') {
     return <SettingsView className={className} />;
   }
   return (
@@ -1347,36 +1351,34 @@ function ProductCard({ product }: { product: ShopifyProduct }) {
   );
 }
 
-// --- Settings (repurposed Help) View ---
+// --- Settings View ---
 function SettingsView({ className='' }: { className?: string }) {
+  const version = (typeof window !== 'undefined' && (window as any).__AF_ENV?.buildHash)
+    ? (window as any).__AF_ENV.buildHash
+    : APP_VERSION_FALLBACK;
   return (
     <main className={`col-start-2 px-6 py-5 min-h-0 flex flex-col ${className}`}>
-  <div className="flex-1 rounded-3xl border border-white/10 bg-[#12171f] overflow-hidden p-6 space-y-8">
+      <div className="flex-1 rounded-3xl border border-white/10 bg-[#12171f] overflow-hidden p-6 space-y-8">
         <section>
           <h2 className="text-xl font-semibold mb-2">Settings</h2>
-          <p className="text-sm opacity-80 leading-relaxed">Configure your experience. (Prototype – values not persisted yet.)</p>
+          <p className="text-sm opacity-80 leading-relaxed">Configure your experience. (Prototype – values may not persist yet.)</p>
         </section>
         <section className="space-y-4">
           <div className="rounded-xl border border-white/10 bg-white/5 p-4 flex flex-col gap-3">
             <div className="text-sm font-semibold tracking-wide">Audio</div>
-            <div className="flex items-center justify-between text-xs">
-              <span className="opacity-70">Master Volume</span>
-              <input type="range" min={0} max={100} defaultValue={70} className="w-40" />
-            </div>
-            <div className="flex items-center justify-between text-xs">
-              <span className="opacity-70">Music Volume</span>
-              <input type="range" min={0} max={100} defaultValue={55} className="w-40" />
-            </div>
+            <div className="flex items-center justify-between text-xs"><span>Master Volume</span><input aria-label="Master Volume" type="range" min={0} max={100} defaultValue={80} /></div>
+            <div className="flex items-center justify-between text-xs"><span>Music</span><input aria-label="Music Volume" type="range" min={0} max={100} defaultValue={60} /></div>
           </div>
           <div className="rounded-xl border border-white/10 bg-white/5 p-4 flex flex-col gap-3">
             <div className="text-sm font-semibold tracking-wide">Graphics</div>
             <div className="flex items-center justify-between text-xs">
-              <span className="opacity-70">Quality</span>
-              <select className="bg-[#1b222c] border border-white/10 rounded px-2 py-1 text-xs"><option>Auto</option><option>Low</option><option>Medium</option><option>High</option></select>
-            </div>
-            <div className="flex items-center justify-between text-xs">
-              <span className="opacity-70">Show FPS</span>
-              <input type="checkbox" />
+              <span>Quality</span>
+              <select className="bg-transparent border border-white/20 rounded px-2 py-1 text-xs">
+                <option>Auto</option>
+                <option>Low</option>
+                <option>Medium</option>
+                <option>High</option>
+              </select>
             </div>
           </div>
           <div className="rounded-xl border border-white/10 bg-white/5 p-4 flex flex-col gap-3">
@@ -1384,6 +1386,41 @@ function SettingsView({ className='' }: { className?: string }) {
             <div className="text-xs opacity-70">More account controls coming soon.</div>
           </div>
         </section>
+        <div className="mt-8 text-[4pt] leading-none opacity-60 select-text">{version}</div>
+      </div>
+    </main>
+  );
+}
+
+// --- Help View ---
+function HelpView({ className='' }: { className?: string }) {
+  return (
+    <main className={`col-start-2 px-6 py-5 min-h-0 flex flex-col ${className}`}>
+      <div className="flex-1 rounded-3xl border border-white/10 bg-[#12171f] overflow-hidden p-0">
+        <div className="relative h-48 sm:h-56 md:h-64 bg-gradient-to-r from-emerald-600/30 via-sky-600/20 to-indigo-600/20 border-b border-white/10">
+          <div className="absolute inset-0 bg-[radial-gradient(ellipse_at_top_left,rgba(16,185,129,0.25),transparent_60%)]" />
+          <div className="absolute bottom-4 left-6">
+            <h2 className="text-2xl md:text-3xl font-semibold">How to Play</h2>
+            <div className="text-xs opacity-80">A quick visual guide to get you started</div>
+          </div>
+        </div>
+        <div className="p-6 grid gap-4 md:gap-6" style={{gridTemplateColumns:'repeat(auto-fit,minmax(220px,1fr))'}}>
+          {[
+            { title: 'Choose Your Faction', desc: 'Pick PAA, ASF, or WC — each with unique strengths and lore.', icon: '🏳️' },
+            { title: 'Select Archetype', desc: 'Male or Female hero. Your archetype sets your starting presence.', icon: '🧍' },
+            { title: 'Customize Avatar', desc: 'Tweak parts and colors. Save to lock in your hero.', icon: '🎨' },
+            { title: 'Unlock Skills', desc: 'Spend points along branches to unlock combat and utility perks.', icon: '🌿' },
+            { title: 'Enter Missions', desc: 'Single-player for now. Multiplayer coming soon.', icon: '🎯' },
+            { title: 'Earn & Progress', desc: 'Level up and expand your build over time.', icon: '⬆️' },
+          ].map((s, i) => (
+            <div key={i} className="rounded-2xl border border-white/10 bg-white/[0.04] p-5 flex flex-col gap-3">
+              <div className="text-2xl select-none">{s.icon}</div>
+              <div className="text-sm font-semibold tracking-wide">{s.title}</div>
+              <div className="text-xs opacity-75 leading-relaxed">{s.desc}</div>
+              <div className="mt-2 h-24 rounded-lg bg-gradient-to-br from-black/10 to-white/5 border border-white/10 flex items-center justify-center text-[10px] opacity-60">Illustration</div>
+            </div>
+          ))}
+        </div>
       </div>
     </main>
   );
@@ -1529,59 +1566,32 @@ function CharacterCreator({ onSave, onBack, initial, locked }: { onSave: (payloa
                 onClick={() => setTab(t)}
                 className={`px-4 py-2 rounded-xl text-sm border transition
                   ${tab === t ? 'bg-emerald-600/30 text-emerald-200 border-emerald-500/60 shadow-inner' : 'bg-white/5 border-white/10 hover:bg-white/10 text-gray-300'}`}
-              >{t}</button>
+              >
+                {t}
+              </button>
             ))}
           </div>
-          {/* Single centered row of limited items (no scroll) */}
-          <div className="flex-1 px-8 pt-6 pb-20 flex items-start justify-center w-full">
+          <div className="px-8 pb-4">
             {tab === 'Colors' ? (
-              <div className="w-full max-w-5xl grid gap-6" style={{gridTemplateColumns:'repeat(auto-fit,minmax(180px,1fr))'}}>
-                {([
-                  { key: 'primary', label: 'Primary' },
-                  { key: 'secondary', label: 'Secondary' },
-                  { key: 'skin', label: 'Skin Tone' },
-                ] as const).map(c => (
-                  <div key={c.key} className="rounded-2xl border border-white/10 bg-gradient-to-br from-white/5 to-white/[0.02] p-5 flex flex-col items-center gap-4 relative overflow-hidden">
-                    <div className="absolute inset-0 pointer-events-none bg-[radial-gradient(circle_at_30%_30%,rgba(16,185,129,0.08),transparent_60%)]" />
-                    <div className="text-sm font-medium tracking-wide relative z-10">{c.label}</div>
-                    <div className="relative z-10 flex flex-col items-center gap-3">
-                      <input
-                        aria-label={c.label}
-                        type="color"
-                        value={colorState[c.key]}
-                        onChange={e => setColorState(s => ({ ...s, [c.key]: e.target.value }))}
-                        className="w-20 h-20 md:w-24 md:h-24 rounded-2xl cursor-pointer border border-white/20 bg-[#0f141a] p-1 shadow-inner shadow-black/40"
-                      />
-                      <div className="text-[11px] opacity-70 font-mono tracking-wide select-all">{colorState[c.key]}</div>
-                    </div>
-                  </div>
+              <div className="flex gap-3 justify-center items-center">
+                {[
+                  { primary:'#00A37A', secondary:'#F5F5F5', skin:'#c58b66' },
+                  { primary:'#a855f7', secondary:'#0f172a', skin:'#d19d74' },
+                  { primary:'#ef4444', secondary:'#111827', skin:'#c58b66' },
+                  { primary:'#10b981', secondary:'#0f172a', skin:'#c58b66' },
+                ].map((p,i) => (
+                  <button
+                    key={i}
+                    onClick={()=>setColorState(p)}
+                    className="group w-14 h-14 rounded-lg border border-white/10 overflow-hidden relative flex"
+                    title="Apply palette"
+                  >
+                    <div className="flex-1 h-full" style={{background:p.primary}} />
+                    <div className="flex-1 h-full" style={{background:p.secondary}} />
+                    <div className="flex-1 h-full" style={{background:p.skin}} />
+                    <div className="absolute inset-0 opacity-0 group-hover:opacity-100 transition text-[9px] font-semibold tracking-wide flex items-center justify-center bg-black/50 text-white">Use</div>
+                  </button>
                 ))}
-                {/* Quick palettes fits into grid as its own card */}
-                <div className="rounded-2xl border border-white/10 bg-white/5 p-4 flex flex-col gap-3">
-                  <div className="text-xs uppercase tracking-wider opacity-60">Quick Palettes</div>
-                  <div className="flex flex-wrap gap-2">
-                    {[
-                      { primary:'#00A37A', secondary:'#F5F5F5', skin:'#c58b66' },
-                      { primary:'#d97706', secondary:'#111827', skin:'#b0734e' },
-                      { primary:'#3b82f6', secondary:'#1e293b', skin:'#c58b66' },
-                      { primary:'#a855f7', secondary:'#0f172a', skin:'#d19d74' },
-                      { primary:'#ef4444', secondary:'#111827', skin:'#c58b66' },
-                      { primary:'#10b981', secondary:'#0f172a', skin:'#c58b66' },
-                    ].map((p,i) => (
-                      <button
-                        key={i}
-                        onClick={()=>setColorState(p)}
-                        className="group w-14 h-14 rounded-lg border border-white/10 overflow-hidden relative flex"
-                        title="Apply palette"
-                      >
-                        <div className="flex-1 h-full" style={{background:p.primary}} />
-                        <div className="flex-1 h-full" style={{background:p.secondary}} />
-                        <div className="flex-1 h-full" style={{background:p.skin}} />
-                        <div className="absolute inset-0 opacity-0 group-hover:opacity-100 transition text-[9px] font-semibold tracking-wide flex items-center justify-center bg-black/50 text-white">Use</div>
-                      </button>
-                    ))}
-                  </div>
-                </div>
               </div>
             ) : (
               <div className="relative flex gap-4 overflow-x-auto no-scrollbar py-2 px-1 items-stretch scroll-smooth snap-x snap-mandatory group" id="variant-row">
