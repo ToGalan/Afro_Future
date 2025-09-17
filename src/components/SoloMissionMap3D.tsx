@@ -902,8 +902,8 @@ export default function SoloMissionMap3D() {
         <div className="rounded border border-white/60 bg-white/70 px-2 py-1 text-gray-800">Tile: {hover ? hover.type : '--'} | Resource: {hover?.resource ?? 'None'}</div>
   <div className="rounded border border-white/60 bg-white/70 px-2 py-1 text-gray-800">Moves: disabled</div>
   <div className="rounded border border-white/60 bg-white/70 px-2 py-1 text-gray-800 text-right">Map: 96x144</div>
-  <div className="rounded border border-white/60 bg-white/70 px-2 py-1 text-gray-800 col-span-4">Profile: {profileLoading ? 'Loading...' : (profile ? profile.uid.slice(0,8) : 'anon-failed')}</div>
-  <div className="rounded border border-white/60 bg-white/70 px-2 py-1 text-gray-800 col-span-4">Session: {session ? session.sessionId : '...'} | {sessionSyncing ? 'Syncing' : 'Idle'} {sessionLastSync ? `(last ${Math.round((Date.now()-sessionLastSync)/1000)}s)` : ''}</div>
+  {/* Profile debug line removed (was showing anon-failed) */}
+  {/* Session debug line removed */}
   {/* FOV toggle removed (always on) */}
   <div className="rounded border border-white/60 bg-white/70 px-2 py-1 text-gray-800 col-span-4 flex gap-2">
     <span className="inline-flex items-center gap-1"><span className="w-3 h-3 inline-block bg-yellow-300/70" /> Hero FOV</span>
@@ -1000,7 +1000,7 @@ function MapCameraController({ bounds, gameMode, heroWorld, recenterSignal }: { 
   const altDragging = React.useRef(false); // middle/right
   const lastMouse = React.useRef({ x: 0, y: 0 });
   const threshold = 24; // px edge region
-  const baseSpeed = 35; // further reduced (additional 50%) edge pan speed
+  const baseSpeed = 17.5; // halved for slower edge pan
   // Keyboard panning disabled (camera fixed except mouse drag / edge)
   const velocity = React.useRef(new THREE.Vector3()); // world-space velocity applied to target
   const lastMoveFrame = React.useRef(0);
@@ -1058,7 +1058,7 @@ function MapCameraController({ bounds, gameMode, heroWorld, recenterSignal }: { 
           const off = offsetRef.current;
           const forward = new THREE.Vector3(-off.x, 0, -off.z).normalize();
           const right = new THREE.Vector3().crossVectors(forward, new THREE.Vector3(0,1,0)).normalize();
-          const pixelScale = 0.02 * off.length() / 45; // 50% slower drag scaling
+          const pixelScale = 0.01 * off.length() / 45; // halved drag scaling
           const move = new THREE.Vector3();
           // Mouse drag: moving mouse right should move camera right (so world target left)
           move.addScaledVector(right, -dx * pixelScale);
