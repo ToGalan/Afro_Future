@@ -1,7 +1,7 @@
 import { initializeApp, getApps } from 'firebase/app';
 import { getAuth, signInAnonymously, onAuthStateChanged } from 'firebase/auth';
 import { getFirestore } from 'firebase/firestore';
-import { getDatabase, ref as rtdbRef, onDisconnect, update as rtdbUpdate, set as rtdbSet } from 'firebase/database';
+import { getDatabase, ref as rtdbRef, onDisconnect, update as rtdbUpdate, set as rtdbSet, remove as rtdbRemove } from 'firebase/database';
 // Environment-driven config (Vite exposes import.meta.env)
 const firebaseConfig = {
     apiKey: import.meta.env.VITE_FIREBASE_API_KEY,
@@ -12,6 +12,35 @@ const firebaseConfig = {
     appId: import.meta.env.VITE_FIREBASE_APP_ID,
     databaseURL: import.meta.env.VITE_FIREBASE_DATABASE_URL,
 };
+// Dev-time validation to surface missing/placeholder keys early
+if (import.meta.env.DEV) {
+    const missing = [];
+    ['apiKey', 'authDomain', 'projectId', 'storageBucket', 'messagingSenderId', 'appId', 'databaseURL'].forEach(k => {
+        // @ts-ignore
+        if (!firebaseConfig[k])
+            missing.push(k);
+    });
+    if (missing.length) {
+        // eslint-disable-next-line no-console
+        console.warn('[firebase] Missing config keys:', missing.join(', '));
+    }
+}
+// In production, log a minimal, redacted summary once to help diagnose misconfiguration without leaking secrets
+if (import.meta.env.PROD) {
+    try {
+        const ak = (firebaseConfig.apiKey || '').slice(-4);
+        // eslint-disable-next-line no-console
+        console.warn('[firebase] runtime config check:', {
+            apiKeyEndsWith: ak || 'none',
+            projectId: firebaseConfig.projectId || 'none',
+            authDomain: firebaseConfig.authDomain || 'none',
+            databaseURLPresent: !!firebaseConfig.databaseURL,
+        });
+    }
+    catch {
+        // ignore
+    }
+}
 let app;
 if (!getApps().length) {
     app = initializeApp(firebaseConfig);
@@ -27,6 +56,7 @@ export const rtdbHelpers = {
     onDisconnect,
     update: rtdbUpdate,
     set: rtdbSet,
+    remove: rtdbRemove,
 };
 export async function ensureAnonAuth() {
     if (auth.currentUser)

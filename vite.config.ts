@@ -8,4 +8,9 @@ export default defineConfig({
     strictPort: true,
     host: true,
   },
+  preview: {
+    port: 1002,
+    strictPort: true,
+    host: true,
+  },
 });

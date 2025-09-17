@@ -22,13 +22,13 @@ export function useAccountAuth(): AccountAuthState {
 
   useEffect(() => {
     const unsub = onAuthStateChanged(auth, u => { setUser(u); setLoading(false); });
-    // Ensure at least anonymous user exists
-    ensureAnonAuth().catch(e => setError(e.message));
+    // Do not force anonymous sign-in on mount; some environments disable it.
+    // The flow will proceed when user clicks Google sign-in or another provider.
     return () => unsub();
   }, []);
 
   const linkWithGoogle = useCallback(async () => {
-    if (!auth.currentUser) await ensureAnonAuth();
+  // If no user, Firebase will create one as part of link flow, but we avoid forcing anonymous sign-in.
     try {
       setError(null);
       const provider = new GoogleAuthProvider();

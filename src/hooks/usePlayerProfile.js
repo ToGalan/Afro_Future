@@ -1,6 +1,6 @@
 import { useEffect, useState, useCallback, useRef } from 'react';
 import { useSkillStore } from '../store/skillStore';
-import { auth, db, ensureAnonAuth } from '../services/firebase';
+import { auth, db, ensureAnonAuth, rtdb, rtdbHelpers } from '../services/firebase';
 import { doc, getDoc, setDoc, serverTimestamp } from 'firebase/firestore';
 function mergeProgress(base, partial) {
     return {
@@ -91,6 +91,11 @@ export function usePlayerProfile(opts = {}) {
                     if (!existing.exists()) {
                         await setDoc(newRef, { progress: oldData, migratedFrom: profile.uid, createdAt: serverTimestamp(), updatedAt: serverTimestamp() }, { merge: true });
                     }
+                    // Remove old anonymous sessions tree
+                    try {
+                        await rtdbHelpers.remove(rtdbHelpers.ref(rtdb, `sessions/${profile.uid}`));
+                    }
+                    catch { }
                     setProfile(p => p ? { ...p, uid: newUid } : p);
                 })();
             }

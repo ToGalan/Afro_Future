@@ -633,6 +633,16 @@ function AuthGate({ onSignedIn }: { onSignedIn: (token:string)=>void }) {
     setMode('loading');
     try {
       console.log('[auth] initializing GIS with client id', cid);
+      // Ensure GIS is initialized once before rendering the button to avoid race warnings
+      await initGoogleIdentity(cid, (resp:any)=>{
+        try {
+          const token = resp?.credential;
+          if (token) {
+            console.log('[auth] GIS credential received, proceeding');
+            onSignedIn(token);
+          }
+        } catch (e) { console.warn('[auth] credential handling failed', e); }
+      });
       // Wait for container to exist (retry up to ~500ms)
       let attempts = 0;
       while(!buttonContainerRef.current && attempts < 10){

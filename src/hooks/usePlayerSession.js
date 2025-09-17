@@ -36,14 +36,21 @@ export function usePlayerSession() {
                     connected: true,
                     startedAt: Date.now(),
                 };
-                await rtdbHelpers.set(sessionRef, {
-                    ...initial,
-                    // Enhanced metadata if non-anonymous
-                    isAnonymous: !!user.isAnonymous,
-                    displayName: user.displayName || user.email || null,
-                    email: user.email || null,
-                    providerData,
-                });
+                try {
+                    await rtdbHelpers.set(sessionRef, {
+                        ...initial,
+                        // Enhanced metadata if non-anonymous
+                        isAnonymous: !!user.isAnonymous,
+                        displayName: user.displayName || user.email || null,
+                        email: user.email || null,
+                        providerData,
+                    });
+                }
+                catch (err) {
+                    // eslint-disable-next-line no-console
+                    console.error('[session:init] RTDB set failed', err?.code, err?.message, err);
+                    throw err;
+                }
                 // Presence teardown using onDisconnect
                 const connRef = rtdbHelpers.ref(rtdb, `${basePath}/connected`);
                 const lastActiveRef = rtdbHelpers.ref(rtdb, `${basePath}/lastActive`);
@@ -85,6 +92,8 @@ export function usePlayerSession() {
         const u = auth.currentUser;
         if (!u || u.isAnonymous)
             return;
+        if (session.providerData && Array.isArray(session.providerData) && session.providerData.length > 0)
+            return; // already enriched
         // Push provider enriched data once
         const providerData = (u.providerData || []).map(p => ({ providerId: p.providerId, uid: p.uid, email: p.email, displayName: p.displayName }));
         const sessionRef = rtdbHelpers.ref(rtdb, `sessions/${session.uid}/${session.sessionId}`);
@@ -94,7 +103,10 @@ export function usePlayerSession() {
             isAnonymous: false,
             providerData,
             upgradedAt: Date.now(),
-        }).catch(() => { });
+        }).catch(err => {
+            // eslint-disable-next-line no-console
+            console.error('[session:upgrade] update failed', err?.code, err?.message);
+        });
     }, [session?.uid, session?.sessionId]);
     const updateHeroPosition = useCallback((pos) => {
         if (!session || !sessionIdRef.current)
@@ -107,7 +119,11 @@ export function usePlayerSession() {
         const sessionRef = rtdbHelpers.ref(rtdb, `sessions/${session.uid}/${session.sessionId}`);
         rtdbHelpers.update(sessionRef, { heroPosition: pos, lastActive: now, connected: true })
             .then(() => { setLastSync(Date.now()); })
-            .catch(err => { setError(err.message || 'position update failed'); })
+            .catch(err => {
+            // eslint-disable-next-line no-console
+            console.error('[session:position] update failed', err?.code, err?.message);
+            setError(err.message || 'position update failed');
+        })
             .finally(() => setSyncing(false));
     }, [session]);
     return {

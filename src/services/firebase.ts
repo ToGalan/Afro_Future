@@ -27,6 +27,22 @@ if (import.meta.env.DEV) {
   }
 }
 
+// In production, log a minimal, redacted summary once to help diagnose misconfiguration without leaking secrets
+if (import.meta.env.PROD) {
+  try {
+    const ak = (firebaseConfig.apiKey || '').slice(-4);
+    // eslint-disable-next-line no-console
+    console.warn('[firebase] runtime config check:', {
+      apiKeyEndsWith: ak || 'none',
+      projectId: firebaseConfig.projectId || 'none',
+      authDomain: firebaseConfig.authDomain || 'none',
+      databaseURLPresent: !!firebaseConfig.databaseURL,
+    });
+  } catch {
+    // ignore
+  }
+}
+
 let app: FirebaseApp;
 if (!getApps().length) {
   app = initializeApp(firebaseConfig);
@@ -48,7 +64,22 @@ export const rtdbHelpers = {
 
 export async function ensureAnonAuth(): Promise<User> {
   if (auth.currentUser) return auth.currentUser;
-  await signInAnonymously(auth);
+  try {
+    await signInAnonymously(auth);
+  } catch (e: any) {
+    const code = e?.code || e?.message || '';
+    // If Anonymous is disabled on the project, avoid spamming 400s and just wait for a real sign-in (Google/email)
+    if (String(code).includes('operation-not-allowed') || String(code).toUpperCase().includes('OPERATION_NOT_ALLOWED')) {
+      // eslint-disable-next-line no-console
+      console.warn('[auth] Anonymous sign-in disabled. Waiting for non-anonymous user...');
+      return new Promise<User>((resolve, reject) => {
+        const unsub = onAuthStateChanged(auth, (u) => {
+          if (u) { unsub(); resolve(u); }
+        }, reject);
+      });
+    }
+    throw e;
+  }
   return new Promise<User>((resolve, reject) => {
     const unsub = onAuthStateChanged(auth, (u) => {
       if (u) { unsub(); resolve(u); }

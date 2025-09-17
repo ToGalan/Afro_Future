@@ -7,6 +7,9 @@
     "dev": "vite",
     "build": "tsc -b && vite build",
     "preview": "vite preview",
+    "preview:1002": "vite preview --port 1002 --strictPort",
+    "build:firebase": "npm run build",
+    "deploy:hosting": "firebase deploy --only hosting",
     "server": "node server.js",
     "dev:full": "concurrently \"vite\" \"node server.js\"",
     "typecheck": "tsc -p tsconfig.json --noEmit"
