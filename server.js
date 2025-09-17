@@ -6,6 +6,7 @@ import { WebSocketServer } from 'ws';
 import cors from 'cors';
 import fs from 'fs/promises';
 import path from 'path';
+import { fileURLToPath } from 'url';
 import zlib from 'zlib';
 import { promisify } from 'util';
 import { OAuth2Client } from 'google-auth-library';
@@ -342,7 +343,17 @@ wss.on('connection', (ws) => {
   });
 });
 
-const server = app.listen(PORT, () => console.log(`HTTP listening on :${PORT}`));
+// Explicitly bind to all interfaces (0.0.0.0) to avoid cases where binding only to IPv6/localhost
+const server = app.listen(PORT, '0.0.0.0', () => {
+  console.log(`HTTP listening on :${PORT}`);
+  try {
+    import('os').then(os => {
+      const ifaces = Object.values(os.networkInterfaces() || {}).flat().filter(Boolean);
+      const addrs = ifaces.map(i=>i.address).filter(a=>!a.includes('%'));
+      console.log('[listen:addrs]', addrs.slice(0,6).join(', '), addrs.length>6?`(+${addrs.length-6} more)`:'' );
+    }).catch(()=>{});
+  } catch {}
+});
 server.on('upgrade', (req, socket, head) => {
   if (req.url === '/signal') {
     wss.handleUpgrade(req, socket, head, (ws) => wss.emit('connection', ws, req));
@@ -353,7 +364,12 @@ server.on('upgrade', (req, socket, head) => {
 
 // Static serving for production build (after APIs and upgrade handlers are set)
 try {
-  const dist = path.join(process.cwd(), 'dist');
+  const __filename = fileURLToPath(import.meta.url);
+  const __dirname = path.dirname(__filename);
+  const dist = path.join(__dirname, 'dist');
   app.use(express.static(dist));
   app.get('*', (req, res) => res.sendFile(path.join(dist, 'index.html')));
-} catch {}
+  console.log('[static] serving dist from', dist);
+} catch (e) {
+  console.warn('[static] setup failed', e?.message || e);
+}
