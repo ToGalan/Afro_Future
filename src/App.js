@@ -1,5 +1,6 @@
 import { jsx as _jsx, jsxs as _jsxs, Fragment as _Fragment } from "react/jsx-runtime";
 import React, { useEffect, useState } from 'react';
+import { usePlayerProfile } from './hooks/usePlayerProfile';
 import { useSkillStore } from './store/skillStore';
 import { GROUP_ORDER, getVariantsByGroup } from './assets/threeParts';
 import AvatarScene from './components/AvatarScene';
@@ -11,10 +12,13 @@ import { CharacterPortrait, FactionIcon, ImageAssets, getCharacterPortrait, PetI
 import { joinRoom } from './services/realtimeClient';
 import { initCRDT, attachCRDTChannel, disposeCRDT } from './services/crdt';
 import { useCreatorStore } from './store/creatorStore';
-import { initGoogleIdentity, renderGoogleButton, getGoogleClientId } from './services/googleIdentity';
+import { renderGoogleButton, getGoogleClientId } from './services/googleIdentity';
 import { chromeSyncGet, chromeSyncSet, chromeSyncClear } from './services/chromeSync';
 import GoogleSignInButton from './components/auth/GoogleSignInButton';
 import SoloMissionMap3D from './components/SoloMissionMap3D';
+import DatabaseTestPanel from './components/DatabaseTestPanel';
+import PetPanel from './components/PetPanel';
+import { useAutoSyncSkills } from './hooks/useAutoSyncSkills';
 const APP_VERSION_FALLBACK = 'v0.2.3';
 const defaultLoadout = {
     id: uid('char'),
@@ -37,6 +41,8 @@ const defaultLoadout = {
     updatedAt: now(),
 };
 export default function App() {
+    // Auto-sync skill progress to persistent profile
+    useAutoSyncSkills(true);
     // Authentication gating: require Google sign-in before proceeding to normal boot sequence.
     const [idToken, setIdToken] = useState(() => localStorage.getItem('afrofuture.idToken'));
     const [phase, setPhase] = useState(!localStorage.getItem('afrofuture.idToken') ? 'auth' : 'boot');
@@ -581,7 +587,7 @@ export default function App() {
     return (mainView === 'mission' ? (_jsx(MissionScreen, { onExit: () => setMainView('dashboard') })) : (_jsx(GameViewport, { mode: "fit", children: _jsx(MainMenu, { playerName: playerName, accountLevel: accountLevel, loadout: activeLoadout ?? defaultLoadout, onCustomize: () => setPhase('creating'), heroLocked: heroLocked, view: mainView, onChangeView: setMainView, profile: profile, onSignOut: handleSignOut }) })));
 }
 function MissionScreen({ onExit }) {
-    return (_jsxs("div", { className: "fixed inset-0 bg-[#06080c] text-gray-100", children: [_jsxs("div", { className: "absolute top-0 left-0 right-0 h-12 px-4 flex items-center justify-between bg-black/40 backdrop-blur border-b border-white/10 z-10", children: [_jsx("div", { className: "text-sm opacity-80", children: "Solo Mission" }), _jsx("div", { className: "flex items-center gap-2", children: _jsx("button", { className: "h-8 px-3 rounded-lg bg-white/10 border border-white/15 hover:bg-white/15 text-sm", onClick: onExit, children: "Exit" }) })] }), _jsx("div", { className: "absolute inset-0 pt-12", children: _jsx(SoloMissionMap3D, {}) })] }));
+    return (_jsxs("div", { className: "fixed inset-0 bg-[#06080c] text-gray-100", children: [_jsxs("div", { className: "absolute top-0 left-0 right-0 h-12 px-4 flex items-center justify-between bg-black/40 backdrop-blur border-b border-white/10 z-20", children: [_jsx("div", { className: "text-sm opacity-80", children: "Solo Mission" }), _jsx("div", { className: "flex items-center gap-3", children: _jsx("button", { className: "h-8 px-3 rounded-lg bg-white/10 border border-white/15 hover:bg-white/15 text-sm", onClick: onExit, children: "Exit" }) })] }), _jsxs("div", { className: "absolute inset-0 pt-12", children: [_jsx(SoloMissionMap3D, {}), _jsx(PetPanel, {}), import.meta.env.DEV && _jsx(React.Suspense, { fallback: null, children: _jsx("div", { children: _jsx(DatabaseTestPanel, {}) }) })] })] }));
 }
 function GameViewport({ children, mode = 'fixed', allowUpscale = true, minScale = 0.5, maxScale = 2, designWidth = 1920, designHeight = 1080 }) {
     const DESIGN_W = designWidth;
@@ -650,11 +656,6 @@ function AuthGate({ onSignedIn }) {
         setMode('loading');
         try {
             console.log('[auth] initializing GIS with client id', cid);
-            await initGoogleIdentity(cid, (resp) => {
-                console.log('[auth] credential callback fired', resp?.select_by);
-                if (resp.credential)
-                    onSignedIn(resp.credential);
-            });
             // Wait for container to exist (retry up to ~500ms)
             let attempts = 0;
             while (!buttonContainerRef.current && attempts < 10) {
@@ -1019,6 +1020,7 @@ function RightStartPanel({ className = '' }) {
 }
 // RightStartPanel removed – functionality merged into LeftPlayerPanel
 function CharacterCreator({ onSave, onBack, initial, locked }) {
+    const { saveProgress } = usePlayerProfile();
     // Dynamic tabs derived from 3D asset mapping
     const [tab, setTab] = useState(GROUP_ORDER[0]);
     const tabs = [...GROUP_ORDER, 'Colors'];
@@ -1077,9 +1079,11 @@ function CharacterCreator({ onSave, onBack, initial, locked }) {
         const payload = locked ?
             { ...base, threeConfig, updatedAt: now() } :
             { ...base, threeConfig, id: uid('char'), createdAt: base.createdAt, updatedAt: now() };
+        // Persist avatar config to profile progress
+        saveProgress({ avatar: { parts: { ...picked }, colors: { ...colorState }, updatedAt: Date.now() } });
         onSave(payload);
     }
-    return (_jsxs("div", { className: "w-full h-full bg-[#0b0e13] text-gray-100 relative flex flex-col", children: [_jsx("div", { className: "absolute top-4 left-6 flex items-center gap-2 z-10", children: _jsx(Button, { variant: "ghost", onClick: onBack, children: "Back" }) }), _jsxs("div", { className: "flex-1 flex flex-col", children: [_jsx("div", { className: "flex-1 flex items-center justify-center px-8 py-8", children: _jsxs("div", { className: "relative w-full h-full max-h-[55vh] rounded-[32px] bg-[#12171f] border border-white/10 shadow-2xl overflow-hidden flex items-center justify-center", children: [_jsx("div", { className: "absolute inset-0 bg-gradient-to-tr from-emerald-500/5 via-transparent to-sky-500/5 pointer-events-none" }), _jsxs("div", { className: "absolute inset-0", children: [_jsx(AvatarScene, { parts: picked, colors: colorState, debugTint: false, animPaused: animPaused, animSpeed: animSpeed, 
+    return (_jsxs("div", { className: "w-full h-full bg-[#0b0e13] text-gray-100 relative flex flex-col", children: [_jsx("div", { className: "absolute top-4 left-6 flex items-center gap-2 z-10", children: _jsx(Button, { variant: "ghost", onClick: onBack, children: "Back" }) }), _jsxs("div", { className: "flex-1 flex flex-col", children: [_jsx("div", { className: "flex-1 flex items-center justify-center px-8 py-8", children: _jsxs("div", { className: "relative w-full h-full max-h-[55vh] rounded-[32px] bg-[#12171f] border border-white/10 shadow-2xl overflow-hidden flex items-center justify-center mx-auto", children: [_jsx("div", { className: "absolute inset-0 bg-gradient-to-tr from-emerald-500/5 via-transparent to-sky-500/5 pointer-events-none" }), _jsxs("div", { className: "absolute inset-0", children: [_jsx(AvatarScene, { parts: picked, colors: colorState, debugTint: false, animPaused: animPaused, animSpeed: animSpeed, 
                                             // Reduce overall avatar size by 20%
                                             modelScale: 0.8, modelOffset: [0, -0.25, 0] }), _jsxs("div", { className: "absolute top-3 left-3 flex items-center gap-2 bg-black/40 backdrop-blur-sm px-3 py-2 rounded-xl border border-white/10 text-[11px]", children: [_jsx("button", { onClick: () => setAnimPaused(p => !p), className: "px-2 py-1 rounded bg-white/10 hover:bg-white/15 border border-white/10", children: animPaused ? 'Play' : 'Pause' }), _jsxs("div", { className: "flex items-center gap-1", children: [_jsx("span", { className: "opacity-60", children: "Speed" }), _jsx("input", { type: "range", min: 0.25, max: 1.5, step: 0.05, value: animSpeed, onChange: e => setAnimSpeed(parseFloat(e.target.value)), className: "w-24" }), _jsxs("span", { className: "tabular-nums w-8 text-right", children: [animSpeed.toFixed(2), "x"] })] })] })] }), _jsx("div", { className: "absolute bottom-4 right-4 text-[11px] px-2 py-1 rounded bg-white/5 border border-white/10 uppercase tracking-wide", children: "Preview 3D" })] }) }), _jsxs("div", { className: "w-full bg-[#12171f]/95 backdrop-blur-sm border-t border-white/10 flex flex-col max-h-[45vh]", children: [_jsx("div", { className: "px-8 pt-4 flex flex-wrap justify-center gap-2", children: tabs.map((t) => (_jsx("button", { onClick: () => setTab(t), className: `px-4 py-2 rounded-xl text-sm border transition
                   ${tab === t ? 'bg-emerald-600/30 text-emerald-200 border-emerald-500/60 shadow-inner' : 'bg-white/5 border-white/10 hover:bg-white/10 text-gray-300'}`, children: t }, t))) }), _jsx("div", { className: "px-8 pb-4", children: tab === 'Colors' ? (_jsx("div", { className: "flex gap-3 justify-center items-center", children: [

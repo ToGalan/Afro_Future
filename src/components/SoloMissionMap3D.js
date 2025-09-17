@@ -1,5 +1,7 @@
 import { jsx as _jsx, jsxs as _jsxs } from "react/jsx-runtime";
 import React, { useMemo, useState, useEffect } from 'react';
+import { usePlayerProfile } from '../hooks/usePlayerProfile';
+import { usePlayerSession } from '../hooks/usePlayerSession';
 import * as THREE from 'three';
 import { Canvas, useThree, useFrame } from '@react-three/fiber';
 import { Text, Sky, ContactShadows } from '@react-three/drei';
@@ -549,6 +551,9 @@ export default function SoloMissionMap3D() {
         assignResources(t);
         return t;
     }, []);
+    // Player profile (anonymous auth + progress)
+    const { profile, loading: profileLoading, saveProgress } = usePlayerProfile();
+    const { session, updateHeroPosition, syncing: sessionSyncing, lastSync: sessionLastSync } = usePlayerSession();
     // Compute approximate center axial coordinate by averaging q,r
     const centerAxial = useMemo(() => {
         if (tiles.length === 0)
@@ -571,6 +576,12 @@ export default function SoloMissionMap3D() {
     }, [tiles]);
     // Demo actors (player + pet) with different vision ranges
     const [hero, setHero] = useState({ id: 'hero', pos: centerAxial, vision: 6, kind: 'actor' });
+    // When profile loads, adopt stored hero position if present
+    useEffect(() => {
+        if (profile && profile.progress?.heroPosition) {
+            setHero(h => ({ ...h, pos: profile.progress.heroPosition }));
+        }
+    }, [profile]);
     // Place pet offset from hero (one ring out) but inside bounds
     const [pet, setPet] = useState({ id: 'pet', pos: { q: centerAxial.q + 4, r: centerAxial.r - 1 }, vision: 3, kind: 'pet' });
     // FOV always on now; removed toggle state
@@ -622,6 +633,30 @@ export default function SoloMissionMap3D() {
         });
     }, [hero.pos, hero.vision]);
     const heroVisible = useMemo(() => computeVisibleSet(tiles, hero.pos, hero.vision), [tiles, hero]);
+    // Explore accumulation (union of all heroVisible over time)
+    const exploredRef = React.useRef(new Set());
+    // Seed from profile once when profile loads
+    useEffect(() => {
+        if (profile?.progress?.explored && exploredRef.current.size === 0) {
+            for (const k of profile.progress.explored)
+                exploredRef.current.add(k);
+        }
+    }, [profile]);
+    useEffect(() => {
+        let changed = false;
+        heroVisible.forEach((tileKey) => {
+            if (!exploredRef.current.has(tileKey)) {
+                exploredRef.current.add(tileKey);
+                changed = true;
+            }
+        });
+        if (!changed)
+            return; // nothing new this visibility frame
+        const to = setTimeout(() => {
+            saveProgress({ explored: Array.from(exploredRef.current) });
+        }, 800);
+        return () => clearTimeout(to);
+    }, [heroVisible, saveProgress]);
     const petVisible = useMemo(() => computeVisibleSet(tiles, pet.pos, pet.vision), [tiles, pet]);
     // World position of hero (for camera recentering)
     const heroWorld = useMemo(() => axialToWorld(hero.pos, hexSize), [hero.pos, hexSize]);
@@ -743,16 +778,21 @@ export default function SoloMissionMap3D() {
                 const tile = tilesByKey.get(`${clamped.q},${clamped.r}`);
                 if (!passable(tile))
                     return h;
-                return { ...h, pos: clamped };
+                const next = { ...h, pos: clamped };
+                // Persist hero position (Firestore progress)
+                saveProgress({ heroPosition: clamped });
+                // Realtime session update (throttled inside usePlayerSession)
+                updateHeroPosition(clamped);
+                return next;
             });
         }
         window.addEventListener('keydown', onKey);
         return () => window.removeEventListener('keydown', onKey);
-    }, [tilesByKey]);
+    }, [tilesByKey, saveProgress]);
     // endTurn logic removed (turn system disabled)
     // Keyboard hex movement (pointy axial layout with q,r; adapt to 6 neighbors)
     // Keyboard disabled for now
-    return (_jsxs("div", { className: "relative w-screen h-screen bg-[#c9efff] text-gray-900 overflow-hidden", children: [_jsxs("div", { className: "absolute top-2 left-2 z-10 text-xs grid grid-cols-4 gap-2 max-w-[90vw]", children: [_jsxs("div", { className: "rounded border border-white/60 bg-white/70 px-2 py-1 text-gray-800", children: ["Hover Tile: ", hover ? `${hover.q},${hover.r}` : '---'] }), _jsxs("div", { className: "rounded border border-white/60 bg-white/70 px-2 py-1 text-gray-800", children: ["Tile: ", hover ? hover.type : '--', " | Resource: ", hover?.resource ?? 'None'] }), _jsx("div", { className: "rounded border border-white/60 bg-white/70 px-2 py-1 text-gray-800", children: "Moves: disabled" }), _jsx("div", { className: "rounded border border-white/60 bg-white/70 px-2 py-1 text-gray-800 text-right", children: "Map: 96x144" }), _jsxs("div", { className: "rounded border border-white/60 bg-white/70 px-2 py-1 text-gray-800 col-span-4 flex gap-2", children: [_jsxs("span", { className: "inline-flex items-center gap-1", children: [_jsx("span", { className: "w-3 h-3 inline-block bg-yellow-300/70" }), " Hero FOV"] }), _jsxs("span", { className: "inline-flex items-center gap-1", children: [_jsx("span", { className: "w-3 h-3 inline-block bg-sky-400/70" }), " Pet FOV"] }), _jsxs("span", { className: "inline-flex items-center gap-1", children: [_jsx("span", { className: "w-3 h-3 inline-block bg-fuchsia-400/70" }), " Both"] })] })] }), _jsx("div", { className: "absolute inset-0 select-none", children: _jsxs(Canvas, { shadows: true, camera: { position: [14, 16, 14], fov: 45 }, children: [_jsx(MapCameraController, { bounds: mapBounds, gameMode: true, heroWorld: heroWorld, recenterSignal: recenterSignal }), _jsx(SceneBridge, { outerRadius: hexSize, onReady: (caps) => { setRefMountains(!!caps.mountain); setRefTrees(!!caps.tree); setRefWater(!!caps.water); setRefHills(!!caps.hills); setRefDesert(!!caps.desert); } }), _jsx(Sky, { inclination: 0.6, azimuth: 0.25, sunPosition: [50, 50, 10], turbidity: 2, rayleigh: 0.7, mieCoefficient: 0.005, mieDirectionalG: 0.8 }), _jsx("hemisphereLight", { args: ["#bde0fe", "#e6f3ff", 0.8] }), _jsx("directionalLight", { position: [30, 40, 15], intensity: 0.7, castShadow: true, "shadow-mapSize-width": 2048, "shadow-mapSize-height": 2048 }), _jsxs("group", { position: [0, 0, 0], children: [tiles.map((t) => {
+    return (_jsxs("div", { className: "relative w-screen h-screen bg-[#c9efff] text-gray-900 overflow-hidden", children: [_jsxs("div", { className: "absolute top-2 left-2 z-10 text-xs grid grid-cols-4 gap-2 max-w-[90vw]", children: [_jsxs("div", { className: "rounded border border-white/60 bg-white/70 px-2 py-1 text-gray-800", children: ["Hover Tile: ", hover ? `${hover.q},${hover.r}` : '---'] }), _jsxs("div", { className: "rounded border border-white/60 bg-white/70 px-2 py-1 text-gray-800", children: ["Tile: ", hover ? hover.type : '--', " | Resource: ", hover?.resource ?? 'None'] }), _jsx("div", { className: "rounded border border-white/60 bg-white/70 px-2 py-1 text-gray-800", children: "Moves: disabled" }), _jsx("div", { className: "rounded border border-white/60 bg-white/70 px-2 py-1 text-gray-800 text-right", children: "Map: 96x144" }), _jsxs("div", { className: "rounded border border-white/60 bg-white/70 px-2 py-1 text-gray-800 col-span-4", children: ["Profile: ", profileLoading ? 'Loading...' : (profile ? profile.uid.slice(0, 8) : 'anon-failed')] }), _jsxs("div", { className: "rounded border border-white/60 bg-white/70 px-2 py-1 text-gray-800 col-span-4", children: ["Session: ", session ? session.sessionId : '...', " | ", sessionSyncing ? 'Syncing' : 'Idle', " ", sessionLastSync ? `(last ${Math.round((Date.now() - sessionLastSync) / 1000)}s)` : ''] }), _jsxs("div", { className: "rounded border border-white/60 bg-white/70 px-2 py-1 text-gray-800 col-span-4 flex gap-2", children: [_jsxs("span", { className: "inline-flex items-center gap-1", children: [_jsx("span", { className: "w-3 h-3 inline-block bg-yellow-300/70" }), " Hero FOV"] }), _jsxs("span", { className: "inline-flex items-center gap-1", children: [_jsx("span", { className: "w-3 h-3 inline-block bg-sky-400/70" }), " Pet FOV"] }), _jsxs("span", { className: "inline-flex items-center gap-1", children: [_jsx("span", { className: "w-3 h-3 inline-block bg-fuchsia-400/70" }), " Both"] })] })] }), _jsx("div", { className: "absolute inset-0 select-none", children: _jsxs(Canvas, { shadows: true, camera: { position: [14, 16, 14], fov: 45 }, children: [_jsx(MapCameraController, { bounds: mapBounds, gameMode: true, heroWorld: heroWorld, recenterSignal: recenterSignal }), _jsx(SceneBridge, { outerRadius: hexSize, onReady: (caps) => { setRefMountains(!!caps.mountain); setRefTrees(!!caps.tree); setRefWater(!!caps.water); setRefHills(!!caps.hills); setRefDesert(!!caps.desert); } }), _jsx(Sky, { inclination: 0.6, azimuth: 0.25, sunPosition: [50, 50, 10], turbidity: 2, rayleigh: 0.7, mieCoefficient: 0.005, mieDirectionalG: 0.8 }), _jsx("hemisphereLight", { args: ["#bde0fe", "#e6f3ff", 0.8] }), _jsx("directionalLight", { position: [30, 40, 15], intensity: 0.7, castShadow: true, "shadow-mapSize-width": 2048, "shadow-mapSize-height": 2048 }), _jsxs("group", { position: [0, 0, 0], children: [tiles.map((t) => {
                                     const { x, z } = axialToWorld(t, hexSize);
                                     const key = `${t.q},${t.r}`;
                                     const inHero = heroVisible.has(key);

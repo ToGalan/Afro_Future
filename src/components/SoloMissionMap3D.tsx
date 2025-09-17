@@ -1,4 +1,6 @@
 import React, { useMemo, useState, useEffect } from 'react';
+import { usePlayerProfile } from '../hooks/usePlayerProfile';
+import { usePlayerSession } from '../hooks/usePlayerSession';
 import type { Mesh } from 'three';
 import * as THREE from 'three';
 import { Canvas, useThree, useFrame } from '@react-three/fiber';
@@ -687,6 +689,9 @@ export default function SoloMissionMap3D() {
     assignResources(t);
     return t;
   }, []);
+  // Player profile (anonymous auth + progress)
+    const { profile, loading: profileLoading, saveProgress } = usePlayerProfile();
+  const { session, updateHeroPosition, syncing: sessionSyncing, lastSync: sessionLastSync } = usePlayerSession();
   // Compute approximate center axial coordinate by averaging q,r
   const centerAxial = useMemo(() => {
     if (tiles.length === 0) return { q: 0, r: 0 };
@@ -699,6 +704,12 @@ export default function SoloMissionMap3D() {
   }, [tiles]);
   // Demo actors (player + pet) with different vision ranges
   const [hero, setHero] = useState<Actor>({ id: 'hero', pos: centerAxial, vision: 6, kind: 'actor' });
+  // When profile loads, adopt stored hero position if present
+  useEffect(() => {
+    if (profile && profile.progress?.heroPosition) {
+      setHero(h => ({ ...h, pos: profile.progress.heroPosition }));
+    }
+  }, [profile]);
   // Place pet offset from hero (one ring out) but inside bounds
   const [pet, setPet] = useState<Actor>({ id: 'pet', pos: { q: centerAxial.q + 4, r: centerAxial.r - 1 }, vision: 3, kind: 'pet' });
   // FOV always on now; removed toggle state
@@ -748,6 +759,25 @@ export default function SoloMissionMap3D() {
   }, [hero.pos, hero.vision]);
 
   const heroVisible = useMemo(() => computeVisibleSet(tiles, hero.pos, hero.vision), [tiles, hero]);
+  // Explore accumulation (union of all heroVisible over time)
+  const exploredRef = React.useRef<Set<string>>(new Set());
+  // Seed from profile once when profile loads
+  useEffect(() => {
+    if (profile?.progress?.explored && exploredRef.current.size === 0) {
+      for (const k of profile.progress.explored) exploredRef.current.add(k);
+    }
+  }, [profile]);
+  useEffect(() => {
+    let changed = false;
+    heroVisible.forEach((tileKey: string) => {
+      if (!exploredRef.current.has(tileKey)) { exploredRef.current.add(tileKey); changed = true; }
+    });
+    if (!changed) return; // nothing new this visibility frame
+    const to = setTimeout(() => {
+      saveProgress({ explored: Array.from(exploredRef.current) });
+    }, 800);
+    return () => clearTimeout(to);
+  }, [heroVisible, saveProgress]);
   const petVisible = useMemo(() => computeVisibleSet(tiles, pet.pos, pet.vision), [tiles, pet]);
   // World position of hero (for camera recentering)
   const heroWorld = useMemo(() => axialToWorld(hero.pos, hexSize), [hero.pos, hexSize]);
@@ -848,12 +878,17 @@ export default function SoloMissionMap3D() {
         const clamped = clampAxial(targetRaw);
         const tile = tilesByKey.get(`${clamped.q},${clamped.r}`);
         if (!passable(tile)) return h;
-        return { ...h, pos: clamped };
+        const next = { ...h, pos: clamped };
+        // Persist hero position (Firestore progress)
+        saveProgress({ heroPosition: clamped });
+        // Realtime session update (throttled inside usePlayerSession)
+        updateHeroPosition(clamped);
+        return next;
       });
     }
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [tilesByKey]);
+  }, [tilesByKey, saveProgress]);
   // endTurn logic removed (turn system disabled)
 
   // Keyboard hex movement (pointy axial layout with q,r; adapt to 6 neighbors)
@@ -867,6 +902,8 @@ export default function SoloMissionMap3D() {
         <div className="rounded border border-white/60 bg-white/70 px-2 py-1 text-gray-800">Tile: {hover ? hover.type : '--'} | Resource: {hover?.resource ?? 'None'}</div>
   <div className="rounded border border-white/60 bg-white/70 px-2 py-1 text-gray-800">Moves: disabled</div>
   <div className="rounded border border-white/60 bg-white/70 px-2 py-1 text-gray-800 text-right">Map: 96x144</div>
+  <div className="rounded border border-white/60 bg-white/70 px-2 py-1 text-gray-800 col-span-4">Profile: {profileLoading ? 'Loading...' : (profile ? profile.uid.slice(0,8) : 'anon-failed')}</div>
+  <div className="rounded border border-white/60 bg-white/70 px-2 py-1 text-gray-800 col-span-4">Session: {session ? session.sessionId : '...'} | {sessionSyncing ? 'Syncing' : 'Idle'} {sessionLastSync ? `(last ${Math.round((Date.now()-sessionLastSync)/1000)}s)` : ''}</div>
   {/* FOV toggle removed (always on) */}
   <div className="rounded border border-white/60 bg-white/70 px-2 py-1 text-gray-800 col-span-4 flex gap-2">
     <span className="inline-flex items-center gap-1"><span className="w-3 h-3 inline-block bg-yellow-300/70" /> Hero FOV</span>

@@ -1,4 +1,5 @@
 import React, { useEffect, useState } from 'react';
+import { usePlayerProfile } from './hooks/usePlayerProfile';
 import { useSkillStore, availablePoints } from './store/skillStore';
 import { GROUP_ORDER, getVariantsByGroup } from './assets/threeParts';
 import AvatarScene from './components/AvatarScene';
@@ -14,6 +15,9 @@ import { initGoogleIdentity, renderGoogleButton, getGoogleClientId } from './ser
 import { chromeSyncGet, chromeSyncSet, chromeSyncClear } from './services/chromeSync';
 import GoogleSignInButton from './components/auth/GoogleSignInButton';
 import SoloMissionMap3D from './components/SoloMissionMap3D';
+import DatabaseTestPanel from './components/DatabaseTestPanel';
+import PetPanel from './components/PetPanel';
+import { useAutoSyncSkills } from './hooks/useAutoSyncSkills';
 // Runtime config shape
 interface RuntimeConfig { storeDomain: string | null; apiVersion: string; debug: boolean; buildHash?: string | null; }
 const APP_VERSION_FALLBACK = 'v0.2.3';
@@ -40,6 +44,8 @@ const defaultLoadout: CharacterLoadout = {
 };
 
 export default function App() {
+  // Auto-sync skill progress to persistent profile
+  useAutoSyncSkills(true);
   // Authentication gating: require Google sign-in before proceeding to normal boot sequence.
   const [idToken, setIdToken] = useState<string | null>(() => localStorage.getItem('afrofuture.idToken'));
   const [phase, setPhase] = useState<'auth' | 'boot' | 'onboard' | 'creating' | 'main'>(!localStorage.getItem('afrofuture.idToken') ? 'auth' : 'boot');
@@ -496,15 +502,23 @@ export default function App() {
 function MissionScreen({ onExit }: { onExit: () => void }){
   return (
     <div className="fixed inset-0 bg-[#06080c] text-gray-100">
-      {/* Minimal HUD */}
-      <div className="absolute top-0 left-0 right-0 h-12 px-4 flex items-center justify-between bg-black/40 backdrop-blur border-b border-white/10 z-10">
+      {/* HUD with account + exit */}
+      <div className="absolute top-0 left-0 right-0 h-12 px-4 flex items-center justify-between bg-black/40 backdrop-blur border-b border-white/10 z-20">
         <div className="text-sm opacity-80">Solo Mission</div>
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-3">
           <button className="h-8 px-3 rounded-lg bg-white/10 border border-white/15 hover:bg-white/15 text-sm" onClick={onExit}>Exit</button>
         </div>
       </div>
       <div className="absolute inset-0 pt-12">
         <SoloMissionMap3D />
+        <PetPanel />
+        {import.meta.env.DEV && <React.Suspense fallback={null}>
+          {/** Lightweight dev database smoke test */}
+          <div>
+            {/* Inline dynamic import avoided; component statically imported for simplicity */}
+            <DatabaseTestPanel />
+          </div>
+        </React.Suspense>}
       </div>
     </div>
   );
@@ -619,10 +633,6 @@ function AuthGate({ onSignedIn }: { onSignedIn: (token:string)=>void }) {
     setMode('loading');
     try {
       console.log('[auth] initializing GIS with client id', cid);
-      await initGoogleIdentity(cid, (resp:any)=>{ 
-        console.log('[auth] credential callback fired', resp?.select_by);
-        if(resp.credential) onSignedIn(resp.credential); 
-      });
       // Wait for container to exist (retry up to ~500ms)
       let attempts = 0;
       while(!buttonContainerRef.current && attempts < 10){
@@ -634,7 +644,7 @@ function AuthGate({ onSignedIn }: { onSignedIn: (token:string)=>void }) {
       } else {
         console.log('[auth] button container ready after attempts', attempts);
         buttonContainerRef.current.innerHTML='';
-        await renderGoogleButton(buttonContainerRef.current, {});
+        await renderGoogleButton(buttonContainerRef.current, { });
         console.log('[auth] GIS button rendered into container');
       }
       setMode('ready');
@@ -1548,6 +1558,7 @@ function RightStartPanel({ className = '' }: { className?: string }) {
 // RightStartPanel removed – functionality merged into LeftPlayerPanel
 
 function CharacterCreator({ onSave, onBack, initial, locked }: { onSave: (payload: CharacterLoadout) => void; onBack: () => void; initial?: CharacterLoadout; locked?: boolean; }) {
+  const { saveProgress } = usePlayerProfile();
   // Dynamic tabs derived from 3D asset mapping
   const [tab, setTab] = useState<string>(GROUP_ORDER[0]);
   const tabs: string[] = [...GROUP_ORDER, 'Colors'];
@@ -1605,6 +1616,8 @@ function CharacterCreator({ onSave, onBack, initial, locked }: { onSave: (payloa
     const payload: CharacterLoadout = locked ?
       { ...base, threeConfig, updatedAt: now() } :
       { ...base, threeConfig, id: uid('char'), createdAt: base.createdAt, updatedAt: now() };
+    // Persist avatar config to profile progress
+    saveProgress({ avatar: { parts: { ...picked }, colors: { ...colorState }, updatedAt: Date.now() } });
     onSave(payload);
   }
   return (
@@ -1615,7 +1628,7 @@ function CharacterCreator({ onSave, onBack, initial, locked }: { onSave: (payloa
       {/* Top preview now spans full width */}
       <div className="flex-1 flex flex-col">
         <div className="flex-1 flex items-center justify-center px-8 py-8">
-          <div className="relative w-full h-full max-h-[55vh] rounded-[32px] bg-[#12171f] border border-white/10 shadow-2xl overflow-hidden flex items-center justify-center">
+          <div className="relative w-full h-full max-h-[55vh] rounded-[32px] bg-[#12171f] border border-white/10 shadow-2xl overflow-hidden flex items-center justify-center mx-auto">
             <div className="absolute inset-0 bg-gradient-to-tr from-emerald-500/5 via-transparent to-sky-500/5 pointer-events-none" />
             <div className="absolute inset-0">
               <AvatarScene
