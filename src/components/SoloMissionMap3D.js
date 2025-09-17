@@ -549,9 +549,30 @@ export default function SoloMissionMap3D() {
         assignResources(t);
         return t;
     }, []);
+    // Compute approximate center axial coordinate by averaging q,r
+    const centerAxial = useMemo(() => {
+        if (tiles.length === 0)
+            return { q: 0, r: 0 };
+        // Derive bounding box in axial coordinates
+        let minQ = Infinity, maxQ = -Infinity, minR = Infinity, maxR = -Infinity;
+        for (const t of tiles) {
+            if (t.q < minQ)
+                minQ = t.q;
+            if (t.q > maxQ)
+                maxQ = t.q;
+            if (t.r < minR)
+                minR = t.r;
+            if (t.r > maxR)
+                maxR = t.r;
+        }
+        const cq = Math.round((minQ + maxQ) / 2);
+        const cr = Math.round((minR + maxR) / 2);
+        return { q: cq, r: cr };
+    }, [tiles]);
     // Demo actors (player + pet) with different vision ranges
-    const [hero, setHero] = useState({ id: 'hero', pos: { q: 0, r: 0 }, vision: 6, kind: 'actor' });
-    const [pet, setPet] = useState({ id: 'pet', pos: { q: 4, r: -1 }, vision: 3, kind: 'pet' });
+    const [hero, setHero] = useState({ id: 'hero', pos: centerAxial, vision: 6, kind: 'actor' });
+    // Place pet offset from hero (one ring out) but inside bounds
+    const [pet, setPet] = useState({ id: 'pet', pos: { q: centerAxial.q + 4, r: centerAxial.r - 1 }, vision: 3, kind: 'pet' });
     // FOV always on now; removed toggle state
     // Hero will be moved via keyboard commands now (auto path removed)
     // Pet patrol path (independent of hero). Simple loop.
@@ -570,8 +591,40 @@ export default function SoloMissionMap3D() {
     useEffect(() => {
         setPet(p => ({ ...p, pos: petPath[petPathIdx] }));
     }, [petPathIdx, petPath]);
+    // Ensure pet always remains within hero's FOV (stay within hero.vision - 1 axial distance)
+    useEffect(() => {
+        setPet(p => {
+            const maxDist = Math.max(0, hero.vision - 1);
+            let dist = axialDistance(p.pos, hero.pos);
+            if (dist <= maxDist)
+                return p;
+            let current = { ...p.pos };
+            // Greedy step-wise move toward hero until within range or safety iterations reached
+            let guard = 0;
+            while (axialDistance(current, hero.pos) > maxDist && guard < 32) {
+                guard++;
+                let best = current;
+                let bestDist = axialDistance(current, hero.pos);
+                for (const n of axialNeighbors(current)) {
+                    const d = axialDistance(n, hero.pos);
+                    if (d < bestDist) {
+                        bestDist = d;
+                        best = n;
+                    }
+                }
+                if (best.q === current.q && best.r === current.r)
+                    break; // no improvement
+                current = best;
+            }
+            if (current.q === p.pos.q && current.r === p.pos.r)
+                return p;
+            return { ...p, pos: current };
+        });
+    }, [hero.pos, hero.vision]);
     const heroVisible = useMemo(() => computeVisibleSet(tiles, hero.pos, hero.vision), [tiles, hero]);
     const petVisible = useMemo(() => computeVisibleSet(tiles, pet.pos, pet.vision), [tiles, pet]);
+    // World position of hero (for camera recentering)
+    const heroWorld = useMemo(() => axialToWorld(hero.pos, hexSize), [hero.pos, hexSize]);
     // Precompute world bounds for camera panning
     const mapBounds = useMemo(() => {
         let minX = Infinity, maxX = -Infinity, minZ = Infinity, maxZ = -Infinity;
@@ -597,6 +650,21 @@ export default function SoloMissionMap3D() {
             m.set(`${t.q},${t.r}`, t);
         return m;
     }, [tiles]);
+    // Precompute axial bounds for collider logic
+    const axialBounds = useMemo(() => {
+        let minQ = Infinity, maxQ = -Infinity, minR = Infinity, maxR = -Infinity;
+        for (const t of tiles) {
+            if (t.q < minQ)
+                minQ = t.q;
+            if (t.q > maxQ)
+                maxQ = t.q;
+            if (t.r < minR)
+                minR = t.r;
+            if (t.r > maxR)
+                maxR = t.r;
+        }
+        return { minQ, maxQ, minR, maxR };
+    }, [tiles]);
     // FoV visibility with attenuation; always include spawn tile and its ring for initial context
     // discovered set & objectives removed for simplified prototype
     const [hover, setHover] = useState(null);
@@ -605,13 +673,53 @@ export default function SoloMissionMap3D() {
     const [refWater, setRefWater] = useState(false);
     const [refHills, setRefHills] = useState(false);
     const [refDesert, setRefDesert] = useState(false);
+    // Recenter camera on double-tap spacebar
+    const [recenterSignal, setRecenterSignal] = useState(0);
+    const lastSpaceRef = React.useRef(0);
+    useEffect(() => {
+        function onSpace(e) {
+            if (e.code !== 'Space')
+                return;
+            const now = performance.now();
+            if (now - lastSpaceRef.current < 320) {
+                setRecenterSignal(s => s + 1);
+            }
+            lastSpaceRef.current = now;
+        }
+        window.addEventListener('keydown', onSpace);
+        return () => window.removeEventListener('keydown', onSpace);
+    }, []);
     // Enemy spawn zones: near deserts or mountain passes (tiles adjacent to >=2 mountains) and on open ground
     // enemy spawn / patrol hints removed pending gameplay implementation
     function tileKey(t) { return `${t.q},${t.r}`; }
     // Char-based rules closer to legacy
     function passable(t) {
-        // Movement limit removed: any existing tile is passable
-        return !!t;
+        return !!t; // still allow all existing tiles
+    }
+    function clampAxial(a) {
+        // Clamp to nearest existing tile inside bounds. If clamped coordinate missing (edge shape differences) search nearby.
+        let q = Math.min(axialBounds.maxQ, Math.max(axialBounds.minQ, a.q));
+        let r = Math.min(axialBounds.maxR, Math.max(axialBounds.minR, a.r));
+        if (tilesByKey.has(`${q},${r}`))
+            return { q, r };
+        // Fallback: BFS small radius to find nearest existing tile
+        const visited = new Set();
+        const queue = [{ q, r }];
+        while (queue.length) {
+            const cur = queue.shift();
+            const k = `${cur.q},${cur.r}`;
+            if (visited.has(k))
+                continue;
+            visited.add(k);
+            if (tilesByKey.has(k))
+                return cur;
+            for (const n of axialNeighbors(cur)) {
+                if (Math.abs(n.q - q) > 4 || Math.abs(n.r - r) > 4)
+                    continue; // limit search radius
+                queue.push(n);
+            }
+        }
+        return a; // fallback
     }
     useEffect(() => {
         function onKey(e) {
@@ -630,11 +738,12 @@ export default function SoloMissionMap3D() {
                 return;
             e.preventDefault();
             setHero(h => {
-                const target = { q: h.pos.q + delta.q, r: h.pos.r + delta.r };
-                const tile = tilesByKey.get(`${target.q},${target.r}`);
+                const targetRaw = { q: h.pos.q + delta.q, r: h.pos.r + delta.r };
+                const clamped = clampAxial(targetRaw);
+                const tile = tilesByKey.get(`${clamped.q},${clamped.r}`);
                 if (!passable(tile))
                     return h;
-                return { ...h, pos: target };
+                return { ...h, pos: clamped };
             });
         }
         window.addEventListener('keydown', onKey);
@@ -643,7 +752,7 @@ export default function SoloMissionMap3D() {
     // endTurn logic removed (turn system disabled)
     // Keyboard hex movement (pointy axial layout with q,r; adapt to 6 neighbors)
     // Keyboard disabled for now
-    return (_jsxs("div", { className: "relative w-screen h-screen bg-[#c9efff] text-gray-900 overflow-hidden", children: [_jsxs("div", { className: "absolute top-2 left-2 z-10 text-xs grid grid-cols-4 gap-2 max-w-[90vw]", children: [_jsxs("div", { className: "rounded border border-white/60 bg-white/70 px-2 py-1 text-gray-800", children: ["Hover Tile: ", hover ? `${hover.q},${hover.r}` : '---'] }), _jsxs("div", { className: "rounded border border-white/60 bg-white/70 px-2 py-1 text-gray-800", children: ["Tile: ", hover ? hover.type : '--', " | Resource: ", hover?.resource ?? 'None'] }), _jsx("div", { className: "rounded border border-white/60 bg-white/70 px-2 py-1 text-gray-800", children: "Moves: disabled" }), _jsx("div", { className: "rounded border border-white/60 bg-white/70 px-2 py-1 text-gray-800 text-right", children: "Map: 96x144" }), _jsxs("div", { className: "rounded border border-white/60 bg-white/70 px-2 py-1 text-gray-800 col-span-4 flex gap-2", children: [_jsxs("span", { className: "inline-flex items-center gap-1", children: [_jsx("span", { className: "w-3 h-3 inline-block bg-yellow-300/70" }), " Hero FOV"] }), _jsxs("span", { className: "inline-flex items-center gap-1", children: [_jsx("span", { className: "w-3 h-3 inline-block bg-sky-400/70" }), " Pet FOV"] }), _jsxs("span", { className: "inline-flex items-center gap-1", children: [_jsx("span", { className: "w-3 h-3 inline-block bg-fuchsia-400/70" }), " Both"] })] })] }), _jsx("div", { className: "absolute inset-0 select-none", children: _jsxs(Canvas, { shadows: true, camera: { position: [14, 16, 14], fov: 45 }, children: [_jsx(MapCameraController, { bounds: mapBounds, gameMode: true }), _jsx(SceneBridge, { outerRadius: hexSize, onReady: (caps) => { setRefMountains(!!caps.mountain); setRefTrees(!!caps.tree); setRefWater(!!caps.water); setRefHills(!!caps.hills); setRefDesert(!!caps.desert); } }), _jsx(Sky, { inclination: 0.6, azimuth: 0.25, sunPosition: [50, 50, 10], turbidity: 2, rayleigh: 0.7, mieCoefficient: 0.005, mieDirectionalG: 0.8 }), _jsx("hemisphereLight", { args: ["#bde0fe", "#e6f3ff", 0.8] }), _jsx("directionalLight", { position: [30, 40, 15], intensity: 0.7, castShadow: true, "shadow-mapSize-width": 2048, "shadow-mapSize-height": 2048 }), _jsxs("group", { position: [0, 0, 0], children: [tiles.map((t) => {
+    return (_jsxs("div", { className: "relative w-screen h-screen bg-[#c9efff] text-gray-900 overflow-hidden", children: [_jsxs("div", { className: "absolute top-2 left-2 z-10 text-xs grid grid-cols-4 gap-2 max-w-[90vw]", children: [_jsxs("div", { className: "rounded border border-white/60 bg-white/70 px-2 py-1 text-gray-800", children: ["Hover Tile: ", hover ? `${hover.q},${hover.r}` : '---'] }), _jsxs("div", { className: "rounded border border-white/60 bg-white/70 px-2 py-1 text-gray-800", children: ["Tile: ", hover ? hover.type : '--', " | Resource: ", hover?.resource ?? 'None'] }), _jsx("div", { className: "rounded border border-white/60 bg-white/70 px-2 py-1 text-gray-800", children: "Moves: disabled" }), _jsx("div", { className: "rounded border border-white/60 bg-white/70 px-2 py-1 text-gray-800 text-right", children: "Map: 96x144" }), _jsxs("div", { className: "rounded border border-white/60 bg-white/70 px-2 py-1 text-gray-800 col-span-4 flex gap-2", children: [_jsxs("span", { className: "inline-flex items-center gap-1", children: [_jsx("span", { className: "w-3 h-3 inline-block bg-yellow-300/70" }), " Hero FOV"] }), _jsxs("span", { className: "inline-flex items-center gap-1", children: [_jsx("span", { className: "w-3 h-3 inline-block bg-sky-400/70" }), " Pet FOV"] }), _jsxs("span", { className: "inline-flex items-center gap-1", children: [_jsx("span", { className: "w-3 h-3 inline-block bg-fuchsia-400/70" }), " Both"] })] })] }), _jsx("div", { className: "absolute inset-0 select-none", children: _jsxs(Canvas, { shadows: true, camera: { position: [14, 16, 14], fov: 45 }, children: [_jsx(MapCameraController, { bounds: mapBounds, gameMode: true, heroWorld: heroWorld, recenterSignal: recenterSignal }), _jsx(SceneBridge, { outerRadius: hexSize, onReady: (caps) => { setRefMountains(!!caps.mountain); setRefTrees(!!caps.tree); setRefWater(!!caps.water); setRefHills(!!caps.hills); setRefDesert(!!caps.desert); } }), _jsx(Sky, { inclination: 0.6, azimuth: 0.25, sunPosition: [50, 50, 10], turbidity: 2, rayleigh: 0.7, mieCoefficient: 0.005, mieDirectionalG: 0.8 }), _jsx("hemisphereLight", { args: ["#bde0fe", "#e6f3ff", 0.8] }), _jsx("directionalLight", { position: [30, 40, 15], intensity: 0.7, castShadow: true, "shadow-mapSize-width": 2048, "shadow-mapSize-height": 2048 }), _jsxs("group", { position: [0, 0, 0], children: [tiles.map((t) => {
                                     const { x, z } = axialToWorld(t, hexSize);
                                     const key = `${t.q},${t.r}`;
                                     const inHero = heroVisible.has(key);
@@ -660,10 +769,24 @@ export default function SoloMissionMap3D() {
                                 }), [hero, pet].map(a => {
                                     const world = axialToWorld(a.pos, hexSize);
                                     return (_jsxs("group", { position: [world.x, 0, world.z], children: [_jsxs("mesh", { position: [0, 0.5, 0], castShadow: true, children: [_jsx("sphereGeometry", { args: [0.4, 12, 12] }), _jsx("meshStandardMaterial", { color: a.kind === 'actor' ? '#facc15' : '#0ea5e9', emissive: a.kind === 'actor' ? '#ca8a04' : '#0369a1', emissiveIntensity: 0.6 })] }), _jsx(Text, { position: [0, 1.2, 0], fontSize: 0.6, color: "#111", anchorX: "center", anchorY: "middle", children: a.kind === 'actor' ? 'Hero' : 'Pet' })] }, a.id));
-                                })] }), _jsxs("mesh", { rotation: [-Math.PI / 2, 0, 0], position: [0, -0.05, 0], receiveShadow: true, children: [_jsx("planeGeometry", { args: [220, 220] }), _jsx("meshStandardMaterial", { color: "#bff0ff" })] }), _jsx(ContactShadows, { position: [0, 0, 0], opacity: 0.15, blur: 1.5, far: 15 })] }) })] }));
+                                }), _jsx("group", { children: (() => {
+                                        // Sample boundary by collecting extreme tiles and drawing thin invisible blockers (optional future collision)
+                                        const planes = [];
+                                        const { minQ, maxQ, minR, maxR } = axialBounds;
+                                        const extremes = [];
+                                        for (const t of tiles) {
+                                            if (t.q === minQ || t.q === maxQ || t.r === minR || t.r === maxR)
+                                                extremes.push(t);
+                                        }
+                                        for (const ex of extremes) {
+                                            const { x, z } = axialToWorld(ex, hexSize);
+                                            planes.push(_jsxs("mesh", { position: [x, 0.2, z], rotation: [-Math.PI / 2, 0, 0], children: [_jsx("circleGeometry", { args: [hexSize * 0.95, 6] }), _jsx("meshBasicMaterial", { color: "#000", transparent: true, opacity: 0 })] }, `boundary-${ex.q},${ex.r}`));
+                                        }
+                                        return planes;
+                                    })() })] }), _jsxs("mesh", { rotation: [-Math.PI / 2, 0, 0], position: [0, -0.05, 0], receiveShadow: true, children: [_jsx("planeGeometry", { args: [220, 220] }), _jsx("meshStandardMaterial", { color: "#bff0ff" })] }), _jsx(ContactShadows, { position: [0, 0, 0], opacity: 0.15, blur: 1.5, far: 15 })] }) })] }));
 }
 // Custom camera controller: edge pan & drag (game mode) with optional follow axial coord
-function MapCameraController({ bounds, gameMode }) {
+function MapCameraController({ bounds, gameMode, heroWorld, recenterSignal }) {
     const { camera, gl } = useThree();
     const targetRef = React.useRef(new THREE.Vector3(0, 0, 0));
     const offsetRef = React.useRef(null); // camera.position - target
@@ -672,24 +795,47 @@ function MapCameraController({ bounds, gameMode }) {
     const altDragging = React.useRef(false); // middle/right
     const lastMouse = React.useRef({ x: 0, y: 0 });
     const threshold = 24; // px edge region
-    const baseSpeed = 70; // reduced speed (50%) for gentler edge pan
+    const baseSpeed = 35; // further reduced (additional 50%) edge pan speed
     // Keyboard panning disabled (camera fixed except mouse drag / edge)
     const velocity = React.useRef(new THREE.Vector3()); // world-space velocity applied to target
     const lastMoveFrame = React.useRef(0);
     const frameCount = React.useRef(0);
-    // Dynamic zoom limits: prevent zooming out beyond map canvas
+    // Dynamic zoom limits: prevent zooming out beyond map canvas and enforce 5x aspect rule
     const mapWidth = bounds.maxX - bounds.minX;
     const mapHeight = bounds.maxZ - bounds.minZ;
     const mapDiag = Math.sqrt(mapWidth * mapWidth + mapHeight * mapHeight);
-    // Allow at most a fraction of diagonal to keep scene framed; keep previous hard cap as safety
-    const dynamicMax = Math.min(mapDiag * 0.55, 110);
-    const zoomConfig = { min: 12, max: dynamicMax, zoomSpeed: 0.12 };
-    // Initialize offset
+    const baseMin = 12;
+    const zoomConfig = { min: baseMin, zoomSpeed: 0.12 };
+    function currentMaxZoom() {
+        const aspect = gl.domElement.clientWidth / gl.domElement.clientHeight;
+        // Limit: at most 5x aspect ratio factor from min distance; still cap by map diagonal framing and legacy 110 safety
+        const aspectCap = baseMin * 5 * aspect;
+        const diagCap = mapDiag * 0.55;
+        return Math.min(aspectCap, diagCap, 110);
+    }
+    // Initialize offset and optionally center on heroWorld once tiles/hero provided
     React.useEffect(() => {
         if (!offsetRef.current) {
             offsetRef.current = camera.position.clone().sub(targetRef.current);
         }
-    }, [camera]);
+        if (heroWorld) {
+            // Center target on hero and keep same vertical distance
+            targetRef.current.set(heroWorld.x, 0, heroWorld.z);
+            if (offsetRef.current) {
+                camera.position.copy(targetRef.current).add(offsetRef.current);
+                camera.lookAt(targetRef.current);
+            }
+        }
+        // run when heroWorld first stable
+    }, [camera, heroWorld]);
+    // Recenter on recenterSignal change (double-tap spacebar)
+    React.useEffect(() => {
+        if (recenterSignal && heroWorld && offsetRef.current) {
+            targetRef.current.set(heroWorld.x, 0, heroWorld.z);
+            camera.position.copy(targetRef.current).add(offsetRef.current);
+            camera.lookAt(targetRef.current);
+        }
+    }, [recenterSignal, heroWorld]);
     // Event handlers
     React.useEffect(() => {
         function onMouseMove(e) {
@@ -705,7 +851,7 @@ function MapCameraController({ bounds, gameMode }) {
                     const off = offsetRef.current;
                     const forward = new THREE.Vector3(-off.x, 0, -off.z).normalize();
                     const right = new THREE.Vector3().crossVectors(forward, new THREE.Vector3(0, 1, 0)).normalize();
-                    const pixelScale = 0.04 * off.length() / 45; // faster drag scaling
+                    const pixelScale = 0.02 * off.length() / 45; // 50% slower drag scaling
                     const move = new THREE.Vector3();
                     // Mouse drag: moving mouse right should move camera right (so world target left)
                     move.addScaledVector(right, -dx * pixelScale);
@@ -759,7 +905,8 @@ function MapCameraController({ bounds, gameMode }) {
             const off = offsetRef.current;
             const len = off.length();
             const delta = e.deltaY * zoomConfig.zoomSpeed * (len / 60);
-            const next = THREE.MathUtils.clamp(len + delta, zoomConfig.min, zoomConfig.max);
+            const maxZoom = currentMaxZoom();
+            const next = THREE.MathUtils.clamp(len + delta, zoomConfig.min, maxZoom);
             // Ray cast from cursor to ground plane (y=0) to find world point under mouse BEFORE zoom
             const rect = gl.domElement.getBoundingClientRect();
             const ndc = new THREE.Vector2(((e.clientX - rect.left) / rect.width) * 2 - 1, -(((e.clientY - rect.top) / rect.height) * 2 - 1));
@@ -839,6 +986,11 @@ function MapCameraController({ bounds, gameMode }) {
                 velocity.current.set(0, 0, 0);
         }
         // Keep camera offset constant relative to target
+        // Clamp zoom distance each frame in case window resized changed max
+        const maxAllowed = currentMaxZoom();
+        if (off.length() > maxAllowed) {
+            off.setLength(maxAllowed);
+        }
         camera.position.copy(targetRef.current).add(off);
         camera.lookAt(targetRef.current);
     });
