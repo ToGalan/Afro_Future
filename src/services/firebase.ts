@@ -14,6 +14,19 @@ const firebaseConfig = {
   databaseURL: import.meta.env.VITE_FIREBASE_DATABASE_URL as string | undefined,
 };
 
+// Dev-time validation to surface missing/placeholder keys early
+if (import.meta.env.DEV) {
+  const missing: string[] = [];
+  (['apiKey','authDomain','projectId','storageBucket','messagingSenderId','appId','databaseURL'] as const).forEach(k => {
+    // @ts-ignore
+    if (!firebaseConfig[k]) missing.push(k);
+  });
+  if (missing.length) {
+    // eslint-disable-next-line no-console
+    console.warn('[firebase] Missing config keys:', missing.join(', '));
+  }
+}
+
 let app: FirebaseApp;
 if (!getApps().length) {
   app = initializeApp(firebaseConfig);
