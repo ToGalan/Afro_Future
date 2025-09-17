@@ -3,6 +3,7 @@ export interface PlayerProgress {
   lastLogin: number;
   explored?: string[]; // future: discovered tile keys
   faction?: string;
+  archetype?: string;
   level?: number;
   hero?: {
     level: number;

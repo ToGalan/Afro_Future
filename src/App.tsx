@@ -44,6 +44,7 @@ const defaultLoadout: CharacterLoadout = {
 };
 
 export default function App() {
+  const { saveProgress: saveProfileProgress } = usePlayerProfile();
   // Auto-sync skill progress to persistent profile
   useAutoSyncSkills(true);
   // Authentication gating: require Google sign-in before proceeding to normal boot sequence.
@@ -364,7 +365,27 @@ export default function App() {
   try { localStorage.setItem('afrofuture.activeLoadout', JSON.stringify(merged)); } catch(e){ console.warn('[avatar-persist] save failed', e); }
   // Mirror to Chrome Sync (best-effort)
   chromeSyncSet({ 'afrofuture.loadout': merged }).catch(()=>{});
-  if(idToken) persistServerProfile(idToken, { loadout: merged });
+      if(idToken) persistServerProfile(idToken, { loadout: merged });
+      // Persist core selections to Firestore profile as well
+      try {
+        saveProfileProgress({
+          faction: merged.faction,
+          archetype: merged.archetype,
+          avatar: {
+            parts: (merged as any)?.threeConfig?.parts || {},
+            colors: {
+              primary: merged.colors?.primary || '#00A37A',
+              secondary: merged.colors?.secondary || '#F5F5F5',
+              skin: (merged as any)?.threeConfig?.colors?.skin || '#c58b66',
+            },
+            updatedAt: Date.now(),
+          },
+          pet: {
+            type: merged.pet?.type,
+            level: merged.pet?.level ?? 1,
+          },
+        });
+      } catch {}
       // Broadcast to peers via WebRTC (if data channel open)
       if(rtc?.dc?.readyState === 'open') {
         try { rtc.dc.send(JSON.stringify({ type: 'loadoutUpdate', loadout: merged })); } catch(err){ console.warn('[rtc] broadcast failed', err); }
@@ -377,7 +398,26 @@ export default function App() {
       setActiveLoadout(normalized);
   try { localStorage.setItem('afrofuture.activeLoadout', JSON.stringify(normalized)); } catch(e){ console.warn('[avatar-persist] save failed', e); }
   chromeSyncSet({ 'afrofuture.loadout': normalized }).catch(()=>{});
-  if(idToken) persistServerProfile(idToken, { loadout: normalized });
+      if(idToken) persistServerProfile(idToken, { loadout: normalized });
+      try {
+        saveProfileProgress({
+          faction: normalized.faction,
+          archetype: normalized.archetype,
+          avatar: {
+            parts: (normalized as any)?.threeConfig?.parts || {},
+            colors: {
+              primary: normalized.colors?.primary || '#00A37A',
+              secondary: normalized.colors?.secondary || '#F5F5F5',
+              skin: (normalized as any)?.threeConfig?.colors?.skin || '#c58b66',
+            },
+            updatedAt: Date.now(),
+          },
+          pet: {
+            type: normalized.pet?.type,
+            level: normalized.pet?.level ?? 1,
+          },
+        });
+      } catch {}
       if(rtc?.dc?.readyState === 'open') {
         try { rtc.dc.send(JSON.stringify({ type: 'loadoutUpdate', loadout: newLoadout })); } catch(err){ console.warn('[rtc] broadcast failed', err); }
       }
