@@ -25,6 +25,9 @@
           { "key": "Cache-Control", "value": "no-cache" }
         ]
       }
+    ],
+    "rewrites": [
+      { "source": "**", "destination": "/index.html" }
     ]
   },
   "firestore": {
@@ -33,5 +36,8 @@
   },
   "database": {
     "rules": "database.rules.json"
-  }
+  },
+  "predeploy": [
+    "npm run build"
+  ]
 }
