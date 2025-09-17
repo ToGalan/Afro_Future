@@ -51,14 +51,20 @@ export function usePlayerSession(): UsePlayerSession {
           connected: true,
           startedAt: Date.now(),
         };
-        await rtdbHelpers.set(sessionRef, {
-          ...initial,
-          // Enhanced metadata if non-anonymous
-          isAnonymous: !!user.isAnonymous,
-          displayName: user.displayName || user.email || null,
-          email: user.email || null,
-          providerData,
-        });
+        try {
+          await rtdbHelpers.set(sessionRef, {
+            ...initial,
+            // Enhanced metadata if non-anonymous
+            isAnonymous: !!user.isAnonymous,
+            displayName: user.displayName || user.email || null,
+            email: user.email || null,
+            providerData,
+          });
+        } catch(err:any) {
+          // eslint-disable-next-line no-console
+          console.error('[session:init] RTDB set failed', err?.code, err?.message, err);
+          throw err;
+        }
 
         // Presence teardown using onDisconnect
         const connRef = rtdbHelpers.ref(rtdb, `${basePath}/connected`);
@@ -106,7 +112,10 @@ export function usePlayerSession(): UsePlayerSession {
       isAnonymous: false,
       providerData,
       upgradedAt: Date.now(),
-    }).catch(()=>{});
+    }).catch(err => {
+      // eslint-disable-next-line no-console
+      console.error('[session:upgrade] update failed', err?.code, err?.message);
+    });
   }, [session?.uid, session?.sessionId]);
 
   const updateHeroPosition = useCallback((pos: { q: number; r: number }) => {
@@ -118,7 +127,11 @@ export function usePlayerSession(): UsePlayerSession {
     const sessionRef = rtdbHelpers.ref(rtdb, `sessions/${session.uid}/${session.sessionId}`);
     rtdbHelpers.update(sessionRef, { heroPosition: pos, lastActive: now, connected: true })
       .then(() => { setLastSync(Date.now()); })
-      .catch(err => { setError(err.message || 'position update failed'); })
+      .catch(err => {
+        // eslint-disable-next-line no-console
+        console.error('[session:position] update failed', err?.code, err?.message);
+        setError(err.message || 'position update failed');
+      })
       .finally(() => setSyncing(false));
   }, [session]);
 
