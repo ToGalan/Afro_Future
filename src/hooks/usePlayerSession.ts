@@ -3,9 +3,13 @@ import { ensureAnonAuth, rtdb, rtdbHelpers, auth } from '../services/firebase';
 import { PlayerSession } from '../types/player';
 import { onValue } from 'firebase/database';
 
-// Session update throttling (ms)
-const POSITION_INTERVAL = 120; // ~8 updates/sec
-const HEARTBEAT_INTERVAL = 25000; // 25s heartbeat
+// Session update throttling base intervals (ms)
+const POSITION_INTERVAL_FAST = 120;   // ~8 updates/sec during active movement
+const POSITION_INTERVAL_SLOW = 500;   // Idle but visible
+const POSITION_INTERVAL_HIDDEN = 1500; // Tab hidden / unfocused
+const MAX_STALE_POSITION_AGE = 5000;  // Force a refresh at least every 5s
+const RECENT_MOVEMENT_WINDOW = 2000;  // Time window to consider player as actively moving
+const HEARTBEAT_INTERVAL = 25000;     // 25s heartbeat
 
 function generateSessionId() {
   return Math.random().toString(36).slice(2, 12);
@@ -28,6 +32,8 @@ export function usePlayerSession(): UsePlayerSession {
   const [syncing, setSyncing] = useState(false);
   const [lastSync, setLastSync] = useState<number | null>(null);
   const lastPosWrite = useRef(0);
+  const lastMovementTime = useRef(0);
+  const lastSentPos = useRef<{q:number; r:number}|null>(null);
   const heartbeatTimer = useRef<number | null>(null);
   const sessionIdRef = useRef<string | null>(null);
 
@@ -121,8 +127,36 @@ export function usePlayerSession(): UsePlayerSession {
   const updateHeroPosition = useCallback((pos: { q: number; r: number }) => {
     if (!session || !sessionIdRef.current) return;
     const now = Date.now();
-    if (now - lastPosWrite.current < POSITION_INTERVAL) return;
+
+    // Determine if position actually changed
+    const prev = lastSentPos.current;
+    const changed = !prev || prev.q !== pos.q || prev.r !== pos.r;
+
+    // Track movement time only if changed
+    if (changed) {
+      lastMovementTime.current = now;
+    }
+
+    // Decide dynamic interval
+    let interval = POSITION_INTERVAL_SLOW;
+    const hidden = typeof document !== 'undefined' && document.visibilityState === 'hidden';
+    if (hidden) {
+      interval = POSITION_INTERVAL_HIDDEN;
+    } else if (now - lastMovementTime.current < RECENT_MOVEMENT_WINDOW) {
+      interval = POSITION_INTERVAL_FAST; // active movement
+    }
+
+    // Force refresh if stale even without movement
+    const stale = now - lastPosWrite.current > MAX_STALE_POSITION_AGE;
+
+    // Skip if interval not elapsed AND not stale
+    if (!stale && (now - lastPosWrite.current) < interval) return;
+
+    // If no change and not stale, skip
+    if (!changed && !stale) return;
+
     lastPosWrite.current = now;
+    lastSentPos.current = pos;
     setSyncing(true);
     const sessionRef = rtdbHelpers.ref(rtdb, `sessions/${session.uid}/${session.sessionId}`);
     rtdbHelpers.update(sessionRef, { heroPosition: pos, lastActive: now, connected: true })

@@ -46,7 +46,16 @@ export const GameHUD: React.FC<GameHUDProps> = ({ team, clock, fps=60, network='
     window.addEventListener('keydown', onKey);
     return ()=> window.removeEventListener('keydown', onKey);
   },[]);
-  const filteredResources = resources.filter(r => r.id.toLowerCase() !== 'shards' && r.label.toLowerCase() !== 'shards');
+  // Filter resources shown in top-right: remove shards, skill token style entries, and blank/empty labels
+  const filteredResources = resources.filter(r => {
+    const id = (r.id||'').toString().trim().toLowerCase();
+    const label = (r.label||'').toString().trim().toLowerCase();
+    if (!label) return false; // drop empty duplicate card
+    if (id === 'shards' || label === 'shards') return false;
+    // Exclude anything that looks like skill tokens (prevent duplicate of central StatPill)
+    if (id.includes('skill') || id.includes('token') || label.includes('skill') || label.includes('token')) return false;
+    return true;
+  });
   const abilitySlots = abilities.slice(0,8);
   const itemSlots = items.slice(0,8);
 
@@ -55,7 +64,7 @@ export const GameHUD: React.FC<GameHUDProps> = ({ team, clock, fps=60, network='
       {/* Restored top bar */}
       <div className="fixed top-0 left-0 right-0 flex items-start justify-center pt-2 z-40">
         {/* Single menu toggle button */}
-        <div className="absolute left-4 top-2 pointer-events-auto">
+        <div className="absolute left-4 top-2 pointer-events-auto flex items-center gap-2">
           <button onClick={()=> setMenuOpen(o=>!o)} className="w-10 h-10 rounded-lg bg-black/50 hover:bg-black/70 ring-1 ring-white/10 flex items-center justify-center text-lg" aria-label="Menu">☰</button>
         </div>
         <div className="flex items-center gap-3 bg-black/40 backdrop-blur rounded-xl px-4 py-1.5 ring-1 ring-white/10 text-xs">
@@ -78,22 +87,20 @@ export const GameHUD: React.FC<GameHUDProps> = ({ team, clock, fps=60, network='
         <div className="fixed inset-0 z-50 pointer-events-auto flex">
           {/* backdrop */}
           <div className="absolute inset-0 bg-black/50 backdrop-blur-sm" onClick={()=> setMenuOpen(false)} />
-          <div className="relative mt-24 ml-20 w-72 bg-[#0b1218]/95 rounded-xl ring-1 ring-white/10 p-4 flex flex-col gap-2 shadow-2xl">
+          {/* Aligned menu directly under top bar near left margin (beneath menu button) */}
+          <div className="relative mt-16 ml-4 w-64 bg-[#0b1218]/95 rounded-xl ring-1 ring-white/10 p-4 flex flex-col gap-2 shadow-2xl">
             <div className="flex items-center mb-1">
               <div className="text-sm font-semibold tracking-wide">Game Menu</div>
             </div>
             <div className="flex flex-col gap-2 text-sm">
               <button onClick={()=>{ onSettings && onSettings(); setMenuOpen(false); }} className="px-3 py-2 rounded bg-white/5 hover:bg-white/10 text-left">Settings</button>
               <button onClick={()=>{ onScoreboard && onScoreboard(); setMenuOpen(false); }} className="px-3 py-2 rounded bg-white/5 hover:bg-white/10 text-left">Scoreboard</button>
-              <button onClick={()=>{ onScan && onScan(); setMenuOpen(false); }} className="px-3 py-2 rounded bg-white/5 hover:bg-white/10 text-left">Scan</button>
-              <button onClick={()=>{ onGlyph && onGlyph(); setMenuOpen(false); }} className="px-3 py-2 rounded bg-white/5 hover:bg-white/10 text-left">Fortify</button>
-              <button onClick={()=>{ onStats && onStats(); setMenuOpen(false); }} className="px-3 py-2 rounded bg-white/5 hover:bg-white/10 text-left">Hero Stats</button>
-              <button onClick={()=>{ onTalents && onTalents(); setMenuOpen(false); }} className="px-3 py-2 rounded bg-white/5 hover:bg-white/10 text-left">Talents</button>
               <button onClick={()=>{ onShop && onShop(); setMenuOpen(false); }} className="px-3 py-2 rounded bg-white/5 hover:bg-white/10 text-left">Shop</button>
               <div className="h-px bg-white/10 my-1" />
+              <button onClick={()=> setMenuOpen(false)} className="px-3 py-2 rounded bg-emerald-600/60 hover:bg-emerald-600/80 text-left font-semibold">Back to Game</button>
               <button onClick={()=>{ onMenu && onMenu(); setMenuOpen(false); }} className="px-3 py-2 rounded bg-rose-600/60 hover:bg-rose-600/80 text-left font-semibold">Back to Menu</button>
             </div>
-            <div className="mt-2 text-[10px] opacity-60">Press Esc to close.</div>
+            <div className="mt-2 text-[10px] opacity-60">Press Esc or Back to Game to close.</div>
           </div>
         </div>
       )}
@@ -112,6 +119,11 @@ export const GameHUD: React.FC<GameHUDProps> = ({ team, clock, fps=60, network='
         <div className="flex items-end justify-center gap-4">
           {/* Minimap */}
           <div className="pointer-events-auto relative w-56 h-[7.5rem] rounded-xl overflow-hidden ring-2 ring-white/10 bg-[radial-gradient(ellipse_at_center,_var(--tw-gradient-stops))] from-emerald-700 via-emerald-800 to-emerald-900" onClick={(e)=>{ const rect = (e.currentTarget as HTMLDivElement).getBoundingClientRect(); const x = (e.clientX - rect.left)/rect.width; const y = (e.clientY - rect.top)/rect.height; onMinimapClick && onMinimapClick(x,y); }} />
+          {/* Scan & Fortify buttons (moved to bottom HUD) */}
+          <div className="pointer-events-auto flex flex-col justify-between h-[7.5rem] py-1">
+            <button onClick={()=> onScan && onScan()} className="w-12 h-12 rounded-lg bg-black/40 hover:bg-black/60 ring-1 ring-white/10 flex items-center justify-center text-lg" aria-label="Scan" title="Scan">🛰️</button>
+            <button onClick={()=> onGlyph && onGlyph()} className="w-12 h-12 rounded-lg bg-black/40 hover:bg-black/60 ring-1 ring-white/10 flex items-center justify-center text-lg" aria-label="Fortify" title="Fortify">🛡️</button>
+          </div>
 
           {/* Hero + Pet */}
           <div className="flex pointer-events-auto gap-3 bg-black/40 ring-1 ring-white/10 rounded-2xl p-2 h-[7.5rem]">
@@ -147,6 +159,11 @@ export const GameHUD: React.FC<GameHUDProps> = ({ team, clock, fps=60, network='
                     <div className="text-[9px] mt-0.5 opacity-80 tabular-nums">{pet.hp.current}/{pet.hp.max} HP</div>
                     <Bar value={pet.ep.current} max={pet.ep.max} color="bg-cyan-400" />
                     <div className="text-[9px] mt-0.5 opacity-80 tabular-nums">{pet.ep.current}/{pet.ep.max} EP</div>
+                    {/* Pet XP bar (mirrors hero XP styling but smaller) */}
+                    <div className="mt-1">
+                      <Bar value={pet.level /* placeholder progress value if real XP not provided */} max={pet.level || 1} color="bg-amber-300" bg="bg-black/40" />
+                      <div className="text-[9px] mt-0.5 opacity-70 tabular-nums">Pet XP</div>
+                    </div>
                   </div>
                 </div>
               </div>

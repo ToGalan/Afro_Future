@@ -30,6 +30,7 @@ export interface PlayerProgress {
 export interface PlayerProfile {
   uid: string;
   displayName?: string;
+  email?: string;              // User email address
   avatarUrl?: string;
   faction?: string;
   createdAt: number;

@@ -46,10 +46,20 @@ export function usePlayerProfile(opts: UsePlayerProfileOptions = {}) {
             avatar: { parts: {}, colors: { primary:'#00A37A', secondary:'#F5F5F5', skin:'#c58b66' }, updatedAt: Date.now() },
             ...data.progress,
           };
-          setProfile({ uid: user.uid, displayName: data.displayName, avatarUrl: data.avatarUrl, faction: data.faction, createdAt: data.createdAt || Date.now(), progress });
+          setProfile({ 
+            uid: user.uid, 
+            displayName: data.displayName, 
+            email: data.email, 
+            avatarUrl: data.avatarUrl, 
+            faction: data.faction, 
+            createdAt: data.createdAt || Date.now(), 
+            progress 
+          });
         } else if (autoCreate) {
           const initial: PlayerProfile = {
             uid: user.uid,
+            email: user.email || undefined,  // Save email from auth
+            displayName: user.displayName || undefined, // Save display name from auth
             createdAt: Date.now(),
             progress: {
               heroPosition: { q: 0, r: 0 },
@@ -88,14 +98,34 @@ export function usePlayerProfile(opts: UsePlayerProfileOptions = {}) {
           const existing = await getDoc(newRef);
             const oldData = profile.progress;
             if (!existing.exists()) {
-              await setDoc(newRef, { progress: oldData, migratedFrom: profile.uid, createdAt: serverTimestamp(), updatedAt: serverTimestamp() }, { merge: true });
+              await setDoc(newRef, { 
+                progress: oldData, 
+                migratedFrom: profile.uid, 
+                email: auth.currentUser!.email,
+                displayName: auth.currentUser!.displayName,
+                createdAt: serverTimestamp(), 
+                updatedAt: serverTimestamp() 
+              }, { merge: true });
             }
             // Remove old anonymous sessions tree
             try {
               await rtdbHelpers.remove(rtdbHelpers.ref(rtdb, `sessions/${profile.uid}`));
             } catch {}
-            setProfile(p => p ? { ...p, uid: newUid } : p);
+            setProfile(p => p ? { ...p, uid: newUid, email: auth.currentUser!.email || p.email, displayName: auth.currentUser!.displayName || p.displayName } : p);
         })();
+      } else {
+        // Update email/displayName if they've changed
+        if ((auth.currentUser.email && auth.currentUser.email !== profile.email) || 
+            (auth.currentUser.displayName && auth.currentUser.displayName !== profile.displayName)) {
+          const ref = doc(db, 'players', profile.uid);
+          const updates = {
+            ...(auth.currentUser.email && { email: auth.currentUser.email }),
+            ...(auth.currentUser.displayName && { displayName: auth.currentUser.displayName }),
+            updatedAt: serverTimestamp()
+          };
+          setDoc(ref, updates, { merge: true }).catch(() => {});
+          setProfile(p => p ? { ...p, ...updates } : p);
+        }
       }
     }
   }, [profile]);
