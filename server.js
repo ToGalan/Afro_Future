@@ -577,6 +577,62 @@ app.get('/runtime-config', (req, res) => {
   });
 });
 
+// -------- Dynamic OG meta page for character / invite sharing --------
+// Usage: /share-meta?name=<HeroName>&faction=<Faction>&portrait=<pngFile>&invite=<code>
+// Returns a minimal HTML document with Open Graph + Twitter card tags.
+// Social platforms will scrape this URL. Front-end can redirect users to application after load.
+app.get('/share-meta', async (req, res) => {
+  try {
+    const rawName = String(req.query.name || 'Hero').slice(0,50);
+    const name = rawName.replace(/</g,'&lt;');
+    const rawFaction = String(req.query.faction || 'Faction').slice(0,40);
+    const faction = rawFaction.replace(/</g,'&lt;');
+    const invite = String(req.query.invite || '').replace(/[^a-zA-Z0-9_-]/g,'').slice(0,48);
+    const portraitParam = String(req.query.portrait || '').replace(/[^A-Za-z0-9_\-.]/g,'');
+    const safePortrait = /^[A-Za-z0-9_\-]+\.png$/.test(portraitParam) ? portraitParam : '';
+    const origin = `${req.protocol}://${req.get('host')}`;
+    const cardImage = safePortrait ? `${origin}/assets/img/${safePortrait}` : `${origin}/assets/img/default.png`;
+    const appUrlParams = new URLSearchParams();
+    if(invite) appUrlParams.set('invite', invite);
+    if(safePortrait) appUrlParams.set('portrait', safePortrait);
+    appUrlParams.set('faction', rawFaction);
+    appUrlParams.set('name', rawName);
+    const appUrl = `${origin}/?share=${encodeURIComponent(appUrlParams.toString())}`;
+    const title = `Afro-Future Hero: ${rawName}`;
+    const description = `Join ${rawName} of faction ${rawFaction} in Afro‑Future Rising. Forge your legend.`;
+    res.setHeader('Content-Type', 'text/html; charset=utf-8');
+    res.send(`<!doctype html><html lang="en"><head>
+<meta charset="utf-8" />
+<title>${title.replace(/</g,'&lt;')}</title>
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<meta name="description" content="${description.replace(/"/g,'&quot;')}" />
+<meta property="og:type" content="website" />
+<meta property="og:site_name" content="Afro-Future Rising" />
+<meta property="og:title" content="${title.replace(/"/g,'&quot;')}" />
+<meta property="og:description" content="${description.replace(/"/g,'&quot;')}" />
+<meta property="og:image" content="${cardImage}" />
+<meta property="og:image:type" content="image/png" />
+<meta property="og:image:alt" content="Portrait of hero ${name}" />
+<meta name="twitter:card" content="summary_large_image" />
+<meta name="twitter:title" content="${title.replace(/"/g,'&quot;')}" />
+<meta name="twitter:description" content="${description.replace(/"/g,'&quot;')}" />
+<meta name="twitter:image" content="${cardImage}" />
+<link rel="canonical" href="${appUrl}" />
+<meta http-equiv="refresh" content="0;url=${appUrl}" />
+<style>body{background:#0f1720;color:#e2f8f0;font-family:system-ui,Arial,sans-serif;display:flex;align-items:center;justify-content:center;min-height:100vh;padding:24px;text-align:center;}a{color:#7dd3fc}</style>
+</head><body>
+<div>
+  <h1 style="margin:0 0 12px;font-size:28px;">${name}</h1>
+  <p style="margin:0 0 16px;font-size:14px;opacity:.85;">${faction}</p>
+  <p>Redirecting to experience… If it doesn't, <a href="${appUrl}">click here</a>.</p>
+</div>
+</body></html>`);
+  } catch(e){
+    console.warn('[share-meta] failed', e?.message||e);
+    res.status(500).send('error');
+  }
+});
+
 // -------- Storefront token verification (lightweight) --------
 // Uses a minimal query to validate token early; excluded if not configured
 app.get('/storefront/ping', async (req, res) => {

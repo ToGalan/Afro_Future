@@ -15,6 +15,7 @@ import { initGoogleIdentity, renderGoogleButton, getGoogleClientId } from './ser
 import { chromeSyncGet, chromeSyncSet, chromeSyncClear } from './services/chromeSync';
 import GoogleSignInButton from './components/auth/GoogleSignInButton';
 import SoloMissionMap3D from './components/SoloMissionMap3D';
+import GameHUD from './components/gameHUD';
 import DatabaseTestPanel from './components/DatabaseTestPanel';
 import PetPanel from './components/PetPanel';
 import { useAutoSyncSkills } from './hooks/useAutoSyncSkills';
@@ -559,26 +560,162 @@ export default function App() {
 }
 
 function MissionScreen({ onExit }: { onExit: () => void }){
+  // Access active loadout & skill state for HUD
+  const activeLoadoutRaw = React.useMemo(() => {
+    try { const raw = localStorage.getItem('afrofuture.activeLoadout'); if(raw) return JSON.parse(raw); } catch {}
+    return null;
+  }, []);
+  const skillState = useSkillStore();
+  // Derive hero vitals from skill stats (mirrors LeftPlayerPanel logic)
+  const level = skillState.level;
+  const defense = skillState.defense;
+  const utility = skillState.utility;
+  const baseHP = 100; const hpPerLevel = 12; const hpPerDefense = 10;
+  const baseEP = 60; const epPerLevel = 6; const epPerUtility = 6;
+  const HP_MAX = baseHP + (level-1)*hpPerLevel + defense*hpPerDefense;
+  const EP_MAX = baseEP + (level-1)*epPerLevel + utility*epPerUtility;
+  // Simple XP progress placeholder (next level curve rough)
+  const XP_MAX = 100 + (level-1)*40;
+  const XP_CUR = Math.min(XP_MAX-1, (level-1)*40 + 10);
+  // Map unlocked skills (excluding root) into ability slots
+  // Skill ID -> emoji icon heuristic mapping
+  const skillIcon = React.useCallback((id:string)=>{
+    if(id.includes('combat')) return '⚔️';
+    if(id.includes('support')) return '✚';
+    if(id.includes('pet') || id.includes('bond')) return '🐾';
+    if(id.includes('weapon')) return '🔫';
+    if(id.includes('spell')) return '✨';
+    if(id.includes('defense') || id.includes('shield')) return '🛡️';
+    if(id.includes('mobility')) return '🦶';
+    if(id.includes('leadership')) return '🗣️';
+    if(id.includes('terraform')) return '🌍';
+    if(id.includes('technologist') || id.includes('techno')) return '🧪';
+    if(id.includes('merchant') || id.includes('trade')) return '💱';
+    if(id.includes('looting')) return '📦';
+    return '⬢';
+  },[]);
+  // Local runtime ability state (cooldowns & disabled flags)
+  const [runtimeAbilities, setRuntimeAbilities] = React.useState<{[id:string]: { cooldown: number; max: number } }>({});
+  const BASE_COOLDOWN = 8; // seconds placeholder
+  const abilities = React.useMemo(()=>{
+    return skillState.unlocked.filter(id=>id!=='root').slice(0,8).map((id,i)=>{
+      const rt = runtimeAbilities[id];
+      return {
+        id,
+        icon: skillIcon(id),
+        cooldown: rt?.cooldown || 0,
+        maxCooldown: rt?.max || BASE_COOLDOWN,
+        disabled: !!rt?.cooldown,
+        key: String(i+1),
+      };
+    });
+  },[skillState.unlocked, runtimeAbilities, skillIcon]);
+  // Placeholder inventory items
+  const items = React.useMemo(()=> Array.from({length:4}).map((_,i)=>({ id: 'item'+i, icon: '📦', qty: 1, key: ['Q','W','E','R'][i] })),[]);
+  // Resources: shards (if present in profile) + skill tokens remaining
+  const [shards, setShards] = React.useState<number>(0);
+  React.useEffect(()=>{
+    (async()=>{
+      try {
+        const idToken = localStorage.getItem('afrofuture.idToken');
+        if(!idToken) return;
+        const r = await fetch('/profile', { headers: { 'Authorization':'Bearer '+idToken } });
+        if(r.ok){ const j = await r.json(); setShards(j?.profile?.shards || 0); }
+      } catch {}
+    })();
+  },[]);
+  const bonusBlocks = Math.floor((Math.max(1,level)-1)/5);
+  const available = skillState.basePoints + bonusBlocks * skillState.bonusPer5 - skillState.spent;
+  const resources = React.useMemo(()=>[
+    { id:'shards', label:'Shards', value: shards, icon:'◈' },
+    { id:'tokens', label:'Skill Tokens', value: available, icon:'⬢' },
+  ],[shards, available]);
+  const heroBuffs = skillState.traitTags;
+  const loadout = activeLoadoutRaw || { name:'Hero', faction:'PAA', level, portraitUrl: undefined, pet:{ type:'CYBER_DOG', level:1, role:'SCOUT' } } as any;
+  const pet = loadout.pet ? { name: loadout.pet.type === 'CYBER_DOG' ? 'Cyber-Dog' : 'Cyber-Cat', level: loadout.pet.level || 1, hp: { current: 50, max: 50 }, ep: { current: 30, max: 30 }, icon: '🐾' } : undefined;
+  // Runtime HP/EP regeneration & cooldown ticking loop
+  const [heroVitals, setHeroVitals] = React.useState({ hp: HP_MAX, ep: EP_MAX });
+  React.useEffect(()=>{ setHeroVitals(v=>({ hp: Math.min(HP_MAX, v.hp), ep: Math.min(EP_MAX, v.ep) })); },[HP_MAX, EP_MAX]);
+  React.useEffect(()=>{
+    let raf:number; let last = performance.now();
+    function frame(ts:number){
+      const dt = (ts - last)/1000; last = ts;
+      // Regen rates
+      setHeroVitals(v=>({
+        hp: Math.min(HP_MAX, v.hp + 2*dt),
+        ep: Math.min(EP_MAX, v.ep + 4*dt),
+      }));
+      // Tick cooldowns
+      setRuntimeAbilities(prev => {
+        let changed = false; const next: typeof prev = {};
+        for(const k in prev){
+          const c = prev[k];
+            if(c.cooldown > 0){
+              const nc = Math.max(0, c.cooldown - dt);
+              if(nc!==c.cooldown) changed = true;
+              next[k] = { cooldown: nc, max: c.max };
+            } else {
+              next[k] = c;
+            }
+        }
+        return changed ? next : prev;
+      });
+      raf = requestAnimationFrame(frame);
+    }
+    raf = requestAnimationFrame(frame);
+    return ()=> cancelAnimationFrame(raf);
+  },[HP_MAX, EP_MAX]);
+  // Ability activation: consume EP & start cooldown if available
+  const onActivateAbility = React.useCallback((id:string)=>{
+    setRuntimeAbilities(prev => {
+      const cur = prev[id];
+      if(cur && cur.cooldown > 0) return prev; // still cooling
+      return { ...prev, [id]: { cooldown: (cur?.max)||BASE_COOLDOWN, max: (cur?.max)||BASE_COOLDOWN } };
+    });
+    // EP cost heuristic
+    setHeroVitals(v=> ({ ...v, ep: Math.max(0, v.ep - 10) }));
+  },[]);
+
   return (
     <div className="fixed inset-0 bg-[#06080c] text-gray-100">
-      {/* HUD with account + exit */}
-      <div className="absolute top-0 left-0 right-0 h-12 px-4 flex items-center justify-between bg-black/40 backdrop-blur border-b border-white/10 z-20">
-        <div className="text-sm opacity-80">Solo Mission</div>
-        <div className="flex items-center gap-3">
-          <button className="h-8 px-3 rounded-lg bg-white/10 border border-white/15 hover:bg-white/15 text-sm" onClick={onExit}>Exit</button>
-        </div>
-      </div>
-      <div className="absolute inset-0 pt-12">
+      <div className="absolute inset-0">
         <SoloMissionMap3D />
         <PetPanel />
-        {import.meta.env.DEV && <React.Suspense fallback={null}>
-          {/** Lightweight dev database smoke test */}
-          <div>
-            {/* Inline dynamic import avoided; component statically imported for simplicity */}
-            <DatabaseTestPanel />
-          </div>
-        </React.Suspense>}
+        {import.meta.env.DEV && <React.Suspense fallback={null}><div><DatabaseTestPanel /></div></React.Suspense>}
       </div>
+      <GameHUD
+        team={loadout.faction}
+        clock={'00:00'}
+        score={{ radiant: 0, dire: 0 }}
+        hero={{
+          name: loadout.name || 'Hero',
+          level: level,
+          hp: { current: Math.round(heroVitals.hp), max: HP_MAX },
+            ep: { current: Math.round(heroVitals.ep), max: EP_MAX },
+          xp: { current: XP_CUR, max: XP_MAX },
+          portraitUrl: loadout.portraitUrl,
+          buffs: heroBuffs,
+          debuffs: [],
+        }}
+        pet={pet}
+        abilities={abilities}
+        items={items}
+        resources={resources}
+        skillTokens={available}
+        petTokens={0}
+        onMenu={onExit}
+        onSettings={()=>{ /* TODO open settings overlay */ }}
+        onScoreboard={()=>{/* TODO scoreboard */}}
+        onScan={()=>{/* TODO scan action */}}
+        onStats={()=>{/* TODO stats modal */}}
+        onTalents={()=>{/* TODO talents panel */}}
+        onGlyph={()=>{/* TODO glyph ability */}}
+        onShop={()=>{/* TODO open shop */}}
+        onAbility={(id)=>{ onActivateAbility(id); console.log('[ability]', id); }}
+        onItem={(id)=>{ console.log('[item]', id); }}
+        onMinimapClick={(x,y)=>{ console.log('[minimap]', x,y); }}
+      />
+      <button onClick={onExit} className="fixed top-2 left-2 z-50 px-3 py-2 rounded bg-black/60 text-xs border border-white/10 hover:bg-black/70 pointer-events-auto">Exit</button>
     </div>
   );
 }
@@ -1238,34 +1375,44 @@ function LeftPlayerPanel({ className = '', playerName, accountLevel, loadout, he
   async function doShare(target: string){
     const url = characterShareUrl();
     if(target==='copy'){ copyShare(); setShareOpen(false); return; }
-    const portraitAbs = (()=>{ try { return new URL(loadout.portraitUrl, location.origin).toString(); } catch { return ''; } })();
-  const baseText = `Check out my Afro-Future hero ${loadout.name} of faction ${loadout.faction}!`;
-    const composedText = `${baseText}${portraitAbs ? ' ' + portraitAbs : ''}`;
+    // Removed direct image URL from share copy to avoid exposing raw PNG link in social posts.
+    const baseText = `Check out my Afro-Future hero ${loadout.name} of faction ${loadout.faction}!`;
+    // Previously appended portraitAbs; now intentionally omitted for cleaner post & to rely on OG metadata.
     const textEnc = encodeURIComponent(baseText);
-    const longTextEnc = encodeURIComponent(composedText);
+    const longTextEnc = textEnc; // no longer a longer variant with image URL
     // Optional: use Web Share API (system share sheet) when available and a future 'system' target is passed
     if(target==='system' && (navigator as any).share){
       try {
         // Attempt including image if CORS-permitted
+        // We still attempt image attachment for system share if permissible; reconstruct portraitAbs on-demand
         let files: File[] | undefined;
-        if(portraitAbs && (navigator as any).canShare){
-          try {
-            const resp = await fetch(portraitAbs, { mode:'cors' });
-            const blob = await resp.blob();
-            const f = new File([blob], 'hero.png', { type: blob.type || 'image/png' });
-            if((navigator as any).canShare({ files:[f] })) files = [f];
-          } catch {}
-        }
+        try {
+          const portraitAbs = new URL(loadout.portraitUrl, location.origin).toString();
+          if((navigator as any).canShare){
+            try {
+              const resp = await fetch(portraitAbs, { mode:'cors' });
+              const blob = await resp.blob();
+              const f = new File([blob], 'hero.png', { type: blob.type || 'image/png' });
+              if((navigator as any).canShare({ files:[f] })) files = [f];
+            } catch {}
+          }
+        } catch {}
         await (navigator as any).share({ title: 'Afro-Future Hero', text: baseText, url, files });
         setShareOpen(false);
         return;
       } catch {}
     }
+    // Append UTM parameters for attribution
+    function withUtm(base: string, source: string){
+      const sep = base.includes('?') ? '&' : '?';
+      return `${base}${sep}utm_source=${encodeURIComponent(source)}&utm_medium=social&utm_campaign=character_share`;
+    }
+    const trackedUrl = withUtm(url, 'generic');
     const shareLinks: Record<string,string> = {
-      twitter: `https://twitter.com/intent/tweet?text=${longTextEnc}&url=${encodeURIComponent(url)}`,
-      facebook: `https://www.facebook.com/sharer/sharer.php?u=${encodeURIComponent(url)}`,
-      reddit: `https://www.reddit.com/submit?url=${encodeURIComponent(url)}&title=${textEnc}`,
-      linkedin: `https://www.linkedin.com/sharing/share-offsite/?url=${encodeURIComponent(url)}`,
+      twitter: `https://twitter.com/intent/tweet?text=${longTextEnc}&url=${encodeURIComponent(withUtm(url,'twitter'))}`,
+      facebook: `https://www.facebook.com/sharer/sharer.php?u=${encodeURIComponent(withUtm(url,'facebook'))}`,
+      reddit: `https://www.reddit.com/submit?url=${encodeURIComponent(withUtm(url,'reddit'))}&title=${textEnc}`,
+      linkedin: `https://www.linkedin.com/sharing/share-offsite/?url=${encodeURIComponent(withUtm(url,'linkedin'))}`,
     };
     const href = shareLinks[target];
     if(href) window.open(href, '_blank','noopener,noreferrer');

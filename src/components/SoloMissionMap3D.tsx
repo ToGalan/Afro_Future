@@ -956,21 +956,7 @@ export default function SoloMissionMap3D() {
 
   return (
     <div className="relative w-screen h-screen bg-[#c9efff] text-gray-900 overflow-hidden">
-      {/* Hover HUD overlay */}
-      <div className="absolute top-2 left-2 z-10 text-xs grid grid-cols-4 gap-2 max-w-[90vw]">
-        <div className="rounded border border-white/60 bg-white/70 px-2 py-1 text-gray-800">Hover Tile: {hover ? `${hover.q},${hover.r}` : '---'}</div>
-        <div className="rounded border border-white/60 bg-white/70 px-2 py-1 text-gray-800">Tile: {hover ? hover.type : '--'} | Resource: {hover?.resource ?? 'None'}</div>
-  <div className="rounded border border-white/60 bg-white/70 px-2 py-1 text-gray-800">Moves: disabled</div>
-  <div className="rounded border border-white/60 bg-white/70 px-2 py-1 text-gray-800 text-right">Map: {GRID_W}x{GRID_H}</div>
-  {/* Profile debug line removed (was showing anon-failed) */}
-  {/* Session debug line removed */}
-  {/* FOV toggle removed (always on) */}
-  <div className="rounded border border-white/60 bg-white/70 px-2 py-1 text-gray-800 col-span-4 flex gap-2">
-    <span className="inline-flex items-center gap-1"><span className="w-3 h-3 inline-block bg-yellow-300/70" /> Hero FOV</span>
-    <span className="inline-flex items-center gap-1"><span className="w-3 h-3 inline-block bg-sky-400/70" /> Pet FOV</span>
-    <span className="inline-flex items-center gap-1"><span className="w-3 h-3 inline-block bg-fuchsia-400/70" /> Both</span>
-  </div>
-      </div>
+      {/* Helper overlay removed for production */}
       <div className="absolute inset-0 select-none">
     <Canvas shadows camera={{ position: [14, 16, 14], fov: 45 }}>
   <MapCameraController bounds={mapBounds} gameMode={true} heroWorld={heroWorld} recenterSignal={recenterSignal} />

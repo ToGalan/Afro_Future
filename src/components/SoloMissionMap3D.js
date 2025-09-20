@@ -877,42 +877,42 @@ export default function SoloMissionMap3D() {
     // endTurn logic removed (turn system disabled)
     // Keyboard hex movement (pointy axial layout with q,r; adapt to 6 neighbors)
     // Keyboard disabled for now
-    return (_jsxs("div", { className: "relative w-screen h-screen bg-[#c9efff] text-gray-900 overflow-hidden", children: [_jsxs("div", { className: "absolute top-2 left-2 z-10 text-xs grid grid-cols-4 gap-2 max-w-[90vw]", children: [_jsxs("div", { className: "rounded border border-white/60 bg-white/70 px-2 py-1 text-gray-800", children: ["Hover Tile: ", hover ? `${hover.q},${hover.r}` : '---'] }), _jsxs("div", { className: "rounded border border-white/60 bg-white/70 px-2 py-1 text-gray-800", children: ["Tile: ", hover ? hover.type : '--', " | Resource: ", hover?.resource ?? 'None'] }), _jsx("div", { className: "rounded border border-white/60 bg-white/70 px-2 py-1 text-gray-800", children: "Moves: disabled" }), _jsxs("div", { className: "rounded border border-white/60 bg-white/70 px-2 py-1 text-gray-800 text-right", children: ["Map: ", GRID_W, "x", GRID_H] }), _jsxs("div", { className: "rounded border border-white/60 bg-white/70 px-2 py-1 text-gray-800 col-span-4 flex gap-2", children: [_jsxs("span", { className: "inline-flex items-center gap-1", children: [_jsx("span", { className: "w-3 h-3 inline-block bg-yellow-300/70" }), " Hero FOV"] }), _jsxs("span", { className: "inline-flex items-center gap-1", children: [_jsx("span", { className: "w-3 h-3 inline-block bg-sky-400/70" }), " Pet FOV"] }), _jsxs("span", { className: "inline-flex items-center gap-1", children: [_jsx("span", { className: "w-3 h-3 inline-block bg-fuchsia-400/70" }), " Both"] })] })] }), _jsx("div", { className: "absolute inset-0 select-none", children: _jsxs(Canvas, { shadows: true, camera: { position: [14, 16, 14], fov: 45 }, children: [_jsx(MapCameraController, { bounds: mapBounds, gameMode: true, heroWorld: heroWorld, recenterSignal: recenterSignal }), _jsx(SceneBridge, { outerRadius: hexSize, onReady: (caps) => { setRefMountains(!!caps.mountain); setRefTrees(!!caps.tree); setRefWater(!!caps.water); setRefHills(!!caps.hills); setRefDesert(!!caps.desert); } }), _jsx(Sky, { inclination: 0.6, azimuth: 0.25, sunPosition: [50, 50, 10], turbidity: 2, rayleigh: 0.7, mieCoefficient: 0.005, mieDirectionalG: 0.8 }), _jsx("hemisphereLight", { args: ["#bde0fe", "#e6f3ff", 0.8] }), _jsx("directionalLight", { position: [30, 40, 15], intensity: 0.7, castShadow: true, "shadow-mapSize-width": 2048, "shadow-mapSize-height": 2048 }), _jsxs("group", { position: [0, 0, 0], children: [tiles.map((t) => {
-                                    const { x, z } = axialToWorld(t, hexSize);
-                                    const key = `${t.q},${t.r}`;
-                                    const inHero = heroVisible.has(key);
-                                    const inPet = petVisible.has(key);
-                                    let overlayColor = null;
-                                    // Always show FOV overlays
-                                    if (inHero && inPet)
-                                        overlayColor = '#d946efAA'; // both -> fuchsia
-                                    else if (inHero)
-                                        overlayColor = '#fde047AA'; // hero -> yellow
-                                    else if (inPet)
-                                        overlayColor = '#38bdf8AA'; // pet -> sky
-                                    return (_jsxs("group", { position: [x, 0, z], children: [_jsx(HexTile, { t: t, size: hexSize, onClick: () => { }, onHover: setHover }), overlayColor && (_jsxs("mesh", { rotation: [0, Math.PI / 6, 0], position: [0, heightFor(t) + 0.01, 0], renderOrder: 10, children: [_jsx("cylinderGeometry", { args: [hexSize * 0.98, hexSize * 0.98, 0.02, 6] }), _jsx("meshBasicMaterial", { color: overlayColor, transparent: true, opacity: 0.6, depthWrite: false })] }))] }, key));
-                                }), [hero, pet].map(a => {
-                                    const world = axialToWorld(a.pos, hexSize);
-                                    return (_jsxs("group", { position: [world.x, 0, world.z], children: [_jsxs("mesh", { position: [0, 0.5, 0], castShadow: true, children: [_jsx("sphereGeometry", { args: [0.4, 12, 12] }), _jsx("meshStandardMaterial", { color: a.kind === 'actor' ? '#facc15' : '#0ea5e9', emissive: a.kind === 'actor' ? '#ca8a04' : '#0369a1', emissiveIntensity: 0.6 })] }), _jsx(Text, { position: [0, 1.2, 0], fontSize: 0.6, color: "#111", anchorX: "center", anchorY: "middle", children: a.kind === 'actor' ? 'Hero' : 'Pet' })] }, a.id));
-                                }), _jsx("group", { children: (() => {
-                                        // Sample boundary by collecting extreme tiles and drawing thin invisible blockers (optional future collision)
-                                        const planes = [];
-                                        const { minQ, maxQ, minR, maxR } = axialBounds;
-                                        const extremes = [];
-                                        for (const t of tiles) {
-                                            if (t.q === minQ || t.q === maxQ || t.r === minR || t.r === maxR)
-                                                extremes.push(t);
-                                        }
-                                        for (const ex of extremes) {
-                                            const { x, z } = axialToWorld(ex, hexSize);
-                                            planes.push(_jsxs("mesh", { position: [x, 0.2, z], rotation: [-Math.PI / 2, 0, 0], children: [_jsx("circleGeometry", { args: [hexSize * 0.95, 6] }), _jsx("meshBasicMaterial", { color: "#000", transparent: true, opacity: 0 })] }, `boundary-${ex.q},${ex.r}`));
-                                        }
-                                        return planes;
-                                    })() })] }), (() => {
-                            const planeWidth = (mapBounds.maxX - mapBounds.minX) + 30;
-                            const planeHeight = (mapBounds.maxZ - mapBounds.minZ) + 30;
-                            return (_jsxs("mesh", { rotation: [-Math.PI / 2, 0, 0], position: [0, -0.05, 0], receiveShadow: true, children: [_jsx("planeGeometry", { args: [planeWidth, planeHeight] }), _jsx("meshStandardMaterial", { color: "#bff0ff" })] }));
-                        })(), _jsx(ContactShadows, { position: [0, 0, 0], opacity: 0.15, blur: 1.5, far: 15 })] }) })] }));
+    return (_jsx("div", { className: "relative w-screen h-screen bg-[#c9efff] text-gray-900 overflow-hidden", children: _jsx("div", { className: "absolute inset-0 select-none", children: _jsxs(Canvas, { shadows: true, camera: { position: [14, 16, 14], fov: 45 }, children: [_jsx(MapCameraController, { bounds: mapBounds, gameMode: true, heroWorld: heroWorld, recenterSignal: recenterSignal }), _jsx(SceneBridge, { outerRadius: hexSize, onReady: (caps) => { setRefMountains(!!caps.mountain); setRefTrees(!!caps.tree); setRefWater(!!caps.water); setRefHills(!!caps.hills); setRefDesert(!!caps.desert); } }), _jsx(Sky, { inclination: 0.6, azimuth: 0.25, sunPosition: [50, 50, 10], turbidity: 2, rayleigh: 0.7, mieCoefficient: 0.005, mieDirectionalG: 0.8 }), _jsx("hemisphereLight", { args: ["#bde0fe", "#e6f3ff", 0.8] }), _jsx("directionalLight", { position: [30, 40, 15], intensity: 0.7, castShadow: true, "shadow-mapSize-width": 2048, "shadow-mapSize-height": 2048 }), _jsxs("group", { position: [0, 0, 0], children: [tiles.map((t) => {
+                                const { x, z } = axialToWorld(t, hexSize);
+                                const key = `${t.q},${t.r}`;
+                                const inHero = heroVisible.has(key);
+                                const inPet = petVisible.has(key);
+                                let overlayColor = null;
+                                // Always show FOV overlays
+                                if (inHero && inPet)
+                                    overlayColor = '#d946efAA'; // both -> fuchsia
+                                else if (inHero)
+                                    overlayColor = '#fde047AA'; // hero -> yellow
+                                else if (inPet)
+                                    overlayColor = '#38bdf8AA'; // pet -> sky
+                                return (_jsxs("group", { position: [x, 0, z], children: [_jsx(HexTile, { t: t, size: hexSize, onClick: () => { }, onHover: setHover }), overlayColor && (_jsxs("mesh", { rotation: [0, Math.PI / 6, 0], position: [0, heightFor(t) + 0.01, 0], renderOrder: 10, children: [_jsx("cylinderGeometry", { args: [hexSize * 0.98, hexSize * 0.98, 0.02, 6] }), _jsx("meshBasicMaterial", { color: overlayColor, transparent: true, opacity: 0.6, depthWrite: false })] }))] }, key));
+                            }), [hero, pet].map(a => {
+                                const world = axialToWorld(a.pos, hexSize);
+                                return (_jsxs("group", { position: [world.x, 0, world.z], children: [_jsxs("mesh", { position: [0, 0.5, 0], castShadow: true, children: [_jsx("sphereGeometry", { args: [0.4, 12, 12] }), _jsx("meshStandardMaterial", { color: a.kind === 'actor' ? '#facc15' : '#0ea5e9', emissive: a.kind === 'actor' ? '#ca8a04' : '#0369a1', emissiveIntensity: 0.6 })] }), _jsx(Text, { position: [0, 1.2, 0], fontSize: 0.6, color: "#111", anchorX: "center", anchorY: "middle", children: a.kind === 'actor' ? 'Hero' : 'Pet' })] }, a.id));
+                            }), _jsx("group", { children: (() => {
+                                    // Sample boundary by collecting extreme tiles and drawing thin invisible blockers (optional future collision)
+                                    const planes = [];
+                                    const { minQ, maxQ, minR, maxR } = axialBounds;
+                                    const extremes = [];
+                                    for (const t of tiles) {
+                                        if (t.q === minQ || t.q === maxQ || t.r === minR || t.r === maxR)
+                                            extremes.push(t);
+                                    }
+                                    for (const ex of extremes) {
+                                        const { x, z } = axialToWorld(ex, hexSize);
+                                        planes.push(_jsxs("mesh", { position: [x, 0.2, z], rotation: [-Math.PI / 2, 0, 0], children: [_jsx("circleGeometry", { args: [hexSize * 0.95, 6] }), _jsx("meshBasicMaterial", { color: "#000", transparent: true, opacity: 0 })] }, `boundary-${ex.q},${ex.r}`));
+                                    }
+                                    return planes;
+                                })() })] }), (() => {
+                        const planeWidth = (mapBounds.maxX - mapBounds.minX) + 30;
+                        const planeHeight = (mapBounds.maxZ - mapBounds.minZ) + 30;
+                        return (_jsxs("mesh", { rotation: [-Math.PI / 2, 0, 0], position: [0, -0.05, 0], receiveShadow: true, children: [_jsx("planeGeometry", { args: [planeWidth, planeHeight] }), _jsx("meshStandardMaterial", { color: "#bff0ff" })] }));
+                    })(), _jsx(ContactShadows, { position: [0, 0, 0], opacity: 0.15, blur: 1.5, far: 15 })] }) }) }));
 }
 // Custom camera controller: edge pan & drag (game mode) with optional follow axial coord
 function MapCameraController({ bounds, gameMode, heroWorld, recenterSignal }) {
