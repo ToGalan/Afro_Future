@@ -46,14 +46,14 @@ export const GameHUD: React.FC<GameHUDProps> = ({ team, clock, fps=60, network='
     window.addEventListener('keydown', onKey);
     return ()=> window.removeEventListener('keydown', onKey);
   },[]);
-  // Filter resources shown in top-right: remove shards, skill token style entries, and blank/empty labels
+  // Extract shards & filter out duplicates from the resources cluster (avoid showing there)
+  let shardsValue: number | undefined; 
   const filteredResources = resources.filter(r => {
     const id = (r.id||'').toString().trim().toLowerCase();
     const label = (r.label||'').toString().trim().toLowerCase();
-    if (!label) return false; // drop empty duplicate card
-    if (id === 'shards' || label === 'shards') return false;
-    // Exclude anything that looks like skill tokens (prevent duplicate of central StatPill)
-    if (id.includes('skill') || id.includes('token') || label.includes('skill') || label.includes('token')) return false;
+    if (!label) return false;
+    if (id === 'shards' || label === 'shards') { shardsValue = r.value; return false; }
+    if (id.includes('skill') || id.includes('token') || label.includes('skill') || label.includes('token')) return false; // skill tokens handled separately
     return true;
   });
   const abilitySlots = abilities.slice(0,8);
@@ -61,26 +61,35 @@ export const GameHUD: React.FC<GameHUDProps> = ({ team, clock, fps=60, network='
 
   return (
     <div className="pointer-events-none text-white select-none">
-      {/* Restored top bar */}
-      <div className="fixed top-0 left-0 right-0 flex items-start justify-center pt-2 z-40">
-        {/* Single menu toggle button */}
-        <div className="absolute left-4 top-2 pointer-events-auto flex items-center gap-2">
-          <button onClick={()=> setMenuOpen(o=>!o)} className="w-10 h-10 rounded-lg bg-black/50 hover:bg-black/70 ring-1 ring-white/10 flex items-center justify-center text-lg" aria-label="Menu">☰</button>
-        </div>
-        <div className="flex items-center gap-3 bg-black/40 backdrop-blur rounded-xl px-4 py-1.5 ring-1 ring-white/10 text-xs">
+      {/* Standalone Menu Button (top-left) */}
+      <div className="fixed top-2 left-2 z-50 pointer-events-auto">
+        <button onClick={()=> setMenuOpen(o=>!o)} className="px-3 py-2 rounded-lg bg-black/40 hover:bg-black/60 ring-1 ring-white/10 text-xs font-semibold">Menu</button>
+      </div>
+
+      {/* Top Bar (no menu; includes shards + skill tokens) */}
+      <div className="fixed top-0 left-0 right-0 flex items-center justify-center pt-2 z-40 pointer-events-none">
+        <div className="flex items-center gap-3 bg-black/30 backdrop-blur rounded-xl px-3 py-1 ring-1 ring-white/10 text-xs pointer-events-auto">
           <div className="opacity-80 font-semibold tracking-wide">{team}</div>
           <div className="font-bold text-emerald-300">{score.radiant}</div>
           <div className="opacity-70">vs</div>
-            <div className="font-bold text-rose-300">{score.dire}</div>
-          <div className="opacity-80 tabular-nums">{clock}</div>
-          <div className="ml-2 flex items-center gap-2 pl-2 border-l border-white/10">
+          <div className="font-bold text-rose-300">{score.dire}</div>
+          <div className="opacity-80">{clock}</div>
+          {/* Tokens */}
+          <div className="flex items-center gap-2 ml-2">
+            <StatPill label="Shards" value={typeof shardsValue === 'number' ? shardsValue : 0} />
             <StatPill label="Skill" value={skillTokens} />
-            <StatPill label="Pet" value={petTokens} />
           </div>
         </div>
-        {/* Resources panel top-right */}
-        {!!filteredResources.length && <div className="absolute right-4 top-2 bg-black/40 backdrop-blur rounded-xl px-3 py-2 ring-1 ring-white/10 pointer-events-auto flex items-center gap-2">{filteredResources.map(r=> (<div key={r.id} className="px-2 py-1 rounded bg-white/5 ring-1 ring-white/10 text-[11px] flex items-center gap-1"><span>{r.icon || '◈'}</span><span className="opacity-70">{r.label}</span><span className="font-semibold tabular-nums">{r.value}</span></div>))}</div>}
       </div>
+
+      {/* Resources cluster (filtered, no shards/skill tokens) */}
+      {!!filteredResources.length && <div className="fixed top-4 right-4 bg-black/40 backdrop-blur rounded-xl px-3 py-2 ring-1 ring-white/10 pointer-events-auto z-40">
+        <div className="flex items-center gap-2 flex-wrap max-w-[460px] justify-end">{filteredResources.map(r=> (
+          <div key={r.id} className="px-2 py-1 rounded bg-white/5 ring-1 ring-white/10 text-[11px] flex items-center gap-1">
+            <span>{r.icon || '◈'}</span><span className="opacity-70">{r.label}</span><span className="font-semibold tabular-nums">{r.value}</span>
+          </div>
+        ))}</div>
+      </div>}
 
       {/* In-game popup menu */}
       {menuOpen && (
@@ -95,7 +104,7 @@ export const GameHUD: React.FC<GameHUDProps> = ({ team, clock, fps=60, network='
             <div className="flex flex-col gap-2 text-sm">
               <button onClick={()=>{ onSettings && onSettings(); setMenuOpen(false); }} className="px-3 py-2 rounded bg-white/5 hover:bg-white/10 text-left">Settings</button>
               <button onClick={()=>{ onScoreboard && onScoreboard(); setMenuOpen(false); }} className="px-3 py-2 rounded bg-white/5 hover:bg-white/10 text-left">Scoreboard</button>
-              <button onClick={()=>{ onShop && onShop(); setMenuOpen(false); }} className="px-3 py-2 rounded bg-white/5 hover:bg-white/10 text-left">Shop</button>
+              <button onClick={()=>{ onShop && onShop(); setMenuOpen(false); }} className="px-3 py-2 rounded bg-white/5 hover:bg-white/10 text-left">Store</button>
               <div className="h-px bg-white/10 my-1" />
               <button onClick={()=> setMenuOpen(false)} className="px-3 py-2 rounded bg-emerald-600/60 hover:bg-emerald-600/80 text-left font-semibold">Back to Game</button>
               <button onClick={()=>{ onMenu && onMenu(); setMenuOpen(false); }} className="px-3 py-2 rounded bg-rose-600/60 hover:bg-rose-600/80 text-left font-semibold">Back to Menu</button>
@@ -105,14 +114,7 @@ export const GameHUD: React.FC<GameHUDProps> = ({ team, clock, fps=60, network='
         </div>
       )}
 
-      {/* Abilities bar below top bar */}
-      <div className="fixed top-20 left-1/2 -translate-x-1/2 z-30 pointer-events-auto">
-        <div className="flex items-center gap-2 bg-black/40 backdrop-blur px-4 py-2 rounded-2xl ring-1 ring-white/10">
-          {abilitySlots.map((a,i)=>(
-            <Slot key={a.id} icon={a.icon || ['❄️','🔥','⚡','🌪️','🛡️','🌿','💥','🛰️'][i%8]} hotkey={a.key || String(i+1)} cooldown={a.cooldown} maxCooldown={a.maxCooldown} disabled={a.disabled} onClick={()=> onAbility && onAbility(a.id)} />
-          ))}
-        </div>
-      </div>
+      {/* Ability bar removed per request */}
 
       {/* Bottom bar reduced height (25%) */}
       <div className="fixed bottom-2 left-1/2 -translate-x-1/2 z-30 w-[1100px] pointer-events-none">
@@ -152,7 +154,9 @@ export const GameHUD: React.FC<GameHUDProps> = ({ team, clock, fps=60, network='
             {pet && (
               <div className="flex flex-col w-44 justify-between">
                 <div className="flex items-center gap-2">
-                  <div className="w-11 h-11 rounded-lg flex items-center justify-center bg-slate-900 ring-1 ring-white/10">{pet.icon || '🐾'}</div>
+                  <div className="w-11 h-11 rounded-lg overflow-hidden flex items-center justify-center bg-slate-900 ring-1 ring-white/10">
+                    {(pet as any).portraitUrl ? <img src={(pet as any).portraitUrl} alt={pet.name} className="w-full h-full object-cover" /> : (pet.icon || '🐾')}
+                  </div>
                   <div className="flex-1">
                     <div className="flex items-center justify-between"><div className="text-[11px] font-semibold">{pet.name}</div><div className="text-[9px] opacity-70">Lv {pet.level}</div></div>
                     <Bar value={pet.hp.current} max={pet.hp.max} color="bg-lime-400" />
@@ -172,7 +176,7 @@ export const GameHUD: React.FC<GameHUDProps> = ({ team, clock, fps=60, network='
 
           {/* Inventory */}
           <div className="w-72 bg-black/40 rounded-2xl p-2 ring-1 ring-white/10 h-[7.5rem] pointer-events-auto flex flex-col">
-            <div className="flex items-center justify-between mb-1"><div className="font-semibold text-xs">Inventory</div><button onClick={onShop} className="px-2 py-1 rounded bg-white/10 hover:bg-white/20 text-[10px]">Shop</button></div>
+            <div className="flex items-center justify-between mb-1"><div className="font-semibold text-xs">Inventory</div></div>
             <div className="grid grid-cols-4 gap-1.5 flex-1 content-start">{itemSlots.map((it,i)=>(<Slot key={it.id} icon={it.icon || '📦'} hotkey={it.key || ['Q','W','E','R','T','Y','U','I'][i] || ''} qty={it.qty} cooldown={it.cooldown} maxCooldown={it.maxCooldown} onClick={()=> onItem && onItem(it.id)} />))}</div>
           </div>
         </div>

@@ -1,10 +1,11 @@
 import { jsx as _jsx, jsxs as _jsxs } from "react/jsx-runtime";
-import React, { useMemo, useState, useEffect } from 'react';
+import React, { useMemo, useState, useEffect, Suspense } from 'react';
 import { usePlayerProfile } from '../hooks/usePlayerProfile';
 import { usePlayerSession } from '../hooks/usePlayerSession';
 import * as THREE from 'three';
 import { Canvas, useThree, useFrame } from '@react-three/fiber';
-import { Text, Sky, ContactShadows } from '@react-three/drei';
+import { Text, Sky, ContactShadows, useGLTF } from '@react-three/drei';
+import { BaseBody, AvatarPartsLoader } from './AvatarPartsLoader';
 // Side-effect imports: reference systems attach to window.* and expect global THREE
 import '../assets/ref_3d_map/mountain-system.js';
 import '../assets/ref_3d_map/integration-helper.js';
@@ -593,13 +594,16 @@ function HexTile({ t, size, onClick, onHover }) {
             rotation: [0, Math.PI / 6, 0], children: [_jsx("cylinderGeometry", { args: [size, size, h, 6] }), _jsx("meshStandardMaterial", { color: color })] }) }));
 }
 export default function SoloMissionMap3D() {
-    // Expanded map size (2x previous) for broader exploration
-    const GRID_W = 192;
-    const GRID_H = 288;
-    const hexSize = 1.0; // smaller size to fit large grid visually
+    // Adjusted map size to requested 240 x 240 tiles (square)
+    const GRID_W = 240;
+    const GRID_H = 240;
+    // Increase visual scale (3x perceived size) by enlarging hex radius and render radius
+    const MAP_SCALE = 3; // new scale factor
+    const hexSize = 1.0 * MAP_SCALE;
     const tiles = useMemo(() => {
         const t = generateTerrainMapRect(GRID_W, GRID_H, 1337);
         assignResources(t);
+        console.log('[map:init]', { width: GRID_W, height: GRID_H, tileCount: t.length });
         return t;
     }, []);
     // Player profile (anonymous auth + progress)
@@ -631,6 +635,9 @@ export default function SoloMissionMap3D() {
     useEffect(() => {
         if (profile && profile.progress?.heroPosition) {
             setHero(h => ({ ...h, pos: profile.progress.heroPosition }));
+            console.log('[hero] restored position from profile', profile.progress.heroPosition);
+            // trigger camera recenter once after load
+            setRecenterSignal(s => s + 1);
         }
     }, [profile]);
     // Place pet offset from hero (one ring out) but inside bounds
@@ -661,6 +668,29 @@ export default function SoloMissionMap3D() {
     }, [hero.pos, hero.vision]);
     // (Patrol logic moved below tilesByKey for declaration order)
     const heroVisible = useMemo(() => computeVisibleSet(tiles, hero.pos, hero.vision), [tiles, hero]);
+    // --- Render culling: only render tiles within MANHATTAN axial distance of hero to reduce DOM/scene weight on large maps ---
+    // Distance buffer chosen larger than vision for exploration context.
+    const RENDER_RADIUS = 40 * MAP_SCALE; // expanded with scale so area shown increases
+    const culledTiles = useMemo(() => {
+        return tiles.filter(t => axialDistance(t, hero.pos) <= RENDER_RADIUS);
+    }, [tiles, hero.pos]);
+    // Memory / tile count instrumentation (periodic)
+    useEffect(() => {
+        let lastLog = 0;
+        let raf;
+        const loop = () => {
+            const now = performance.now();
+            if (now - lastLog > 5000) { // every 5s
+                lastLog = now;
+                const mem = performance.memory;
+                const usedMB = mem ? (mem.usedJSHeapSize / 1024 / 1024).toFixed(1) : 'n/a';
+                console.log('[map] tiles(total,rendered)', tiles.length, culledTiles.length, 'heapMB', usedMB);
+            }
+            raf = requestAnimationFrame(loop);
+        };
+        raf = requestAnimationFrame(loop);
+        return () => cancelAnimationFrame(raf);
+    }, [tiles.length, culledTiles.length]);
     // Explore accumulation (union of all heroVisible over time)
     const exploredRef = React.useRef(new Set());
     // Seed from profile once when profile loads
@@ -688,6 +718,78 @@ export default function SoloMissionMap3D() {
     const petVisible = useMemo(() => computeVisibleSet(tiles, pet.pos, pet.vision), [tiles, pet]);
     // World position of hero (for camera recentering)
     const heroWorld = useMemo(() => axialToWorld(hero.pos, hexSize), [hero.pos, hexSize]);
+    // Avatar assembly / loading
+    const heroModelUrl = profile?.progress?.avatar?.modelUrl;
+    useEffect(() => {
+        if (heroModelUrl) {
+            console.log('[avatar] modelUrl detected', heroModelUrl);
+        }
+        else {
+            console.log('[avatar] no modelUrl, will use assembled parts');
+        }
+    }, [heroModelUrl]);
+    const heroParts = profile?.progress?.avatar?.parts || {};
+    const heroColors = profile?.progress?.avatar?.colors || { primary: '#00A37A', secondary: '#F5F5F5', skin: '#c58b66' };
+    const AssembledAvatar = () => (_jsxs("group", { position: [0, 0, 0], scale: 0.9, rotation: [0, Math.PI, 0], children: [_jsx(BaseBody, {}), _jsx(AvatarPartsLoader, { parts: heroParts })] }));
+    const GLBAvatar = ({ url }) => {
+        const [failed, setFailed] = useState(false);
+        let gltf = null;
+        try {
+            gltf = useGLTF(url);
+        }
+        catch (e) {
+            console.warn('[avatar] synchronous hook error for GLB', url, e);
+            setFailed(true);
+        }
+        const scene = gltf?.scene;
+        const inst = useMemo(() => {
+            if (!scene)
+                return null;
+            try {
+                const clone = scene.clone();
+                console.log('[avatar] GLB cloned', url);
+                return clone;
+            }
+            catch (e) {
+                console.error('[avatar] clone failed', e);
+                return null;
+            }
+        }, [scene, url]);
+        useEffect(() => {
+            if (!inst)
+                return;
+            const { primary, secondary, skin } = heroColors;
+            let materialCount = 0;
+            inst.traverse(obj => {
+                const mats = obj.material;
+                if (!mats)
+                    return;
+                const apply = (mat) => {
+                    const name = (mat.name || '').toLowerCase();
+                    if (!mat?.color)
+                        return;
+                    materialCount++;
+                    if (name.includes('skin'))
+                        mat.color.set(skin);
+                    else if (name.includes('primary') || name.includes('armor') || name.includes('fabric'))
+                        mat.color.set(primary);
+                    else if (name.includes('secondary') || name.includes('trim') || name.includes('detail') || name.includes('accent'))
+                        mat.color.set(secondary);
+                };
+                if (Array.isArray(mats))
+                    mats.forEach(apply);
+                else
+                    apply(mats);
+            });
+            console.log('[avatar] tint applied', { url, materialCount, colors: heroColors });
+        }, [inst, heroColors, url]);
+        if (failed)
+            return _jsx(AssembledAvatar, {});
+        if (!inst)
+            return _jsx("group", { position: [0, 0, 0], children: _jsxs("mesh", { children: [_jsx("boxGeometry", { args: [0.4, 0.4, 0.4] }), _jsx("meshStandardMaterial", { color: "#f87171" })] }) });
+        return _jsx("primitive", { object: inst, position: [0, 0, 0], rotation: [0, Math.PI, 0], scale: 0.9 });
+    };
+    const HeroAvatar3D = ({ world }) => (_jsxs("group", { position: [world.x, 0, world.z], children: [_jsxs("mesh", { rotation: [-Math.PI / 2, 0, 0], position: [0, 0.01, 0], receiveShadow: true, children: [_jsx("circleGeometry", { args: [0.75, 24] }), _jsx("meshStandardMaterial", { color: "#000", transparent: true, opacity: 0.22 })] }), _jsx(Suspense, { fallback: _jsx("group", { position: [0, 0, 0], children: _jsxs("mesh", { children: [_jsx("cylinderGeometry", { args: [0.3, 0.3, 0.6, 12] }), _jsx("meshStandardMaterial", { color: "#64748b" })] }) }), children: heroModelUrl ? _jsx(GLBAvatar, { url: heroModelUrl }) : _jsx(AssembledAvatar, {}) }), _jsxs("mesh", { rotation: [-Math.PI / 2, 0, 0], position: [0, 0.015, 0], children: [_jsx("ringGeometry", { args: [0.5, 0.64, 40] }), _jsx("meshBasicMaterial", { color: "#facc15", transparent: true, opacity: 0.85 })] })] }));
     // Precompute world bounds for camera panning
     const mapBounds = useMemo(() => {
         let minX = Infinity, maxX = -Infinity, minZ = Infinity, maxZ = -Infinity;
@@ -756,7 +858,7 @@ export default function SoloMissionMap3D() {
                 }
                 return { ...curr, pos: best };
             });
-        }, 900);
+        }, 400); // patrol speed increased from 900ms to 400ms
         return () => clearInterval(interval);
     }, [petTarget, tilesByKey, hero.pos, hero.vision]);
     // Precompute axial bounds for collider logic
@@ -877,7 +979,7 @@ export default function SoloMissionMap3D() {
     // endTurn logic removed (turn system disabled)
     // Keyboard hex movement (pointy axial layout with q,r; adapt to 6 neighbors)
     // Keyboard disabled for now
-    return (_jsx("div", { className: "relative w-screen h-screen bg-[#c9efff] text-gray-900 overflow-hidden", children: _jsx("div", { className: "absolute inset-0 select-none", children: _jsxs(Canvas, { shadows: true, camera: { position: [14, 16, 14], fov: 45 }, children: [_jsx(MapCameraController, { bounds: mapBounds, gameMode: true, heroWorld: heroWorld, recenterSignal: recenterSignal }), _jsx(SceneBridge, { outerRadius: hexSize, onReady: (caps) => { setRefMountains(!!caps.mountain); setRefTrees(!!caps.tree); setRefWater(!!caps.water); setRefHills(!!caps.hills); setRefDesert(!!caps.desert); } }), _jsx(Sky, { inclination: 0.6, azimuth: 0.25, sunPosition: [50, 50, 10], turbidity: 2, rayleigh: 0.7, mieCoefficient: 0.005, mieDirectionalG: 0.8 }), _jsx("hemisphereLight", { args: ["#bde0fe", "#e6f3ff", 0.8] }), _jsx("directionalLight", { position: [30, 40, 15], intensity: 0.7, castShadow: true, "shadow-mapSize-width": 2048, "shadow-mapSize-height": 2048 }), _jsxs("group", { position: [0, 0, 0], children: [tiles.map((t) => {
+    return (_jsx("div", { className: "relative w-screen h-screen bg-white text-gray-900 overflow-hidden", children: _jsx("div", { className: "absolute inset-0 select-none", children: _jsxs(Canvas, { shadows: true, camera: { position: [14, 16, 14], fov: 45 }, children: [_jsx(MapCameraController, { bounds: mapBounds, gameMode: true, heroWorld: heroWorld, recenterSignal: recenterSignal }), _jsx(SceneBridge, { outerRadius: hexSize, onReady: (caps) => { setRefMountains(!!caps.mountain); setRefTrees(!!caps.tree); setRefWater(!!caps.water); setRefHills(!!caps.hills); setRefDesert(!!caps.desert); } }), _jsx(Sky, { inclination: 0.6, azimuth: 0.25, sunPosition: [50, 50, 10], turbidity: 2, rayleigh: 0.7, mieCoefficient: 0.005, mieDirectionalG: 0.8 }), _jsx("hemisphereLight", { args: ["#bde0fe", "#e6f3ff", 0.8] }), _jsx("directionalLight", { position: [30, 40, 15], intensity: 0.7, castShadow: true, "shadow-mapSize-width": 2048, "shadow-mapSize-height": 2048 }), _jsxs("group", { position: [0, 0, 0], children: [culledTiles.map((t) => {
                                 const { x, z } = axialToWorld(t, hexSize);
                                 const key = `${t.q},${t.r}`;
                                 const inHero = heroVisible.has(key);
@@ -891,10 +993,10 @@ export default function SoloMissionMap3D() {
                                 else if (inPet)
                                     overlayColor = '#38bdf8AA'; // pet -> sky
                                 return (_jsxs("group", { position: [x, 0, z], children: [_jsx(HexTile, { t: t, size: hexSize, onClick: () => { }, onHover: setHover }), overlayColor && (_jsxs("mesh", { rotation: [0, Math.PI / 6, 0], position: [0, heightFor(t) + 0.01, 0], renderOrder: 10, children: [_jsx("cylinderGeometry", { args: [hexSize * 0.98, hexSize * 0.98, 0.02, 6] }), _jsx("meshBasicMaterial", { color: overlayColor, transparent: true, opacity: 0.6, depthWrite: false })] }))] }, key));
-                            }), [hero, pet].map(a => {
-                                const world = axialToWorld(a.pos, hexSize);
-                                return (_jsxs("group", { position: [world.x, 0, world.z], children: [_jsxs("mesh", { position: [0, 0.5, 0], castShadow: true, children: [_jsx("sphereGeometry", { args: [0.4, 12, 12] }), _jsx("meshStandardMaterial", { color: a.kind === 'actor' ? '#facc15' : '#0ea5e9', emissive: a.kind === 'actor' ? '#ca8a04' : '#0369a1', emissiveIntensity: 0.6 })] }), _jsx(Text, { position: [0, 1.2, 0], fontSize: 0.6, color: "#111", anchorX: "center", anchorY: "middle", children: a.kind === 'actor' ? 'Hero' : 'Pet' })] }, a.id));
-                            }), _jsx("group", { children: (() => {
+                            }), _jsx(HeroAvatar3D, { world: heroWorld }), (() => {
+                                const world = axialToWorld(pet.pos, hexSize);
+                                return (_jsxs("group", { position: [world.x, 0, world.z], children: [_jsxs("mesh", { position: [0, 0.5, 0], castShadow: true, children: [_jsx("sphereGeometry", { args: [0.35, 12, 12] }), _jsx("meshStandardMaterial", { color: "#0ea5e9", emissive: "#0369a1", emissiveIntensity: 0.5 })] }), _jsx(Text, { position: [0, 1.15, 0], fontSize: 0.5, color: "#111", anchorX: "center", anchorY: "middle", children: "Pet" })] }, pet.id));
+                            })(), _jsx("group", { children: (() => {
                                     // Sample boundary by collecting extreme tiles and drawing thin invisible blockers (optional future collision)
                                     const planes = [];
                                     const { minQ, maxQ, minR, maxR } = axialBounds;
@@ -911,7 +1013,7 @@ export default function SoloMissionMap3D() {
                                 })() })] }), (() => {
                         const planeWidth = (mapBounds.maxX - mapBounds.minX) + 30;
                         const planeHeight = (mapBounds.maxZ - mapBounds.minZ) + 30;
-                        return (_jsxs("mesh", { rotation: [-Math.PI / 2, 0, 0], position: [0, -0.05, 0], receiveShadow: true, children: [_jsx("planeGeometry", { args: [planeWidth, planeHeight] }), _jsx("meshStandardMaterial", { color: "#bff0ff" })] }));
+                        return null; // remove solid background plane
                     })(), _jsx(ContactShadows, { position: [0, 0, 0], opacity: 0.15, blur: 1.5, far: 15 })] }) }) }));
 }
 // Custom camera controller: edge pan & drag (game mode) with optional follow axial coord
