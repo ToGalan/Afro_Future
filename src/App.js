@@ -804,7 +804,7 @@ function MissionScreen({ onExit }) {
                     portraitUrl: loadout.portraitUrl,
                     buffs: heroBuffs,
                     debuffs: [],
-                }, pet: pet, abilities: abilities, items: items, resources: resources, skillTokens: available, petTokens: 0, onMenu: onExit, onSettings: () => { }, onScoreboard: () => { }, onScan: () => { }, onStats: () => { }, onTalents: () => { }, onGlyph: () => { }, onShop: () => { }, onAbility: (id) => { onActivateAbility(id); console.log('[ability]', id); }, onItem: (id) => { console.log('[item]', id); }, onMinimapClick: (x, y) => { console.log('[minimap]', x, y); } }), _jsx("button", { onClick: onExit, className: "fixed top-2 left-2 z-50 px-3 py-2 rounded bg-black/60 text-xs border border-white/10 hover:bg-black/70 pointer-events-auto", children: "Exit" })] }));
+                }, pet: pet, abilities: abilities, items: items, resources: resources, skillTokens: available, petTokens: 0, onMenu: onExit, onSettings: () => { }, onScoreboard: () => { }, onScan: () => { }, onStats: () => { }, onTalents: () => { }, onGlyph: () => { }, onShop: () => { }, onAbility: (id) => { onActivateAbility(id); console.log('[ability]', id); }, onItem: (id) => { console.log('[item]', id); }, onMinimapClick: (x, y) => { console.log('[minimap]', x, y); } })] }));
 }
 // Invite dialog modal
 function InviteDialog({ onClose }) {

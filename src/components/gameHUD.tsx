@@ -39,6 +39,13 @@ const Slot = React.memo(function Slot({ icon='⬢', hotkey, qty, cooldown, maxCo
 const StatPill = React.memo(function StatPill({ label, value }: { label: string; value: string | number }) { return <div className="px-2 py-1 rounded bg-white/5 ring-1 ring-white/10 text-xs flex items-center gap-1"><span className="opacity-70">{label}</span><span className="font-semibold tabular-nums">{value}</span></div>; });
 
 export const GameHUD: React.FC<GameHUDProps> = ({ team, clock, fps=60, network='OK', score, hero, pet, abilities, items, resources, skillTokens, petTokens, subtitles, onShop, onAbility, onItem, onMinimapClick, onMenu, onSettings, onScoreboard, onScan, onStats, onTalents, onGlyph }) => {
+  // Single in-game menu popup state
+  const [menuOpen, setMenuOpen] = React.useState(false);
+  React.useEffect(()=>{
+    function onKey(e:KeyboardEvent){ if(e.key==='Escape') setMenuOpen(false); }
+    window.addEventListener('keydown', onKey);
+    return ()=> window.removeEventListener('keydown', onKey);
+  },[]);
   const filteredResources = resources.filter(r => r.id.toLowerCase() !== 'shards' && r.label.toLowerCase() !== 'shards');
   const abilitySlots = abilities.slice(0,8);
   const itemSlots = items.slice(0,8);
@@ -47,32 +54,49 @@ export const GameHUD: React.FC<GameHUDProps> = ({ team, clock, fps=60, network='
     <div className="pointer-events-none text-white select-none">
       {/* Restored top bar */}
       <div className="fixed top-0 left-0 right-0 flex items-start justify-center pt-2 z-40">
+        {/* Single menu toggle button */}
+        <div className="absolute left-4 top-2 pointer-events-auto">
+          <button onClick={()=> setMenuOpen(o=>!o)} className="w-10 h-10 rounded-lg bg-black/50 hover:bg-black/70 ring-1 ring-white/10 flex items-center justify-center text-lg" aria-label="Menu">☰</button>
+        </div>
         <div className="flex items-center gap-3 bg-black/40 backdrop-blur rounded-xl px-4 py-1.5 ring-1 ring-white/10 text-xs">
           <div className="opacity-80 font-semibold tracking-wide">{team}</div>
           <div className="font-bold text-emerald-300">{score.radiant}</div>
           <div className="opacity-70">vs</div>
             <div className="font-bold text-rose-300">{score.dire}</div>
           <div className="opacity-80 tabular-nums">{clock}</div>
-          <div className="opacity-70">FPS {fps}</div>
-          <div className="opacity-70">NET {network}</div>
           <div className="ml-2 flex items-center gap-2 pl-2 border-l border-white/10">
             <StatPill label="Skill" value={skillTokens} />
             <StatPill label="Pet" value={petTokens} />
           </div>
         </div>
-        {/* Side vertical menu buttons */}
-        <div className="absolute left-4 top-16 flex flex-col gap-2 pointer-events-auto">
-          <button onClick={onMenu} className="px-3 py-2 rounded bg-black/40 hover:bg-black/60 ring-1 ring-white/10 text-xs">Main Menu</button>
-          <button onClick={onSettings} className="px-3 py-2 rounded bg-black/40 hover:bg-black/60 ring-1 ring-white/10 text-xs">Settings</button>
-          <button onClick={onScoreboard} className="px-3 py-2 rounded bg-black/40 hover:bg-black/60 ring-1 ring-white/10 text-xs">Scoreboard</button>
-          <button onClick={onScan} className="px-3 py-2 rounded bg-black/40 hover:bg-black/60 ring-1 ring-white/10 text-xs">Scan</button>
-          <button onClick={onGlyph} className="px-3 py-2 rounded bg-black/40 hover:bg-black/60 ring-1 ring-white/10 text-xs">Fortify</button>
-          <button onClick={onStats} className="px-3 py-2 rounded bg-black/40 hover:bg-black/60 ring-1 ring-white/10 text-xs">Hero Stats</button>
-          <button onClick={onTalents} className="px-3 py-2 rounded bg-black/40 hover:bg-black/60 ring-1 ring-white/10 text-xs">Talents</button>
-        </div>
         {/* Resources panel top-right */}
         {!!filteredResources.length && <div className="absolute right-4 top-2 bg-black/40 backdrop-blur rounded-xl px-3 py-2 ring-1 ring-white/10 pointer-events-auto flex items-center gap-2">{filteredResources.map(r=> (<div key={r.id} className="px-2 py-1 rounded bg-white/5 ring-1 ring-white/10 text-[11px] flex items-center gap-1"><span>{r.icon || '◈'}</span><span className="opacity-70">{r.label}</span><span className="font-semibold tabular-nums">{r.value}</span></div>))}</div>}
       </div>
+
+      {/* In-game popup menu */}
+      {menuOpen && (
+        <div className="fixed inset-0 z-50 pointer-events-auto flex">
+          {/* backdrop */}
+          <div className="absolute inset-0 bg-black/50 backdrop-blur-sm" onClick={()=> setMenuOpen(false)} />
+          <div className="relative mt-24 ml-20 w-72 bg-[#0b1218]/95 rounded-xl ring-1 ring-white/10 p-4 flex flex-col gap-2 shadow-2xl">
+            <div className="flex items-center mb-1">
+              <div className="text-sm font-semibold tracking-wide">Game Menu</div>
+            </div>
+            <div className="flex flex-col gap-2 text-sm">
+              <button onClick={()=>{ onSettings && onSettings(); setMenuOpen(false); }} className="px-3 py-2 rounded bg-white/5 hover:bg-white/10 text-left">Settings</button>
+              <button onClick={()=>{ onScoreboard && onScoreboard(); setMenuOpen(false); }} className="px-3 py-2 rounded bg-white/5 hover:bg-white/10 text-left">Scoreboard</button>
+              <button onClick={()=>{ onScan && onScan(); setMenuOpen(false); }} className="px-3 py-2 rounded bg-white/5 hover:bg-white/10 text-left">Scan</button>
+              <button onClick={()=>{ onGlyph && onGlyph(); setMenuOpen(false); }} className="px-3 py-2 rounded bg-white/5 hover:bg-white/10 text-left">Fortify</button>
+              <button onClick={()=>{ onStats && onStats(); setMenuOpen(false); }} className="px-3 py-2 rounded bg-white/5 hover:bg-white/10 text-left">Hero Stats</button>
+              <button onClick={()=>{ onTalents && onTalents(); setMenuOpen(false); }} className="px-3 py-2 rounded bg-white/5 hover:bg-white/10 text-left">Talents</button>
+              <button onClick={()=>{ onShop && onShop(); setMenuOpen(false); }} className="px-3 py-2 rounded bg-white/5 hover:bg-white/10 text-left">Shop</button>
+              <div className="h-px bg-white/10 my-1" />
+              <button onClick={()=>{ onMenu && onMenu(); setMenuOpen(false); }} className="px-3 py-2 rounded bg-rose-600/60 hover:bg-rose-600/80 text-left font-semibold">Back to Menu</button>
+            </div>
+            <div className="mt-2 text-[10px] opacity-60">Press Esc to close.</div>
+          </div>
+        </div>
+      )}
 
       {/* Abilities bar below top bar */}
       <div className="fixed top-20 left-1/2 -translate-x-1/2 z-30 pointer-events-auto">

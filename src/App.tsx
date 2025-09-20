@@ -715,7 +715,7 @@ function MissionScreen({ onExit }: { onExit: () => void }){
         onItem={(id)=>{ console.log('[item]', id); }}
         onMinimapClick={(x,y)=>{ console.log('[minimap]', x,y); }}
       />
-      <button onClick={onExit} className="fixed top-2 left-2 z-50 px-3 py-2 rounded bg-black/60 text-xs border border-white/10 hover:bg-black/70 pointer-events-auto">Exit</button>
+  {/* Standalone Exit button removed; Back to Menu now lives inside GameHUD popup */}
     </div>
   );
 }
