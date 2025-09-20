@@ -18,6 +18,7 @@ import SoloMissionMap3D from './components/SoloMissionMap3D';
 import DatabaseTestPanel from './components/DatabaseTestPanel';
 import PetPanel from './components/PetPanel';
 import { useAutoSyncSkills } from './hooks/useAutoSyncSkills';
+import { collectAndRegisterPush } from './services/messaging';
 // Runtime config shape
 interface RuntimeConfig { storeDomain: string | null; apiVersion: string; debug: boolean; buildHash?: string | null; }
 const APP_VERSION_FALLBACK = 'v0.2.3';
@@ -70,6 +71,13 @@ export default function App() {
   const [activeLoadout, setActiveLoadout] = useState<CharacterLoadout | null>(null);
   const [runtimeConfig, setRuntimeConfig] = useState<RuntimeConfig | null>(null);
   const [configLoaded, setConfigLoaded] = useState(false);
+  const [inviteOpen, setInviteOpen] = useState(false);
+
+  useEffect(()=>{
+    function onOpen(){ setInviteOpen(true); }
+    window.addEventListener('af:openInviteDialog', onOpen as any);
+    return ()=> window.removeEventListener('af:openInviteDialog', onOpen as any);
+  },[]);
 
   // Hydrate saved avatar (loadout) from localStorage once on mount, normalizing portrait URL
   useEffect(()=>{
@@ -181,6 +189,12 @@ export default function App() {
     setIdToken(token);
     localStorage.setItem('afrofuture.idToken', token);
     setPhase('boot');
+    // Attempt to enter fullscreen immediately after auth (user gesture context often preserved from click)
+    try {
+      if(!document.fullscreenElement){
+        document.documentElement.requestFullscreen?.();
+      }
+    } catch(e){ console.warn('[fullscreen] request failed', e); }
     try {
       const payload = JSON.parse(atob(token.split('.')[1] || 'e30='));
   const prof = { sub: payload.sub, name: payload.name || payload.given_name || payload.family_name, email: payload.email, picture: payload.picture };
@@ -228,7 +242,9 @@ export default function App() {
         // Create initial profile server-side
         persistServerProfile(token, { ...prof });
       }
-    } catch {}
+  } catch {}
+  // Non-blocking push registration attempt
+  collectAndRegisterPush(token).catch(()=>{});
     // Initialize collaborative CRDT state then join a default room (e.g., 'lobby')
     try {
       await initCRDT({ idToken: token, world: 'global' });
@@ -534,6 +550,9 @@ export default function App() {
           profile={profile}
           onSignOut={handleSignOut}
         />
+        {inviteOpen && (
+          <InviteDialog onClose={()=>setInviteOpen(false)} />
+        )}
       </GameViewport>
     )
   );
@@ -560,6 +579,72 @@ function MissionScreen({ onExit }: { onExit: () => void }){
           </div>
         </React.Suspense>}
       </div>
+    </div>
+  );
+}
+
+// Invite dialog modal
+function InviteDialog({ onClose }: { onClose: () => void }) {
+  const [email, setEmail] = React.useState('');
+  const [message, setMessage] = React.useState('Join me in Afro-Future Rising!');
+  const [submitting, setSubmitting] = React.useState(false);
+  const [result, setResult] = React.useState<{ ok: boolean; code?: string; error?: string; emailed?: boolean }|null>(null);
+  const valid = /[^@\s]+@[^@\s]+\.[^@\s]+/.test(email);
+  async function submit(e: React.FormEvent){
+    e.preventDefault();
+    if(!valid || submitting) return;
+    setSubmitting(true); setResult(null);
+    try {
+      const idToken = localStorage.getItem('afrofuture.idToken');
+      const r = await fetch('/invites', { method:'POST', headers: { 'Content-Type':'application/json', ...(idToken? { 'Authorization':'Bearer '+idToken } : {}) }, body: JSON.stringify({ email, message }) });
+      const json = await r.json().catch(()=>({ ok:false, error:'bad_json' }));
+      if(json.ok){ setResult({ ok:true, code: json.code, emailed: json.emailed }); }
+      else setResult({ ok:false, error: json.error || 'invite_failed' });
+    } catch(e:any){ setResult({ ok:false, error: e?.message || 'net_failed' }); }
+    finally { setSubmitting(false); }
+  }
+  return (
+    <div className="fixed inset-0 z-[200] flex items-center justify-center">
+      <div className="absolute inset-0 bg-black/70 backdrop-blur-sm" onClick={onClose} />
+      <form onSubmit={submit} className="relative w-full max-w-md mx-auto rounded-2xl border border-white/10 bg-[#1b222c]/95 p-6 flex flex-col gap-4 shadow-2xl">
+        <div className="flex items-start justify-between">
+          <div>
+            <h2 className="text-lg font-semibold tracking-wide">Invite a Friend</h2>
+            <p className="text-[11px] opacity-70 mt-1 leading-relaxed">Send an invitation link. They'll receive a unique code and future rewards logic can hook into this.</p>
+          </div>
+          <button type="button" onClick={onClose} className="w-8 h-8 -m-2 rounded-lg flex items-center justify-center text-xs bg-white/5 hover:bg-white/10 border border-white/10">✕</button>
+        </div>
+        <label className="flex flex-col gap-1 text-xs">
+          <span className="opacity-70">Friend's Email</span>
+          <input value={email} onChange={e=>setEmail(e.target.value)} type="email" required placeholder="friend@example.com" className="h-10 px-3 rounded-lg bg-black/40 border border-white/10 focus:outline-none focus:border-emerald-400/60 text-sm" />
+        </label>
+        <label className="flex flex-col gap-1 text-xs">
+          <span className="opacity-70">Message (optional)</span>
+          <textarea value={message} onChange={e=>setMessage(e.target.value)} rows={3} maxLength={500} className="resize-none px-3 py-2 rounded-lg bg-black/40 border border-white/10 focus:outline-none focus:border-emerald-400/60 text-[13px]" />
+        </label>
+        <div className="flex items-center justify-between text-[11px]">
+          <span className="opacity-60">The invite creates a share URL + attempts email send.</span>
+          <span className={"font-mono " + (valid? 'text-emerald-300' : 'text-rose-300')}>{valid? 'valid' : 'invalid'}</span>
+        </div>
+        {result && (
+          <div className={"text-[11px] rounded-lg border px-3 py-2 " + (result.ok? 'border-emerald-500/30 bg-emerald-900/20 text-emerald-200' : 'border-rose-500/30 bg-rose-900/20 text-rose-200')}>
+            {result.ok ? (
+              <div>
+                Invite created. Code: <span className="font-mono">{result.code}</span>{' '}· {result.emailed ? 'Email sent.' : 'Email not sent (transport not configured).'}
+              </div>
+            ) : (
+              <div>Invite failed: {result.error}</div>
+            )}
+          </div>
+        )}
+        <div className="flex items-center gap-3 pt-1">
+          <button type="submit" disabled={!valid||submitting} className="h-10 px-5 rounded-lg bg-gradient-to-r from-emerald-600 to-sky-600 disabled:opacity-40 text-sm font-medium tracking-wide border border-white/10 hover:from-emerald-500 hover:to-sky-500 flex items-center gap-2">
+            {submitting && <span className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin"/>}
+            <span>{submitting? 'Sending…' : 'Send Invite'}</span>
+          </button>
+          <button type="button" onClick={onClose} className="h-10 px-4 rounded-lg bg-white/10 hover:bg-white/15 border border-white/10 text-sm">Cancel</button>
+        </div>
+      </form>
     </div>
   );
 }
@@ -1087,6 +1172,7 @@ function TopNav({ view, onChangeView, profile, onSignOut }: { view: 'dashboard' 
                 </div>
                 <button className="text-left text-xs px-3 py-2 rounded-lg hover:bg-white/10 transition" onClick={()=>{ setOpen(false); onChangeView('dashboard'); }}>Account</button>
                 <button className="text-left text-xs px-3 py-2 rounded-lg hover:bg-white/10 transition" onClick={()=>{ setOpen(false); onChangeView('settings'); }}>Settings</button>
+                <button className="text-left text-xs px-3 py-2 rounded-lg hover:bg-emerald-600/30 hover:text-emerald-200 transition border border-transparent hover:border-emerald-500/40" onClick={()=>{ setOpen(false); window.dispatchEvent(new CustomEvent('af:openInviteDialog')); }}>Invite Friend</button>
                 <button className="text-left text-xs px-3 py-2 rounded-lg hover:bg-rose-600/30 hover:text-rose-200 transition border border-transparent hover:border-rose-500/40" onClick={()=>{ setOpen(false); onSignOut?.(); }}>Log out</button>
               </div>
             )}
@@ -1123,13 +1209,97 @@ function LeftPlayerPanel({ className = '', playerName, accountLevel, loadout, he
   const baseEP = 60; const epPerLevel = 6; const epPerUtility = 6;
   const HP = baseHP + (skillLevel-1)*hpPerLevel + defense*hpPerDefense;
   const EP = baseEP + (skillLevel-1)*epPerLevel + utility*epPerUtility;
+  const [shareOpen, setShareOpen] = React.useState(false);
+  const shareRef = React.useRef<HTMLDivElement|null>(null);
+  React.useEffect(()=>{
+    if(!shareOpen) return;
+    function onDown(e:MouseEvent){ if(shareRef.current && !shareRef.current.contains(e.target as Node)) setShareOpen(false); }
+    function onKey(e:KeyboardEvent){ if(e.key==='Escape') setShareOpen(false); }
+    window.addEventListener('mousedown', onDown);
+    window.addEventListener('keydown', onKey);
+    return ()=>{ window.removeEventListener('mousedown', onDown); window.removeEventListener('keydown', onKey); };
+  },[shareOpen]);
+  function characterShareUrl(){
+    const base = location.origin.replace(/\/$/, '');
+    const params = new URLSearchParams();
+    params.set('char', encodeURIComponent(loadout.id));
+    // Carry faction + portrait so landing page (or future server-side OG rendering) can hydrate context
+    params.set('faction', loadout.faction);
+    if(loadout.portraitUrl) {
+      try { params.set('portrait', new URL(loadout.portraitUrl, location.origin).toString()); } catch {}
+    }
+    // Include hero name for /og/card endpoint usage by social scrapers
+    if(loadout.name) params.set('name', encodeURIComponent(loadout.name));
+    return `${base}/?share=${params.toString()}`;
+  }
+  function copyShare(){
+    try { navigator.clipboard.writeText(characterShareUrl()); } catch {}
+  }
+  async function doShare(target: string){
+    const url = characterShareUrl();
+    if(target==='copy'){ copyShare(); setShareOpen(false); return; }
+    const portraitAbs = (()=>{ try { return new URL(loadout.portraitUrl, location.origin).toString(); } catch { return ''; } })();
+  const baseText = `Check out my Afro-Future hero ${loadout.name} of faction ${loadout.faction}!`;
+    const composedText = `${baseText}${portraitAbs ? ' ' + portraitAbs : ''}`;
+    const textEnc = encodeURIComponent(baseText);
+    const longTextEnc = encodeURIComponent(composedText);
+    // Optional: use Web Share API (system share sheet) when available and a future 'system' target is passed
+    if(target==='system' && (navigator as any).share){
+      try {
+        // Attempt including image if CORS-permitted
+        let files: File[] | undefined;
+        if(portraitAbs && (navigator as any).canShare){
+          try {
+            const resp = await fetch(portraitAbs, { mode:'cors' });
+            const blob = await resp.blob();
+            const f = new File([blob], 'hero.png', { type: blob.type || 'image/png' });
+            if((navigator as any).canShare({ files:[f] })) files = [f];
+          } catch {}
+        }
+        await (navigator as any).share({ title: 'Afro-Future Hero', text: baseText, url, files });
+        setShareOpen(false);
+        return;
+      } catch {}
+    }
+    const shareLinks: Record<string,string> = {
+      twitter: `https://twitter.com/intent/tweet?text=${longTextEnc}&url=${encodeURIComponent(url)}`,
+      facebook: `https://www.facebook.com/sharer/sharer.php?u=${encodeURIComponent(url)}`,
+      reddit: `https://www.reddit.com/submit?url=${encodeURIComponent(url)}&title=${textEnc}`,
+      linkedin: `https://www.linkedin.com/sharing/share-offsite/?url=${encodeURIComponent(url)}`,
+    };
+    const href = shareLinks[target];
+    if(href) window.open(href, '_blank','noopener,noreferrer');
+  }
   return (
     <aside className={`col-start-1 h-full min-h-0 ${className} bg-[#0f1218] border-r border-black/40 shadow-inner flex flex-col overflow-hidden`}>      
-      <div className="px-4 py-4 border-b border-white/10 flex flex-col items-center shrink-0">
+      <div className="px-4 py-4 border-b border-white/10 flex flex-col items-center shrink-0 relative">
         {/* Character Portrait and Info */}
         <div className="w-full max-w-[260px] aspect-[4/3] rounded-3xl border border-white/10 bg-[#12171f] overflow-hidden relative flex flex-col items-center justify-center">
           {/* Portrait image responsive */}
           <img className="w-[52%] h-[52%] object-cover rounded-2xl border border-white/10 shadow-lg" src={loadout.portraitUrl} alt="portrait" />
+          {/* Share button */}
+          <button onClick={()=>setShareOpen(o=>!o)} title="Share Character" className="absolute top-2 right-2 w-8 h-8 rounded-lg bg-black/50 border border-white/10 flex items-center justify-center text-[13px] hover:bg-black/60 group">
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="opacity-80 group-hover:opacity-100">
+              <circle cx="18" cy="5" r="3" />
+              <circle cx="6" cy="12" r="3" />
+              <circle cx="18" cy="19" r="3" />
+              <path d="M8.59 13.51l6.83 3.98" />
+              <path d="M15.41 6.51l-6.82 3.98" />
+            </svg>
+          </button>
+          {shareOpen && (
+            <div ref={shareRef} className="absolute z-20 top-12 right-2 w-56 rounded-xl border border-white/10 bg-[#1b222c] shadow-xl p-3 flex flex-col gap-2 animate-fade-in">
+              <div className="text-xs font-semibold tracking-wide">Share Character</div>
+              <div className="text-[10px] opacity-70 -mt-1">Invite friends and show off your build</div>
+              <div className="grid grid-cols-4 gap-1 mt-2">
+                <button onClick={()=>doShare('twitter')} className="h-5 rounded-md bg-white/5 border border-white/10 text-[9px] leading-none hover:bg-[#1d9bf0]/30 hover:text-[#1d9bf0] px-1">X</button>
+                <button onClick={()=>doShare('facebook')} className="h-5 rounded-md bg-white/5 border border-white/10 text-[9px] leading-none hover:bg-blue-600/40 hover:text-blue-300 px-1">Fb</button>
+                <button onClick={()=>doShare('reddit')} className="h-5 rounded-md bg-white/5 border border-white/10 text-[9px] leading-none hover:bg-orange-600/40 hover:text-orange-300 px-1">Rdt</button>
+                <button onClick={()=>doShare('linkedin')} className="h-5 rounded-md bg-white/5 border border-white/10 text-[9px] leading-none hover:bg-sky-600/40 hover:text-sky-300 px-1">In</button>
+              </div>
+              {/* URL + copy removed per request */}
+            </div>
+          )}
           <div className="mt-2 flex flex-col items-center text-center">
             <div className="flex items-center gap-2">
               <img src={FactionIcon[loadout.faction]} alt={loadout.faction} className="w-5 h-5 drop-shadow" />
@@ -1676,9 +1846,9 @@ function CharacterCreator({ onSave, onBack, initial, locked }: { onSave: (payloa
         <Button variant="ghost" onClick={onBack}>Back</Button>
       </div>
       {/* Top preview now spans full width */}
-      <div className="flex-1 flex flex-col">
-        <div className="flex-1 flex items-center justify-center px-8 py-8">
-          <div className="relative w-full h-full max-h-[55vh] rounded-[32px] bg-[#12171f] border border-white/10 shadow-2xl overflow-hidden flex items-center justify-center mx-auto">
+        <div className="flex-1 flex flex-col">
+        <div className="flex-1 flex items-center justify-center px-6 py-8">
+          <div className="relative w-full h-full max-h-[55vh] rounded-[32px] bg-[#12171f] border border-white/10 shadow-2xl overflow-hidden flex items-center justify-center mx-auto max-w-5xl">
             <div className="absolute inset-0 bg-gradient-to-tr from-emerald-500/5 via-transparent to-sky-500/5 pointer-events-none" />
             <div className="absolute inset-0">
               <AvatarScene
@@ -1716,7 +1886,7 @@ function CharacterCreator({ onSave, onBack, initial, locked }: { onSave: (payloa
         </div>
         {/* Items/config panel full width */}
         <div className="w-full bg-[#12171f]/95 backdrop-blur-sm border-t border-white/10 flex flex-col max-h-[45vh]">
-          <div className="px-8 pt-4 flex flex-wrap justify-center gap-2">
+          <div className="px-6 pt-4 flex flex-wrap justify-center gap-2 max-w-5xl mx-auto">
             {tabs.map((t) => (
               <button
                 key={t}
@@ -1728,9 +1898,9 @@ function CharacterCreator({ onSave, onBack, initial, locked }: { onSave: (payloa
               </button>
             ))}
           </div>
-          <div className="px-8 pb-4">
+          <div className="px-6 pb-4 max-w-5xl mx-auto w-full">
             {tab === 'Colors' ? (
-              <div className="flex gap-3 justify-center items-center">
+              <div className="flex gap-3 justify-center items-center flex-wrap">
                 {[
                   { primary:'#00A37A', secondary:'#F5F5F5', skin:'#c58b66' },
                   { primary:'#a855f7', secondary:'#0f172a', skin:'#d19d74' },
@@ -1751,9 +1921,9 @@ function CharacterCreator({ onSave, onBack, initial, locked }: { onSave: (payloa
                 ))}
               </div>
             ) : (
-              <div className="relative flex gap-4 overflow-x-auto no-scrollbar py-2 px-1 items-stretch scroll-smooth snap-x snap-mandatory group" id="variant-row">
-                <div className="pointer-events-none absolute left-0 top-0 bottom-0 w-8 bg-gradient-to-r from-[#12171f] to-transparent opacity-70 group-hover:opacity-90" />
-                <div className="pointer-events-none absolute right-0 top-0 bottom-0 w-8 bg-gradient-to-l from-[#12171f] to-transparent opacity-70 group-hover:opacity-90" />
+              <div className="relative flex gap-4 overflow-x-auto no-scrollbar py-2 px-1 items-stretch scroll-smooth snap-x snap-mandatory group justify-center" id="variant-row">
+                <div className="pointer-events-none sticky left-0 top-0 bottom-0 w-8 bg-gradient-to-r from-[#12171f] to-transparent opacity-70 group-hover:opacity-90" />
+                <div className="pointer-events-none sticky right-0 top-0 bottom-0 w-8 bg-gradient-to-l from-[#12171f] to-transparent opacity-70 group-hover:opacity-90" />
                 {getVariantsByGroup(tab as any).map((v, idx) => {
                   const active = picked[tab] === v.id;
                   return (

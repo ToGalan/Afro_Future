@@ -98,12 +98,13 @@ function generateTerrainMapRect(width, height, seed = 42) {
     // 2. Biome configuration (target coverage ratios sum < 1; leftover becomes plains)
     // Ratios tuned for large map readability (clustered but diverse)
     const biomeConfigs = [
-        { key: 'water', ratio: 0.09, minSeeds: 8, maxSeeds: 18, chars: ['L', 'N', 'V'], growthProb: 0.55 },
-        { key: 'desert', ratio: 0.11, minSeeds: 10, maxSeeds: 20, chars: ['D'], growthProb: 0.60 },
-        { key: 'forest', ratio: 0.14, minSeeds: 12, maxSeeds: 24, chars: ['F'], growthProb: 0.62 },
-        { key: 'jungle', ratio: 0.07, minSeeds: 6, maxSeeds: 14, chars: ['J'], growthProb: 0.58 },
-        { key: 'hills', ratio: 0.11, minSeeds: 10, maxSeeds: 22, chars: ['H'], growthProb: 0.57 },
-        { key: 'mountain', ratio: 0.08, minSeeds: 8, maxSeeds: 16, chars: ['O', 'R', 'M'], growthProb: 0.50 },
+        // Slightly reduced ratios for large maps to allow more plains buffer and clearer macro regions
+        { key: 'water', ratio: 0.085, minSeeds: 6, maxSeeds: 14, chars: ['L', 'N', 'V'], growthProb: 0.58 },
+        { key: 'desert', ratio: 0.105, minSeeds: 7, maxSeeds: 16, chars: ['D'], growthProb: 0.63 },
+        { key: 'forest', ratio: 0.135, minSeeds: 8, maxSeeds: 18, chars: ['F'], growthProb: 0.66 },
+        { key: 'jungle', ratio: 0.065, minSeeds: 5, maxSeeds: 12, chars: ['J'], growthProb: 0.60 },
+        { key: 'hills', ratio: 0.105, minSeeds: 7, maxSeeds: 16, chars: ['H'], growthProb: 0.60 },
+        { key: 'mountain', ratio: 0.075, minSeeds: 6, maxSeeds: 14, chars: ['O', 'R', 'M'], growthProb: 0.53 },
     ];
     // Shuffle helper (Fisher–Yates)
     function shuffle(arr) {
@@ -120,13 +121,18 @@ function generateTerrainMapRect(width, height, seed = 42) {
     const frontierByBiome = new Map();
     function key(a) { return `${a.q},${a.r}`; }
     // 4. Determine targets & seeds
+    const isLarge = width * height > 15000; // threshold for macro-region tuning
     for (const cfg of biomeConfigs) {
         const target = Math.max(1, Math.floor(total * cfg.ratio));
         targetByBiome.set(cfg.key, target);
         claimedByBiome.set(cfg.key, 0);
         frontierByBiome.set(cfg.key, []);
         // Number of seeds scaled loosely to sqrt of target for reasonable region sizes
-        const seedCount = Math.min(cfg.maxSeeds, Math.max(cfg.minSeeds, Math.floor(Math.sqrt(target) * 0.9)));
+        let seedCount = Math.min(cfg.maxSeeds, Math.max(cfg.minSeeds, Math.floor(Math.sqrt(target) * 0.9)));
+        if (isLarge) {
+            // On very large maps reduce seed counts further to encourage bigger contiguous biomes
+            seedCount = Math.max(cfg.minSeeds, Math.floor(seedCount * 0.55));
+        }
         // Pick seed tiles uniformly from unassigned coordinates (shuffle view each loop)
         const pool = shuffle([...coords]);
         let placed = 0;
@@ -215,6 +221,51 @@ function generateTerrainMapRect(width, height, seed = 42) {
         const char = assigned.get(k) || 'P';
         const type = charToType(char);
         tiles.push({ q: c.q, r: c.r, char, type, resource: null });
+    }
+    if (isLarge) {
+        // 7. Smoothing pass: unify tiny outlier cells that have a dominant neighbor biome (>=4 of 6 neighbors)
+        const byKey = new Map();
+        for (const t of tiles)
+            byKey.set(`${t.q},${t.r}`, t);
+        const toFlip = [];
+        for (const t of tiles) {
+            const counts = new Map();
+            for (const n of axialNeighbors(t)) {
+                const nt = byKey.get(`${n.q},${n.r}`);
+                if (!nt)
+                    continue;
+                counts.set(nt.char, (counts.get(nt.char) || 0) + 1);
+            }
+            let bestChar = null;
+            let bestCount = 0;
+            counts.forEach((cCnt, cChar) => { if (cCnt > bestCount) {
+                bestCount = cCnt;
+                bestChar = cChar;
+            } });
+            if (bestChar && bestChar !== t.char && bestCount >= 4) {
+                toFlip.push(t);
+            }
+        }
+        for (const t of toFlip) {
+            t.char = byKey.get(`${t.q},${t.r}`).char = (() => {
+                // Re-evaluate majority to avoid stale choice if neighbors changed earlier this loop
+                const counts = new Map();
+                for (const n of axialNeighbors(t)) {
+                    const nt = byKey.get(`${n.q},${n.r}`);
+                    if (!nt)
+                        continue;
+                    counts.set(nt.char, (counts.get(nt.char) || 0) + 1);
+                }
+                let bestChar2 = t.char;
+                let bestCount2 = 0;
+                counts.forEach((cCnt, cChar) => { if (cCnt > bestCount2) {
+                    bestCount2 = cCnt;
+                    bestChar2 = cChar;
+                } });
+                return bestChar2;
+            })();
+            t.type = charToType(t.char);
+        }
     }
     return tiles;
 }
@@ -542,9 +593,9 @@ function HexTile({ t, size, onClick, onHover }) {
             rotation: [0, Math.PI / 6, 0], children: [_jsx("cylinderGeometry", { args: [size, size, h, 6] }), _jsx("meshStandardMaterial", { color: color })] }) }));
 }
 export default function SoloMissionMap3D() {
-    // Reduced temporary size: 96 x 144 rectangle (performance tuning phase)
-    const GRID_W = 96;
-    const GRID_H = 144;
+    // Expanded map size (2x previous) for broader exploration
+    const GRID_W = 192;
+    const GRID_H = 288;
     const hexSize = 1.0; // smaller size to fit large grid visually
     const tiles = useMemo(() => {
         const t = generateTerrainMapRect(GRID_W, GRID_H, 1337);
@@ -586,52 +637,29 @@ export default function SoloMissionMap3D() {
     const [pet, setPet] = useState({ id: 'pet', pos: { q: centerAxial.q + 4, r: centerAxial.r - 1 }, vision: 3, kind: 'pet' });
     // FOV always on now; removed toggle state
     // Hero will be moved via keyboard commands now (auto path removed)
-    // Pet patrol path (independent of hero). Simple loop.
-    const petPath = useMemo(() => {
-        return [
-            { q: 4, r: -1 }, { q: 6, r: -1 }, { q: 6, r: -3 }, { q: 5, r: -4 }, { q: 3, r: -4 }, { q: 2, r: -2 }
-        ];
-    }, []);
-    const [petPathIdx, setPetPathIdx] = useState(0);
-    useEffect(() => {
-        const interval = setInterval(() => {
-            setPetPathIdx(i => (i + 1) % petPath.length);
-        }, 2600);
-        return () => clearInterval(interval);
-    }, [petPath.length]);
-    useEffect(() => {
-        setPet(p => ({ ...p, pos: petPath[petPathIdx] }));
-    }, [petPathIdx, petPath]);
-    // Ensure pet always remains within hero's FOV (stay within hero.vision - 1 axial distance)
+    // Dynamic pet patrol state (declared early; logic after tilesByKey exists)
+    const [petTarget, setPetTarget] = useState(null);
+    // Leash enforcement (rare): if external changes push pet outside leash, pull it inward one step
     useEffect(() => {
         setPet(p => {
-            const maxDist = Math.max(0, hero.vision - 1);
-            let dist = axialDistance(p.pos, hero.pos);
-            if (dist <= maxDist)
+            const leash = Math.max(0, hero.vision - 1);
+            if (axialDistance(p.pos, hero.pos) <= leash)
                 return p;
-            let current = { ...p.pos };
-            // Greedy step-wise move toward hero until within range or safety iterations reached
-            let guard = 0;
-            while (axialDistance(current, hero.pos) > maxDist && guard < 32) {
-                guard++;
-                let best = current;
-                let bestDist = axialDistance(current, hero.pos);
-                for (const n of axialNeighbors(current)) {
-                    const d = axialDistance(n, hero.pos);
-                    if (d < bestDist) {
-                        bestDist = d;
-                        best = n;
-                    }
+            let best = p.pos;
+            let bestDist = axialDistance(p.pos, hero.pos);
+            for (const n of axialNeighbors(p.pos)) {
+                const d = axialDistance(n, hero.pos);
+                if (d < bestDist) {
+                    bestDist = d;
+                    best = n;
                 }
-                if (best.q === current.q && best.r === current.r)
-                    break; // no improvement
-                current = best;
             }
-            if (current.q === p.pos.q && current.r === p.pos.r)
+            if (best.q === p.pos.q && best.r === p.pos.r)
                 return p;
-            return { ...p, pos: current };
+            return { ...p, pos: best };
         });
     }, [hero.pos, hero.vision]);
+    // (Patrol logic moved below tilesByKey for declaration order)
     const heroVisible = useMemo(() => computeVisibleSet(tiles, hero.pos, hero.vision), [tiles, hero]);
     // Explore accumulation (union of all heroVisible over time)
     const exploredRef = React.useRef(new Set());
@@ -685,6 +713,52 @@ export default function SoloMissionMap3D() {
             m.set(`${t.q},${t.r}`, t);
         return m;
     }, [tiles]);
+    // After tilesByKey exists, run patrol logic
+    const patrolCandidates = useMemo(() => {
+        const leash = Math.max(0, hero.vision - 1);
+        return tiles.filter(t => axialDistance(t, hero.pos) <= leash && t.type !== 'mountain' && t.type !== 'water');
+    }, [tiles, hero.pos, hero.vision]);
+    useEffect(() => {
+        if (!petTarget || axialDistance(petTarget, hero.pos) > hero.vision - 1) {
+            if (patrolCandidates.length)
+                setPetTarget(patrolCandidates[Math.floor(Math.random() * patrolCandidates.length)]);
+        }
+    }, [petTarget, patrolCandidates, hero.pos, hero.vision]);
+    useEffect(() => {
+        const interval = setInterval(() => {
+            setPet(curr => {
+                if (!petTarget)
+                    return curr;
+                if (curr.pos.q === petTarget.q && curr.pos.r === petTarget.r) {
+                    setPetTarget(null);
+                    return curr;
+                }
+                const leash = Math.max(0, hero.vision - 1);
+                let best = curr.pos;
+                let bestDist = axialDistance(best, petTarget);
+                for (const n of axialNeighbors(curr.pos)) {
+                    const tile = tilesByKey.get(`${n.q},${n.r}`);
+                    if (!tile)
+                        continue;
+                    if (tile.type === 'mountain' || tile.type === 'water')
+                        continue;
+                    if (axialDistance(n, hero.pos) > leash)
+                        continue;
+                    const d = axialDistance(n, petTarget);
+                    if (d < bestDist) {
+                        bestDist = d;
+                        best = n;
+                    }
+                }
+                if (best.q === curr.pos.q && best.r === curr.pos.r) {
+                    setPetTarget(null);
+                    return curr;
+                }
+                return { ...curr, pos: best };
+            });
+        }, 900);
+        return () => clearInterval(interval);
+    }, [petTarget, tilesByKey, hero.pos, hero.vision]);
     // Precompute axial bounds for collider logic
     const axialBounds = useMemo(() => {
         let minQ = Infinity, maxQ = -Infinity, minR = Infinity, maxR = -Infinity;
@@ -757,6 +831,7 @@ export default function SoloMissionMap3D() {
         return a; // fallback
     }
     useEffect(() => {
+        const downSet = new Set();
         function onKey(e) {
             const k = e.key.toLowerCase();
             const dirMap = {
@@ -771,6 +846,10 @@ export default function SoloMissionMap3D() {
             const delta = dirMap[k];
             if (!delta)
                 return;
+            // Single press only: ignore auto-repeat and held key until released
+            if (e.repeat || downSet.has(k))
+                return;
+            downSet.add(k);
             e.preventDefault();
             setHero(h => {
                 const targetRaw = { q: h.pos.q + delta.q, r: h.pos.r + delta.r };
@@ -786,13 +865,19 @@ export default function SoloMissionMap3D() {
                 return next;
             });
         }
+        function onKeyUp(e) {
+            const k = e.key.toLowerCase();
+            if (downSet.has(k))
+                downSet.delete(k);
+        }
         window.addEventListener('keydown', onKey);
-        return () => window.removeEventListener('keydown', onKey);
+        window.addEventListener('keyup', onKeyUp);
+        return () => { window.removeEventListener('keydown', onKey); window.removeEventListener('keyup', onKeyUp); };
     }, [tilesByKey, saveProgress]);
     // endTurn logic removed (turn system disabled)
     // Keyboard hex movement (pointy axial layout with q,r; adapt to 6 neighbors)
     // Keyboard disabled for now
-    return (_jsxs("div", { className: "relative w-screen h-screen bg-[#c9efff] text-gray-900 overflow-hidden", children: [_jsxs("div", { className: "absolute top-2 left-2 z-10 text-xs grid grid-cols-4 gap-2 max-w-[90vw]", children: [_jsxs("div", { className: "rounded border border-white/60 bg-white/70 px-2 py-1 text-gray-800", children: ["Hover Tile: ", hover ? `${hover.q},${hover.r}` : '---'] }), _jsxs("div", { className: "rounded border border-white/60 bg-white/70 px-2 py-1 text-gray-800", children: ["Tile: ", hover ? hover.type : '--', " | Resource: ", hover?.resource ?? 'None'] }), _jsx("div", { className: "rounded border border-white/60 bg-white/70 px-2 py-1 text-gray-800", children: "Moves: disabled" }), _jsx("div", { className: "rounded border border-white/60 bg-white/70 px-2 py-1 text-gray-800 text-right", children: "Map: 96x144" }), _jsxs("div", { className: "rounded border border-white/60 bg-white/70 px-2 py-1 text-gray-800 col-span-4 flex gap-2", children: [_jsxs("span", { className: "inline-flex items-center gap-1", children: [_jsx("span", { className: "w-3 h-3 inline-block bg-yellow-300/70" }), " Hero FOV"] }), _jsxs("span", { className: "inline-flex items-center gap-1", children: [_jsx("span", { className: "w-3 h-3 inline-block bg-sky-400/70" }), " Pet FOV"] }), _jsxs("span", { className: "inline-flex items-center gap-1", children: [_jsx("span", { className: "w-3 h-3 inline-block bg-fuchsia-400/70" }), " Both"] })] })] }), _jsx("div", { className: "absolute inset-0 select-none", children: _jsxs(Canvas, { shadows: true, camera: { position: [14, 16, 14], fov: 45 }, children: [_jsx(MapCameraController, { bounds: mapBounds, gameMode: true, heroWorld: heroWorld, recenterSignal: recenterSignal }), _jsx(SceneBridge, { outerRadius: hexSize, onReady: (caps) => { setRefMountains(!!caps.mountain); setRefTrees(!!caps.tree); setRefWater(!!caps.water); setRefHills(!!caps.hills); setRefDesert(!!caps.desert); } }), _jsx(Sky, { inclination: 0.6, azimuth: 0.25, sunPosition: [50, 50, 10], turbidity: 2, rayleigh: 0.7, mieCoefficient: 0.005, mieDirectionalG: 0.8 }), _jsx("hemisphereLight", { args: ["#bde0fe", "#e6f3ff", 0.8] }), _jsx("directionalLight", { position: [30, 40, 15], intensity: 0.7, castShadow: true, "shadow-mapSize-width": 2048, "shadow-mapSize-height": 2048 }), _jsxs("group", { position: [0, 0, 0], children: [tiles.map((t) => {
+    return (_jsxs("div", { className: "relative w-screen h-screen bg-[#c9efff] text-gray-900 overflow-hidden", children: [_jsxs("div", { className: "absolute top-2 left-2 z-10 text-xs grid grid-cols-4 gap-2 max-w-[90vw]", children: [_jsxs("div", { className: "rounded border border-white/60 bg-white/70 px-2 py-1 text-gray-800", children: ["Hover Tile: ", hover ? `${hover.q},${hover.r}` : '---'] }), _jsxs("div", { className: "rounded border border-white/60 bg-white/70 px-2 py-1 text-gray-800", children: ["Tile: ", hover ? hover.type : '--', " | Resource: ", hover?.resource ?? 'None'] }), _jsx("div", { className: "rounded border border-white/60 bg-white/70 px-2 py-1 text-gray-800", children: "Moves: disabled" }), _jsxs("div", { className: "rounded border border-white/60 bg-white/70 px-2 py-1 text-gray-800 text-right", children: ["Map: ", GRID_W, "x", GRID_H] }), _jsxs("div", { className: "rounded border border-white/60 bg-white/70 px-2 py-1 text-gray-800 col-span-4 flex gap-2", children: [_jsxs("span", { className: "inline-flex items-center gap-1", children: [_jsx("span", { className: "w-3 h-3 inline-block bg-yellow-300/70" }), " Hero FOV"] }), _jsxs("span", { className: "inline-flex items-center gap-1", children: [_jsx("span", { className: "w-3 h-3 inline-block bg-sky-400/70" }), " Pet FOV"] }), _jsxs("span", { className: "inline-flex items-center gap-1", children: [_jsx("span", { className: "w-3 h-3 inline-block bg-fuchsia-400/70" }), " Both"] })] })] }), _jsx("div", { className: "absolute inset-0 select-none", children: _jsxs(Canvas, { shadows: true, camera: { position: [14, 16, 14], fov: 45 }, children: [_jsx(MapCameraController, { bounds: mapBounds, gameMode: true, heroWorld: heroWorld, recenterSignal: recenterSignal }), _jsx(SceneBridge, { outerRadius: hexSize, onReady: (caps) => { setRefMountains(!!caps.mountain); setRefTrees(!!caps.tree); setRefWater(!!caps.water); setRefHills(!!caps.hills); setRefDesert(!!caps.desert); } }), _jsx(Sky, { inclination: 0.6, azimuth: 0.25, sunPosition: [50, 50, 10], turbidity: 2, rayleigh: 0.7, mieCoefficient: 0.005, mieDirectionalG: 0.8 }), _jsx("hemisphereLight", { args: ["#bde0fe", "#e6f3ff", 0.8] }), _jsx("directionalLight", { position: [30, 40, 15], intensity: 0.7, castShadow: true, "shadow-mapSize-width": 2048, "shadow-mapSize-height": 2048 }), _jsxs("group", { position: [0, 0, 0], children: [tiles.map((t) => {
                                     const { x, z } = axialToWorld(t, hexSize);
                                     const key = `${t.q},${t.r}`;
                                     const inHero = heroVisible.has(key);
@@ -823,7 +908,11 @@ export default function SoloMissionMap3D() {
                                             planes.push(_jsxs("mesh", { position: [x, 0.2, z], rotation: [-Math.PI / 2, 0, 0], children: [_jsx("circleGeometry", { args: [hexSize * 0.95, 6] }), _jsx("meshBasicMaterial", { color: "#000", transparent: true, opacity: 0 })] }, `boundary-${ex.q},${ex.r}`));
                                         }
                                         return planes;
-                                    })() })] }), _jsxs("mesh", { rotation: [-Math.PI / 2, 0, 0], position: [0, -0.05, 0], receiveShadow: true, children: [_jsx("planeGeometry", { args: [220, 220] }), _jsx("meshStandardMaterial", { color: "#bff0ff" })] }), _jsx(ContactShadows, { position: [0, 0, 0], opacity: 0.15, blur: 1.5, far: 15 })] }) })] }));
+                                    })() })] }), (() => {
+                            const planeWidth = (mapBounds.maxX - mapBounds.minX) + 30;
+                            const planeHeight = (mapBounds.maxZ - mapBounds.minZ) + 30;
+                            return (_jsxs("mesh", { rotation: [-Math.PI / 2, 0, 0], position: [0, -0.05, 0], receiveShadow: true, children: [_jsx("planeGeometry", { args: [planeWidth, planeHeight] }), _jsx("meshStandardMaterial", { color: "#bff0ff" })] }));
+                        })(), _jsx(ContactShadows, { position: [0, 0, 0], opacity: 0.15, blur: 1.5, far: 15 })] }) })] }));
 }
 // Custom camera controller: edge pan & drag (game mode) with optional follow axial coord
 function MapCameraController({ bounds, gameMode, heroWorld, recenterSignal }) {

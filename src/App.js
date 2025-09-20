@@ -12,13 +12,14 @@ import { CharacterPortrait, FactionIcon, ImageAssets, getCharacterPortrait, PetI
 import { joinRoom } from './services/realtimeClient';
 import { initCRDT, attachCRDTChannel, disposeCRDT } from './services/crdt';
 import { useCreatorStore } from './store/creatorStore';
-import { renderGoogleButton, getGoogleClientId } from './services/googleIdentity';
+import { initGoogleIdentity, renderGoogleButton, getGoogleClientId } from './services/googleIdentity';
 import { chromeSyncGet, chromeSyncSet, chromeSyncClear } from './services/chromeSync';
 import GoogleSignInButton from './components/auth/GoogleSignInButton';
 import SoloMissionMap3D from './components/SoloMissionMap3D';
 import DatabaseTestPanel from './components/DatabaseTestPanel';
 import PetPanel from './components/PetPanel';
 import { useAutoSyncSkills } from './hooks/useAutoSyncSkills';
+import { collectAndRegisterPush } from './services/messaging';
 const APP_VERSION_FALLBACK = 'v0.2.3';
 const defaultLoadout = {
     id: uid('char'),
@@ -41,6 +42,7 @@ const defaultLoadout = {
     updatedAt: now(),
 };
 export default function App() {
+    const { saveProgress: saveProfileProgress } = usePlayerProfile();
     // Auto-sync skill progress to persistent profile
     useAutoSyncSkills(true);
     // Authentication gating: require Google sign-in before proceeding to normal boot sequence.
@@ -73,6 +75,12 @@ export default function App() {
     const [activeLoadout, setActiveLoadout] = useState(null);
     const [runtimeConfig, setRuntimeConfig] = useState(null);
     const [configLoaded, setConfigLoaded] = useState(false);
+    const [inviteOpen, setInviteOpen] = useState(false);
+    useEffect(() => {
+        function onOpen() { setInviteOpen(true); }
+        window.addEventListener('af:openInviteDialog', onOpen);
+        return () => window.removeEventListener('af:openInviteDialog', onOpen);
+    }, []);
     // Hydrate saved avatar (loadout) from localStorage once on mount, normalizing portrait URL
     useEffect(() => {
         // Optional Chrome Sync hydration (if extension installed and Chrome account signed in)
@@ -206,6 +214,15 @@ export default function App() {
         setIdToken(token);
         localStorage.setItem('afrofuture.idToken', token);
         setPhase('boot');
+        // Attempt to enter fullscreen immediately after auth (user gesture context often preserved from click)
+        try {
+            if (!document.fullscreenElement) {
+                document.documentElement.requestFullscreen?.();
+            }
+        }
+        catch (e) {
+            console.warn('[fullscreen] request failed', e);
+        }
         try {
             const payload = JSON.parse(atob(token.split('.')[1] || 'e30='));
             const prof = { sub: payload.sub, name: payload.name || payload.given_name || payload.family_name, email: payload.email, picture: payload.picture };
@@ -270,6 +287,8 @@ export default function App() {
             }
         }
         catch { }
+        // Non-blocking push registration attempt
+        collectAndRegisterPush(token).catch(() => { });
         // Initialize collaborative CRDT state then join a default room (e.g., 'lobby')
         try {
             await initCRDT({ idToken: token, world: 'global' });
@@ -470,6 +489,27 @@ export default function App() {
             chromeSyncSet({ 'afrofuture.loadout': merged }).catch(() => { });
             if (idToken)
                 persistServerProfile(idToken, { loadout: merged });
+            // Persist core selections to Firestore profile as well
+            try {
+                saveProfileProgress({
+                    faction: merged.faction,
+                    archetype: merged.archetype,
+                    avatar: {
+                        parts: merged?.threeConfig?.parts || {},
+                        colors: {
+                            primary: merged.colors?.primary || '#00A37A',
+                            secondary: merged.colors?.secondary || '#F5F5F5',
+                            skin: merged?.threeConfig?.colors?.skin || '#c58b66',
+                        },
+                        updatedAt: Date.now(),
+                    },
+                    pet: {
+                        type: merged.pet?.type,
+                        level: merged.pet?.level ?? 1,
+                    },
+                });
+            }
+            catch { }
             // Broadcast to peers via WebRTC (if data channel open)
             if (rtc?.dc?.readyState === 'open') {
                 try {
@@ -495,6 +535,26 @@ export default function App() {
             chromeSyncSet({ 'afrofuture.loadout': normalized }).catch(() => { });
             if (idToken)
                 persistServerProfile(idToken, { loadout: normalized });
+            try {
+                saveProfileProgress({
+                    faction: normalized.faction,
+                    archetype: normalized.archetype,
+                    avatar: {
+                        parts: normalized?.threeConfig?.parts || {},
+                        colors: {
+                            primary: normalized.colors?.primary || '#00A37A',
+                            secondary: normalized.colors?.secondary || '#F5F5F5',
+                            skin: normalized?.threeConfig?.colors?.skin || '#c58b66',
+                        },
+                        updatedAt: Date.now(),
+                    },
+                    pet: {
+                        type: normalized.pet?.type,
+                        level: normalized.pet?.level ?? 1,
+                    },
+                });
+            }
+            catch { }
             if (rtc?.dc?.readyState === 'open') {
                 try {
                     rtc.dc.send(JSON.stringify({ type: 'loadoutUpdate', loadout: newLoadout }));
@@ -584,10 +644,42 @@ export default function App() {
                         return getCharacterPortrait(f, a);
                     })(),
                 }, locked: heroLocked, onBack: () => heroLocked ? setPhase('main') : setPhase('onboard'), onSave: handleCreatorSave }) }));
-    return (mainView === 'mission' ? (_jsx(MissionScreen, { onExit: () => setMainView('dashboard') })) : (_jsx(GameViewport, { mode: "fit", children: _jsx(MainMenu, { playerName: playerName, accountLevel: accountLevel, loadout: activeLoadout ?? defaultLoadout, onCustomize: () => setPhase('creating'), heroLocked: heroLocked, view: mainView, onChangeView: setMainView, profile: profile, onSignOut: handleSignOut }) })));
+    return (mainView === 'mission' ? (_jsx(MissionScreen, { onExit: () => setMainView('dashboard') })) : (_jsxs(GameViewport, { mode: "fit", children: [_jsx(MainMenu, { playerName: playerName, accountLevel: accountLevel, loadout: activeLoadout ?? defaultLoadout, onCustomize: () => setPhase('creating'), heroLocked: heroLocked, view: mainView, onChangeView: setMainView, profile: profile, onSignOut: handleSignOut }), inviteOpen && (_jsx(InviteDialog, { onClose: () => setInviteOpen(false) }))] })));
 }
 function MissionScreen({ onExit }) {
     return (_jsxs("div", { className: "fixed inset-0 bg-[#06080c] text-gray-100", children: [_jsxs("div", { className: "absolute top-0 left-0 right-0 h-12 px-4 flex items-center justify-between bg-black/40 backdrop-blur border-b border-white/10 z-20", children: [_jsx("div", { className: "text-sm opacity-80", children: "Solo Mission" }), _jsx("div", { className: "flex items-center gap-3", children: _jsx("button", { className: "h-8 px-3 rounded-lg bg-white/10 border border-white/15 hover:bg-white/15 text-sm", onClick: onExit, children: "Exit" }) })] }), _jsxs("div", { className: "absolute inset-0 pt-12", children: [_jsx(SoloMissionMap3D, {}), _jsx(PetPanel, {}), import.meta.env.DEV && _jsx(React.Suspense, { fallback: null, children: _jsx("div", { children: _jsx(DatabaseTestPanel, {}) }) })] })] }));
+}
+// Invite dialog modal
+function InviteDialog({ onClose }) {
+    const [email, setEmail] = React.useState('');
+    const [message, setMessage] = React.useState('Join me in Afro-Future Rising!');
+    const [submitting, setSubmitting] = React.useState(false);
+    const [result, setResult] = React.useState(null);
+    const valid = /[^@\s]+@[^@\s]+\.[^@\s]+/.test(email);
+    async function submit(e) {
+        e.preventDefault();
+        if (!valid || submitting)
+            return;
+        setSubmitting(true);
+        setResult(null);
+        try {
+            const idToken = localStorage.getItem('afrofuture.idToken');
+            const r = await fetch('/invites', { method: 'POST', headers: { 'Content-Type': 'application/json', ...(idToken ? { 'Authorization': 'Bearer ' + idToken } : {}) }, body: JSON.stringify({ email, message }) });
+            const json = await r.json().catch(() => ({ ok: false, error: 'bad_json' }));
+            if (json.ok) {
+                setResult({ ok: true, code: json.code, emailed: json.emailed });
+            }
+            else
+                setResult({ ok: false, error: json.error || 'invite_failed' });
+        }
+        catch (e) {
+            setResult({ ok: false, error: e?.message || 'net_failed' });
+        }
+        finally {
+            setSubmitting(false);
+        }
+    }
+    return (_jsxs("div", { className: "fixed inset-0 z-[200] flex items-center justify-center", children: [_jsx("div", { className: "absolute inset-0 bg-black/70 backdrop-blur-sm", onClick: onClose }), _jsxs("form", { onSubmit: submit, className: "relative w-full max-w-md mx-auto rounded-2xl border border-white/10 bg-[#1b222c]/95 p-6 flex flex-col gap-4 shadow-2xl", children: [_jsxs("div", { className: "flex items-start justify-between", children: [_jsxs("div", { children: [_jsx("h2", { className: "text-lg font-semibold tracking-wide", children: "Invite a Friend" }), _jsx("p", { className: "text-[11px] opacity-70 mt-1 leading-relaxed", children: "Send an invitation link. They'll receive a unique code and future rewards logic can hook into this." })] }), _jsx("button", { type: "button", onClick: onClose, className: "w-8 h-8 -m-2 rounded-lg flex items-center justify-center text-xs bg-white/5 hover:bg-white/10 border border-white/10", children: "\u2715" })] }), _jsxs("label", { className: "flex flex-col gap-1 text-xs", children: [_jsx("span", { className: "opacity-70", children: "Friend's Email" }), _jsx("input", { value: email, onChange: e => setEmail(e.target.value), type: "email", required: true, placeholder: "friend@example.com", className: "h-10 px-3 rounded-lg bg-black/40 border border-white/10 focus:outline-none focus:border-emerald-400/60 text-sm" })] }), _jsxs("label", { className: "flex flex-col gap-1 text-xs", children: [_jsx("span", { className: "opacity-70", children: "Message (optional)" }), _jsx("textarea", { value: message, onChange: e => setMessage(e.target.value), rows: 3, maxLength: 500, className: "resize-none px-3 py-2 rounded-lg bg-black/40 border border-white/10 focus:outline-none focus:border-emerald-400/60 text-[13px]" })] }), _jsxs("div", { className: "flex items-center justify-between text-[11px]", children: [_jsx("span", { className: "opacity-60", children: "The invite creates a share URL + attempts email send." }), _jsx("span", { className: "font-mono " + (valid ? 'text-emerald-300' : 'text-rose-300'), children: valid ? 'valid' : 'invalid' })] }), result && (_jsx("div", { className: "text-[11px] rounded-lg border px-3 py-2 " + (result.ok ? 'border-emerald-500/30 bg-emerald-900/20 text-emerald-200' : 'border-rose-500/30 bg-rose-900/20 text-rose-200'), children: result.ok ? (_jsxs("div", { children: ["Invite created. Code: ", _jsx("span", { className: "font-mono", children: result.code }), ' ', "\u00B7 ", result.emailed ? 'Email sent.' : 'Email not sent (transport not configured).'] })) : (_jsxs("div", { children: ["Invite failed: ", result.error] })) })), _jsxs("div", { className: "flex items-center gap-3 pt-1", children: [_jsxs("button", { type: "submit", disabled: !valid || submitting, className: "h-10 px-5 rounded-lg bg-gradient-to-r from-emerald-600 to-sky-600 disabled:opacity-40 text-sm font-medium tracking-wide border border-white/10 hover:from-emerald-500 hover:to-sky-500 flex items-center gap-2", children: [submitting && _jsx("span", { className: "w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" }), _jsx("span", { children: submitting ? 'Sending…' : 'Send Invite' })] }), _jsx("button", { type: "button", onClick: onClose, className: "h-10 px-4 rounded-lg bg-white/10 hover:bg-white/15 border border-white/10 text-sm", children: "Cancel" })] })] })] }));
 }
 function GameViewport({ children, mode = 'fixed', allowUpscale = true, minScale = 0.5, maxScale = 2, designWidth = 1920, designHeight = 1080 }) {
     const DESIGN_W = designWidth;
@@ -656,6 +748,19 @@ function AuthGate({ onSignedIn }) {
         setMode('loading');
         try {
             console.log('[auth] initializing GIS with client id', cid);
+            // Ensure GIS is initialized once before rendering the button to avoid race warnings
+            await initGoogleIdentity(cid, (resp) => {
+                try {
+                    const token = resp?.credential;
+                    if (token) {
+                        console.log('[auth] GIS credential received, proceeding');
+                        onSignedIn(token);
+                    }
+                }
+                catch (e) {
+                    console.warn('[auth] credential handling failed', e);
+                }
+            });
             // Wait for container to exist (retry up to ~500ms)
             let attempts = 0;
             while (!buttonContainerRef.current && attempts < 10) {
@@ -811,7 +916,7 @@ function TopNav({ view, onChangeView, profile, onSignOut }) {
         window.addEventListener('keydown', handleKey);
         return () => { window.removeEventListener('mousedown', handle); window.removeEventListener('keydown', handleKey); };
     }, [open]);
-    return (_jsxs("div", { className: "col-span-3 grid grid-cols-3 items-center px-6 bg-[#141924] border-b border-white/10 h-16 relative", children: [_jsx("div", { className: "flex items-center", children: _jsxs("button", { onClick: () => onChangeView('dashboard'), className: "flex items-center gap-2 group", title: "Home", children: [_jsx("div", { className: "w-9 h-9 rounded-lg bg-gradient-to-br from-emerald-500/30 to-sky-500/30 border border-white/10 flex items-center justify-center font-bold text-sm tracking-wide text-emerald-200 group-hover:from-emerald-500/50 group-hover:to-sky-500/50 transition", children: "AF" }), _jsx("span", { className: "text-sm font-semibold tracking-wide bg-gradient-to-r from-emerald-300 to-sky-300 bg-clip-text text-transparent hidden xl:inline-block", children: "Afro\u2011Future" })] }) }), _jsxs("div", { className: "flex items-center justify-center gap-6", children: [_jsx("button", { className: `opacity-80 hover:opacity-100 transition ${view === 'dashboard' ? 'text-emerald-400' : ''}`, onClick: () => onChangeView('dashboard'), children: "Dashboard" }), _jsx("button", { className: `opacity-80 hover:opacity-100 transition ${view === 'skills' ? 'text-emerald-400' : ''}`, onClick: () => onChangeView('skills'), children: "Skills" }), _jsx("button", { className: `opacity-80 hover:opacity-100 transition ${view === 'store' ? 'text-emerald-400' : ''}`, onClick: () => onChangeView('store'), children: "Store" }), _jsx("button", { className: `opacity-80 hover:opacity-100 transition ${view === 'help' ? 'text-emerald-400' : ''}`, onClick: () => onChangeView('help'), children: "Help" })] }), _jsxs("div", { className: "ml-auto flex items-center justify-end gap-4", children: [_jsxs(Chip, { children: ["1,458 ", _jsx("span", { className: "opacity-70", children: "shards" })] }), _jsx(IconButton, { label: "Notifications", children: "\uD83D\uDD14" }), _jsx(IconButton, { label: isFs ? 'Exit Fullscreen' : 'Enter Fullscreen', onClick: toggleFullscreen, children: _jsx("svg", { width: "14", height: "14", viewBox: "0 0 24 24", fill: "none", stroke: "currentColor", strokeWidth: "2", strokeLinecap: "round", strokeLinejoin: "round", "aria-hidden": "true", children: isFs ? (_jsxs(_Fragment, { children: [_jsx("path", { d: "M9 9H5V5" }), _jsx("path", { d: "M15 9h4V5" }), _jsx("path", { d: "M9 15H5v4" }), _jsx("path", { d: "M15 15h4v4" })] })) : (_jsxs(_Fragment, { children: [_jsx("path", { d: "M4 9V5h4" }), _jsx("path", { d: "M20 9V5h-4" }), _jsx("path", { d: "M4 15v4h4" }), _jsx("path", { d: "M20 15v4h-4" })] })) }) }), profile ? (_jsxs("div", { className: "relative", ref: menuRef, children: [_jsxs("button", { onClick: () => setOpen(o => !o), className: "flex items-center gap-2 group", children: [profile.picture ? _jsx("img", { className: "w-9 h-9 rounded object-cover border border-white/10", src: profile.picture, alt: profile.name || 'avatar' }) : (_jsx("div", { className: "w-9 h-9 rounded-lg bg-white/10 border border-white/10 flex items-center justify-center text-xs font-semibold", children: (profile.name || profile.email || 'U').slice(0, 1).toUpperCase() })), _jsx("div", { className: "hidden md:flex flex-col leading-tight text-left", children: _jsx("span", { className: "text-xs font-medium truncate max-w-[120px]", title: profile.name || profile.email, children: profile.name || 'User' }) }), _jsx("svg", { className: `w-3 h-3 transition ${open ? 'rotate-180' : ''}`, viewBox: "0 0 20 20", fill: "currentColor", children: _jsx("path", { d: "M5.23 7.21a.75.75 0 011.06.02L10 11.168l3.71-3.938a.75.75 0 111.08 1.04l-4.25 4.51a.75.75 0 01-1.08 0l-4.25-4.51a.75.75 0 01.02-1.06z" }) })] }), open && (_jsxs("div", { className: "absolute right-0 mt-2 w-64 rounded-xl border border-white/10 bg-[#1b222c] shadow-xl shadow-black/40 p-3 flex flex-col gap-2 z-50", children: [_jsxs("div", { className: "flex items-center gap-3 pb-3 border-b border-white/10", children: [profile.picture ? _jsx("img", { className: "w-10 h-10 rounded object-cover border border-white/10", src: profile.picture, alt: profile.name || 'avatar' }) : (_jsx("div", { className: "w-10 h-10 rounded-lg bg-white/10 border border-white/10 flex items-center justify-center text-sm font-semibold", children: (profile.name || profile.email || 'U').slice(0, 1).toUpperCase() })), _jsxs("div", { className: "flex flex-col leading-tight", children: [_jsx("span", { className: "text-xs font-semibold", children: profile.name || 'User' }), profile.email && _jsx("span", { className: "text-[10px] opacity-60", children: profile.email })] })] }), _jsx("button", { className: "text-left text-xs px-3 py-2 rounded-lg hover:bg-white/10 transition", onClick: () => { setOpen(false); onChangeView('dashboard'); }, children: "Account" }), _jsx("button", { className: "text-left text-xs px-3 py-2 rounded-lg hover:bg-white/10 transition", onClick: () => { setOpen(false); onChangeView('settings'); }, children: "Settings" }), _jsx("button", { className: "text-left text-xs px-3 py-2 rounded-lg hover:bg-rose-600/30 hover:text-rose-200 transition border border-transparent hover:border-rose-500/40", onClick: () => { setOpen(false); onSignOut?.(); }, children: "Log out" })] }))] })) : (_jsx("div", { className: "text-[11px] opacity-60", children: "Not signed in" }))] })] }));
+    return (_jsxs("div", { className: "col-span-3 grid grid-cols-3 items-center px-6 bg-[#141924] border-b border-white/10 h-16 relative", children: [_jsx("div", { className: "flex items-center", children: _jsxs("button", { onClick: () => onChangeView('dashboard'), className: "flex items-center gap-2 group", title: "Home", children: [_jsx("div", { className: "w-9 h-9 rounded-lg bg-gradient-to-br from-emerald-500/30 to-sky-500/30 border border-white/10 flex items-center justify-center font-bold text-sm tracking-wide text-emerald-200 group-hover:from-emerald-500/50 group-hover:to-sky-500/50 transition", children: "AF" }), _jsx("span", { className: "text-sm font-semibold tracking-wide bg-gradient-to-r from-emerald-300 to-sky-300 bg-clip-text text-transparent hidden xl:inline-block", children: "Afro\u2011Future" })] }) }), _jsxs("div", { className: "flex items-center justify-center gap-6", children: [_jsx("button", { className: `opacity-80 hover:opacity-100 transition ${view === 'dashboard' ? 'text-emerald-400' : ''}`, onClick: () => onChangeView('dashboard'), children: "Dashboard" }), _jsx("button", { className: `opacity-80 hover:opacity-100 transition ${view === 'skills' ? 'text-emerald-400' : ''}`, onClick: () => onChangeView('skills'), children: "Skills" }), _jsx("button", { className: `opacity-80 hover:opacity-100 transition ${view === 'store' ? 'text-emerald-400' : ''}`, onClick: () => onChangeView('store'), children: "Store" }), _jsx("button", { className: `opacity-80 hover:opacity-100 transition ${view === 'help' ? 'text-emerald-400' : ''}`, onClick: () => onChangeView('help'), children: "Help" })] }), _jsxs("div", { className: "ml-auto flex items-center justify-end gap-4", children: [_jsxs(Chip, { children: ["1,458 ", _jsx("span", { className: "opacity-70", children: "shards" })] }), _jsx(IconButton, { label: "Notifications", children: "\uD83D\uDD14" }), _jsx(IconButton, { label: isFs ? 'Exit Fullscreen' : 'Enter Fullscreen', onClick: toggleFullscreen, children: _jsx("svg", { width: "14", height: "14", viewBox: "0 0 24 24", fill: "none", stroke: "currentColor", strokeWidth: "2", strokeLinecap: "round", strokeLinejoin: "round", "aria-hidden": "true", children: isFs ? (_jsxs(_Fragment, { children: [_jsx("path", { d: "M9 9H5V5" }), _jsx("path", { d: "M15 9h4V5" }), _jsx("path", { d: "M9 15H5v4" }), _jsx("path", { d: "M15 15h4v4" })] })) : (_jsxs(_Fragment, { children: [_jsx("path", { d: "M4 9V5h4" }), _jsx("path", { d: "M20 9V5h-4" }), _jsx("path", { d: "M4 15v4h4" }), _jsx("path", { d: "M20 15v4h-4" })] })) }) }), profile ? (_jsxs("div", { className: "relative", ref: menuRef, children: [_jsxs("button", { onClick: () => setOpen(o => !o), className: "flex items-center gap-2 group", children: [profile.picture ? _jsx("img", { className: "w-9 h-9 rounded object-cover border border-white/10", src: profile.picture, alt: profile.name || 'avatar' }) : (_jsx("div", { className: "w-9 h-9 rounded-lg bg-white/10 border border-white/10 flex items-center justify-center text-xs font-semibold", children: (profile.name || profile.email || 'U').slice(0, 1).toUpperCase() })), _jsx("div", { className: "hidden md:flex flex-col leading-tight text-left", children: _jsx("span", { className: "text-xs font-medium truncate max-w-[120px]", title: profile.name || profile.email, children: profile.name || 'User' }) }), _jsx("svg", { className: `w-3 h-3 transition ${open ? 'rotate-180' : ''}`, viewBox: "0 0 20 20", fill: "currentColor", children: _jsx("path", { d: "M5.23 7.21a.75.75 0 011.06.02L10 11.168l3.71-3.938a.75.75 0 111.08 1.04l-4.25 4.51a.75.75 0 01-1.08 0l-4.25-4.51a.75.75 0 01.02-1.06z" }) })] }), open && (_jsxs("div", { className: "absolute right-0 mt-2 w-64 rounded-xl border border-white/10 bg-[#1b222c] shadow-xl shadow-black/40 p-3 flex flex-col gap-2 z-50", children: [_jsxs("div", { className: "flex items-center gap-3 pb-3 border-b border-white/10", children: [profile.picture ? _jsx("img", { className: "w-10 h-10 rounded object-cover border border-white/10", src: profile.picture, alt: profile.name || 'avatar' }) : (_jsx("div", { className: "w-10 h-10 rounded-lg bg-white/10 border border-white/10 flex items-center justify-center text-sm font-semibold", children: (profile.name || profile.email || 'U').slice(0, 1).toUpperCase() })), _jsxs("div", { className: "flex flex-col leading-tight", children: [_jsx("span", { className: "text-xs font-semibold", children: profile.name || 'User' }), profile.email && _jsx("span", { className: "text-[10px] opacity-60", children: profile.email })] })] }), _jsx("button", { className: "text-left text-xs px-3 py-2 rounded-lg hover:bg-white/10 transition", onClick: () => { setOpen(false); onChangeView('dashboard'); }, children: "Account" }), _jsx("button", { className: "text-left text-xs px-3 py-2 rounded-lg hover:bg-white/10 transition", onClick: () => { setOpen(false); onChangeView('settings'); }, children: "Settings" }), _jsx("button", { className: "text-left text-xs px-3 py-2 rounded-lg hover:bg-emerald-600/30 hover:text-emerald-200 transition border border-transparent hover:border-emerald-500/40", onClick: () => { setOpen(false); window.dispatchEvent(new CustomEvent('af:openInviteDialog')); }, children: "Invite Friend" }), _jsx("button", { className: "text-left text-xs px-3 py-2 rounded-lg hover:bg-rose-600/30 hover:text-rose-200 transition border border-transparent hover:border-rose-500/40", onClick: () => { setOpen(false); onSignOut?.(); }, children: "Log out" })] }))] })) : (_jsx("div", { className: "text-[11px] opacity-60", children: "Not signed in" }))] })] }));
 }
 function LeftPlayerPanel({ className = '', playerName, accountLevel, loadout, heroLocked }) {
     // Skill / stat integration
@@ -841,7 +946,91 @@ function LeftPlayerPanel({ className = '', playerName, accountLevel, loadout, he
     const epPerUtility = 6;
     const HP = baseHP + (skillLevel - 1) * hpPerLevel + defense * hpPerDefense;
     const EP = baseEP + (skillLevel - 1) * epPerLevel + utility * epPerUtility;
-    return (_jsxs("aside", { className: `col-start-1 h-full min-h-0 ${className} bg-[#0f1218] border-r border-black/40 shadow-inner flex flex-col overflow-hidden`, children: [_jsxs("div", { className: "px-4 py-4 border-b border-white/10 flex flex-col items-center shrink-0", children: [_jsxs("div", { className: "w-full max-w-[260px] aspect-[4/3] rounded-3xl border border-white/10 bg-[#12171f] overflow-hidden relative flex flex-col items-center justify-center", children: [_jsx("img", { className: "w-[52%] h-[52%] object-cover rounded-2xl border border-white/10 shadow-lg", src: loadout.portraitUrl, alt: "portrait" }), _jsxs("div", { className: "mt-2 flex flex-col items-center text-center", children: [_jsxs("div", { className: "flex items-center gap-2", children: [_jsx("img", { src: FactionIcon[loadout.faction], alt: loadout.faction, className: "w-5 h-5 drop-shadow" }), _jsx("span", { className: "font-semibold text-white text-sm leading-tight tracking-wide", children: loadout.name })] }), _jsxs("div", { className: "mt-1 text-[10px] text-gray-300 flex items-center gap-2", children: [_jsxs("span", { className: "px-2 py-0.5 rounded-full bg-white/5 border border-white/10 tracking-wide", children: ["Lv ", loadout.level] }), _jsx("span", { children: loadout.archetype === 'MALE' ? 'Male' : 'Female' })] })] }), _jsxs("span", { className: "absolute top-2 left-2 px-2 py-1 rounded-lg bg-black/50 border border-white/10 text-[10px] tracking-wide flex items-center gap-1", children: [_jsx("img", { src: FactionIcon[loadout.faction], alt: "faction", className: "w-3.5 h-3.5" }), loadout.faction] })] }), _jsxs("div", { className: "mt-4 w-full grid grid-cols-2 gap-3", children: [_jsxs("div", { className: "rounded-2xl border border-white/10 bg-gradient-to-br from-emerald-500/10 to-sky-500/10 p-3 flex flex-col text-[10px]", children: [_jsxs("div", { className: "flex justify-between", children: [_jsx("span", { className: "opacity-70", children: "HP" }), _jsx("span", { className: "font-semibold", children: HP })] }), _jsxs("div", { className: "flex justify-between mt-1", children: [_jsx("span", { className: "opacity-70", children: "EP" }), _jsx("span", { className: "font-semibold", children: EP })] }), _jsxs("div", { className: "flex justify-between mt-1", children: [_jsx("span", { className: "opacity-70", children: "Skill Lv" }), _jsx("span", { className: "font-semibold", children: skillLevel })] })] }), _jsxs("div", { className: "rounded-2xl border border-white/10 bg-white/5 p-3 flex flex-col text-[10px]", children: [_jsxs("div", { className: "flex justify-between", children: [_jsx("span", { className: "opacity-70", children: "Tokens Spent" }), _jsx("span", { className: "font-semibold", children: skillSpent })] }), _jsxs("div", { className: "flex justify-between mt-1", children: [_jsx("span", { className: "opacity-70", children: "Tokens Left" }), _jsx("span", { className: "font-semibold text-emerald-300", children: pointsLeft })] }), _jsxs("div", { className: "flex justify-between mt-1", children: [_jsx("span", { className: "opacity-70", children: "Unlocked" }), _jsx("span", { className: "font-semibold", children: skillUnlocked.length })] })] })] }), _jsxs("div", { className: "mt-4 w-full rounded-2xl border border-white/10 bg-gradient-to-br from-white/5 to-white/[0.02] p-3 text-[10px] flex flex-col gap-1", children: [_jsxs("div", { className: "flex justify-between", children: [_jsx("span", { className: "opacity-70", children: "Primary Path" }), _jsx("span", { className: "font-semibold text-emerald-300", children: primaryBranch || '—' })] }), _jsxs("div", { className: "flex justify-between", children: [_jsx("span", { className: "opacity-70", children: "Primary Type" }), _jsx("span", { className: "font-semibold text-sky-300", children: primaryType || '—' })] }), _jsx("div", { className: "mt-1 flex flex-wrap gap-1", children: traitTags.length ? traitTags.map(t => _jsx(TraitTag, { tag: t }, t)) : (_jsx("span", { className: "opacity-50", children: "Earn traits by investing tokens" })) }), _jsx("div", { className: "mt-2 flex justify-end", children: _jsx("button", { disabled: !unlockOrder.length, onClick: () => { if (!unlockOrder.length)
+    const [shareOpen, setShareOpen] = React.useState(false);
+    const shareRef = React.useRef(null);
+    React.useEffect(() => {
+        if (!shareOpen)
+            return;
+        function onDown(e) { if (shareRef.current && !shareRef.current.contains(e.target))
+            setShareOpen(false); }
+        function onKey(e) { if (e.key === 'Escape')
+            setShareOpen(false); }
+        window.addEventListener('mousedown', onDown);
+        window.addEventListener('keydown', onKey);
+        return () => { window.removeEventListener('mousedown', onDown); window.removeEventListener('keydown', onKey); };
+    }, [shareOpen]);
+    function characterShareUrl() {
+        const base = location.origin.replace(/\/$/, '');
+        const params = new URLSearchParams();
+        params.set('char', encodeURIComponent(loadout.id));
+        // Carry faction + portrait so landing page (or future server-side OG rendering) can hydrate context
+        params.set('faction', loadout.faction);
+        if (loadout.portraitUrl) {
+            try {
+                params.set('portrait', new URL(loadout.portraitUrl, location.origin).toString());
+            }
+            catch { }
+        }
+        // Include hero name for /og/card endpoint usage by social scrapers
+        if (loadout.name)
+            params.set('name', encodeURIComponent(loadout.name));
+        return `${base}/?share=${params.toString()}`;
+    }
+    function copyShare() {
+        try {
+            navigator.clipboard.writeText(characterShareUrl());
+        }
+        catch { }
+    }
+    async function doShare(target) {
+        const url = characterShareUrl();
+        if (target === 'copy') {
+            copyShare();
+            setShareOpen(false);
+            return;
+        }
+        const portraitAbs = (() => { try {
+            return new URL(loadout.portraitUrl, location.origin).toString();
+        }
+        catch {
+            return '';
+        } })();
+        const baseText = `Check out my Afro-Future hero ${loadout.name} of faction ${loadout.faction}!`;
+        const composedText = `${baseText}${portraitAbs ? ' ' + portraitAbs : ''}`;
+        const textEnc = encodeURIComponent(baseText);
+        const longTextEnc = encodeURIComponent(composedText);
+        // Optional: use Web Share API (system share sheet) when available and a future 'system' target is passed
+        if (target === 'system' && navigator.share) {
+            try {
+                // Attempt including image if CORS-permitted
+                let files;
+                if (portraitAbs && navigator.canShare) {
+                    try {
+                        const resp = await fetch(portraitAbs, { mode: 'cors' });
+                        const blob = await resp.blob();
+                        const f = new File([blob], 'hero.png', { type: blob.type || 'image/png' });
+                        if (navigator.canShare({ files: [f] }))
+                            files = [f];
+                    }
+                    catch { }
+                }
+                await navigator.share({ title: 'Afro-Future Hero', text: baseText, url, files });
+                setShareOpen(false);
+                return;
+            }
+            catch { }
+        }
+        const shareLinks = {
+            twitter: `https://twitter.com/intent/tweet?text=${longTextEnc}&url=${encodeURIComponent(url)}`,
+            facebook: `https://www.facebook.com/sharer/sharer.php?u=${encodeURIComponent(url)}`,
+            reddit: `https://www.reddit.com/submit?url=${encodeURIComponent(url)}&title=${textEnc}`,
+            linkedin: `https://www.linkedin.com/sharing/share-offsite/?url=${encodeURIComponent(url)}`,
+        };
+        const href = shareLinks[target];
+        if (href)
+            window.open(href, '_blank', 'noopener,noreferrer');
+    }
+    return (_jsxs("aside", { className: `col-start-1 h-full min-h-0 ${className} bg-[#0f1218] border-r border-black/40 shadow-inner flex flex-col overflow-hidden`, children: [_jsxs("div", { className: "px-4 py-4 border-b border-white/10 flex flex-col items-center shrink-0 relative", children: [_jsxs("div", { className: "w-full max-w-[260px] aspect-[4/3] rounded-3xl border border-white/10 bg-[#12171f] overflow-hidden relative flex flex-col items-center justify-center", children: [_jsx("img", { className: "w-[52%] h-[52%] object-cover rounded-2xl border border-white/10 shadow-lg", src: loadout.portraitUrl, alt: "portrait" }), _jsx("button", { onClick: () => setShareOpen(o => !o), title: "Share Character", className: "absolute top-2 right-2 w-8 h-8 rounded-lg bg-black/50 border border-white/10 flex items-center justify-center text-[13px] hover:bg-black/60 group", children: _jsxs("svg", { width: "15", height: "15", viewBox: "0 0 24 24", fill: "none", stroke: "currentColor", strokeWidth: "2", strokeLinecap: "round", strokeLinejoin: "round", className: "opacity-80 group-hover:opacity-100", children: [_jsx("circle", { cx: "18", cy: "5", r: "3" }), _jsx("circle", { cx: "6", cy: "12", r: "3" }), _jsx("circle", { cx: "18", cy: "19", r: "3" }), _jsx("path", { d: "M8.59 13.51l6.83 3.98" }), _jsx("path", { d: "M15.41 6.51l-6.82 3.98" })] }) }), shareOpen && (_jsxs("div", { ref: shareRef, className: "absolute z-20 top-12 right-2 w-56 rounded-xl border border-white/10 bg-[#1b222c] shadow-xl p-3 flex flex-col gap-2 animate-fade-in", children: [_jsx("div", { className: "text-xs font-semibold tracking-wide", children: "Share Character" }), _jsx("div", { className: "text-[10px] opacity-70 -mt-1", children: "Invite friends and show off your build" }), _jsxs("div", { className: "grid grid-cols-4 gap-1 mt-2", children: [_jsx("button", { onClick: () => doShare('twitter'), className: "h-5 rounded-md bg-white/5 border border-white/10 text-[9px] leading-none hover:bg-[#1d9bf0]/30 hover:text-[#1d9bf0] px-1", children: "X" }), _jsx("button", { onClick: () => doShare('facebook'), className: "h-5 rounded-md bg-white/5 border border-white/10 text-[9px] leading-none hover:bg-blue-600/40 hover:text-blue-300 px-1", children: "Fb" }), _jsx("button", { onClick: () => doShare('reddit'), className: "h-5 rounded-md bg-white/5 border border-white/10 text-[9px] leading-none hover:bg-orange-600/40 hover:text-orange-300 px-1", children: "Rdt" }), _jsx("button", { onClick: () => doShare('linkedin'), className: "h-5 rounded-md bg-white/5 border border-white/10 text-[9px] leading-none hover:bg-sky-600/40 hover:text-sky-300 px-1", children: "In" })] })] })), _jsxs("div", { className: "mt-2 flex flex-col items-center text-center", children: [_jsxs("div", { className: "flex items-center gap-2", children: [_jsx("img", { src: FactionIcon[loadout.faction], alt: loadout.faction, className: "w-5 h-5 drop-shadow" }), _jsx("span", { className: "font-semibold text-white text-sm leading-tight tracking-wide", children: loadout.name })] }), _jsxs("div", { className: "mt-1 text-[10px] text-gray-300 flex items-center gap-2", children: [_jsxs("span", { className: "px-2 py-0.5 rounded-full bg-white/5 border border-white/10 tracking-wide", children: ["Lv ", loadout.level] }), _jsx("span", { children: loadout.archetype === 'MALE' ? 'Male' : 'Female' })] })] }), _jsxs("span", { className: "absolute top-2 left-2 px-2 py-1 rounded-lg bg-black/50 border border-white/10 text-[10px] tracking-wide flex items-center gap-1", children: [_jsx("img", { src: FactionIcon[loadout.faction], alt: "faction", className: "w-3.5 h-3.5" }), loadout.faction] })] }), _jsxs("div", { className: "mt-4 w-full grid grid-cols-2 gap-3", children: [_jsxs("div", { className: "rounded-2xl border border-white/10 bg-gradient-to-br from-emerald-500/10 to-sky-500/10 p-3 flex flex-col text-[10px]", children: [_jsxs("div", { className: "flex justify-between", children: [_jsx("span", { className: "opacity-70", children: "HP" }), _jsx("span", { className: "font-semibold", children: HP })] }), _jsxs("div", { className: "flex justify-between mt-1", children: [_jsx("span", { className: "opacity-70", children: "EP" }), _jsx("span", { className: "font-semibold", children: EP })] }), _jsxs("div", { className: "flex justify-between mt-1", children: [_jsx("span", { className: "opacity-70", children: "Skill Lv" }), _jsx("span", { className: "font-semibold", children: skillLevel })] })] }), _jsxs("div", { className: "rounded-2xl border border-white/10 bg-white/5 p-3 flex flex-col text-[10px]", children: [_jsxs("div", { className: "flex justify-between", children: [_jsx("span", { className: "opacity-70", children: "Tokens Spent" }), _jsx("span", { className: "font-semibold", children: skillSpent })] }), _jsxs("div", { className: "flex justify-between mt-1", children: [_jsx("span", { className: "opacity-70", children: "Tokens Left" }), _jsx("span", { className: "font-semibold text-emerald-300", children: pointsLeft })] }), _jsxs("div", { className: "flex justify-between mt-1", children: [_jsx("span", { className: "opacity-70", children: "Unlocked" }), _jsx("span", { className: "font-semibold", children: skillUnlocked.length })] })] })] }), _jsxs("div", { className: "mt-4 w-full rounded-2xl border border-white/10 bg-gradient-to-br from-white/5 to-white/[0.02] p-3 text-[10px] flex flex-col gap-1", children: [_jsxs("div", { className: "flex justify-between", children: [_jsx("span", { className: "opacity-70", children: "Primary Path" }), _jsx("span", { className: "font-semibold text-emerald-300", children: primaryBranch || '—' })] }), _jsxs("div", { className: "flex justify-between", children: [_jsx("span", { className: "opacity-70", children: "Primary Type" }), _jsx("span", { className: "font-semibold text-sky-300", children: primaryType || '—' })] }), _jsx("div", { className: "mt-1 flex flex-wrap gap-1", children: traitTags.length ? traitTags.map(t => _jsx(TraitTag, { tag: t }, t)) : (_jsx("span", { className: "opacity-50", children: "Earn traits by investing tokens" })) }), _jsx("div", { className: "mt-2 flex justify-end", children: _jsx("button", { disabled: !unlockOrder.length, onClick: () => { if (!unlockOrder.length)
                                         return; if (confirm('Respec will refund all spent tokens. Proceed?'))
                                         respec(); }, className: "px-2.5 py-1 rounded-lg border text-[10px] tracking-wide disabled:opacity-40 disabled:cursor-not-allowed bg-white/5 border-white/10 hover:bg-white/10", children: "Respec" }) })] })] }), _jsx("div", { className: "px-4 py-4 flex flex-col items-center gap-4", children: _jsxs("div", { className: "w-full max-w-[260px] aspect-[4/3] rounded-3xl border border-white/10 bg-white/5 overflow-hidden relative flex flex-col items-center justify-center p-4", children: [_jsx("div", { className: "absolute inset-0 bg-gradient-to-tr from-[#0b0e13]/80 via-transparent to-[#0b0e13]/50" }), _jsx("img", { className: "relative z-10 w-[52%] h-[52%] object-contain drop-shadow", src: PetIcon[loadout.pet.type], alt: "pet" }), _jsxs("div", { className: "relative z-10 mt-3 flex flex-col items-center text-center", children: [_jsx("div", { className: "font-semibold text-white text-sm leading-tight tracking-wide", children: loadout.pet.type === 'CYBER_DOG' ? 'Cyber-Dog' : 'Cyber-Cat' }), _jsxs("div", { className: "mt-1 text-[10px] text-gray-300 flex items-center gap-2", children: [_jsxs("span", { className: "px-2 py-0.5 rounded-full bg-white/5 border border-white/10 tracking-wide", children: ["Lv ", loadout.pet.level] }), _jsx("span", { children: loadout.pet.role })] })] })] }) })] }));
 }
@@ -1083,15 +1272,15 @@ function CharacterCreator({ onSave, onBack, initial, locked }) {
         saveProgress({ avatar: { parts: { ...picked }, colors: { ...colorState }, updatedAt: Date.now() } });
         onSave(payload);
     }
-    return (_jsxs("div", { className: "w-full h-full bg-[#0b0e13] text-gray-100 relative flex flex-col", children: [_jsx("div", { className: "absolute top-4 left-6 flex items-center gap-2 z-10", children: _jsx(Button, { variant: "ghost", onClick: onBack, children: "Back" }) }), _jsxs("div", { className: "flex-1 flex flex-col", children: [_jsx("div", { className: "flex-1 flex items-center justify-center px-8 py-8", children: _jsxs("div", { className: "relative w-full h-full max-h-[55vh] rounded-[32px] bg-[#12171f] border border-white/10 shadow-2xl overflow-hidden flex items-center justify-center mx-auto", children: [_jsx("div", { className: "absolute inset-0 bg-gradient-to-tr from-emerald-500/5 via-transparent to-sky-500/5 pointer-events-none" }), _jsxs("div", { className: "absolute inset-0", children: [_jsx(AvatarScene, { parts: picked, colors: colorState, debugTint: false, animPaused: animPaused, animSpeed: animSpeed, 
+    return (_jsxs("div", { className: "w-full h-full bg-[#0b0e13] text-gray-100 relative flex flex-col", children: [_jsx("div", { className: "absolute top-4 left-6 flex items-center gap-2 z-10", children: _jsx(Button, { variant: "ghost", onClick: onBack, children: "Back" }) }), _jsxs("div", { className: "flex-1 flex flex-col", children: [_jsx("div", { className: "flex-1 flex items-center justify-center px-6 py-8", children: _jsxs("div", { className: "relative w-full h-full max-h-[55vh] rounded-[32px] bg-[#12171f] border border-white/10 shadow-2xl overflow-hidden flex items-center justify-center mx-auto max-w-5xl", children: [_jsx("div", { className: "absolute inset-0 bg-gradient-to-tr from-emerald-500/5 via-transparent to-sky-500/5 pointer-events-none" }), _jsxs("div", { className: "absolute inset-0", children: [_jsx(AvatarScene, { parts: picked, colors: colorState, debugTint: false, animPaused: animPaused, animSpeed: animSpeed, 
                                             // Reduce overall avatar size by 20%
-                                            modelScale: 0.8, modelOffset: [0, -0.25, 0] }), _jsxs("div", { className: "absolute top-3 left-3 flex items-center gap-2 bg-black/40 backdrop-blur-sm px-3 py-2 rounded-xl border border-white/10 text-[11px]", children: [_jsx("button", { onClick: () => setAnimPaused(p => !p), className: "px-2 py-1 rounded bg-white/10 hover:bg-white/15 border border-white/10", children: animPaused ? 'Play' : 'Pause' }), _jsxs("div", { className: "flex items-center gap-1", children: [_jsx("span", { className: "opacity-60", children: "Speed" }), _jsx("input", { type: "range", min: 0.25, max: 1.5, step: 0.05, value: animSpeed, onChange: e => setAnimSpeed(parseFloat(e.target.value)), className: "w-24" }), _jsxs("span", { className: "tabular-nums w-8 text-right", children: [animSpeed.toFixed(2), "x"] })] })] })] }), _jsx("div", { className: "absolute bottom-4 right-4 text-[11px] px-2 py-1 rounded bg-white/5 border border-white/10 uppercase tracking-wide", children: "Preview 3D" })] }) }), _jsxs("div", { className: "w-full bg-[#12171f]/95 backdrop-blur-sm border-t border-white/10 flex flex-col max-h-[45vh]", children: [_jsx("div", { className: "px-8 pt-4 flex flex-wrap justify-center gap-2", children: tabs.map((t) => (_jsx("button", { onClick: () => setTab(t), className: `px-4 py-2 rounded-xl text-sm border transition
-                  ${tab === t ? 'bg-emerald-600/30 text-emerald-200 border-emerald-500/60 shadow-inner' : 'bg-white/5 border-white/10 hover:bg-white/10 text-gray-300'}`, children: t }, t))) }), _jsx("div", { className: "px-8 pb-4", children: tab === 'Colors' ? (_jsx("div", { className: "flex gap-3 justify-center items-center", children: [
+                                            modelScale: 0.8, modelOffset: [0, -0.25, 0] }), _jsxs("div", { className: "absolute top-3 left-3 flex items-center gap-2 bg-black/40 backdrop-blur-sm px-3 py-2 rounded-xl border border-white/10 text-[11px]", children: [_jsx("button", { onClick: () => setAnimPaused(p => !p), className: "px-2 py-1 rounded bg-white/10 hover:bg-white/15 border border-white/10", children: animPaused ? 'Play' : 'Pause' }), _jsxs("div", { className: "flex items-center gap-1", children: [_jsx("span", { className: "opacity-60", children: "Speed" }), _jsx("input", { type: "range", min: 0.25, max: 1.5, step: 0.05, value: animSpeed, onChange: e => setAnimSpeed(parseFloat(e.target.value)), className: "w-24" }), _jsxs("span", { className: "tabular-nums w-8 text-right", children: [animSpeed.toFixed(2), "x"] })] })] })] }), _jsx("div", { className: "absolute bottom-4 right-4 text-[11px] px-2 py-1 rounded bg-white/5 border border-white/10 uppercase tracking-wide", children: "Preview 3D" })] }) }), _jsxs("div", { className: "w-full bg-[#12171f]/95 backdrop-blur-sm border-t border-white/10 flex flex-col max-h-[45vh]", children: [_jsx("div", { className: "px-6 pt-4 flex flex-wrap justify-center gap-2 max-w-5xl mx-auto", children: tabs.map((t) => (_jsx("button", { onClick: () => setTab(t), className: `px-4 py-2 rounded-xl text-sm border transition
+                  ${tab === t ? 'bg-emerald-600/30 text-emerald-200 border-emerald-500/60 shadow-inner' : 'bg-white/5 border-white/10 hover:bg-white/10 text-gray-300'}`, children: t }, t))) }), _jsx("div", { className: "px-6 pb-4 max-w-5xl mx-auto w-full", children: tab === 'Colors' ? (_jsx("div", { className: "flex gap-3 justify-center items-center flex-wrap", children: [
                                         { primary: '#00A37A', secondary: '#F5F5F5', skin: '#c58b66' },
                                         { primary: '#a855f7', secondary: '#0f172a', skin: '#d19d74' },
                                         { primary: '#ef4444', secondary: '#111827', skin: '#c58b66' },
                                         { primary: '#10b981', secondary: '#0f172a', skin: '#c58b66' },
-                                    ].map((p, i) => (_jsxs("button", { onClick: () => setColorState(p), className: "group w-14 h-14 rounded-lg border border-white/10 overflow-hidden relative flex", title: "Apply palette", children: [_jsx("div", { className: "flex-1 h-full", style: { background: p.primary } }), _jsx("div", { className: "flex-1 h-full", style: { background: p.secondary } }), _jsx("div", { className: "flex-1 h-full", style: { background: p.skin } }), _jsx("div", { className: "absolute inset-0 opacity-0 group-hover:opacity-100 transition text-[9px] font-semibold tracking-wide flex items-center justify-center bg-black/50 text-white", children: "Use" })] }, i))) })) : (_jsxs("div", { className: "relative flex gap-4 overflow-x-auto no-scrollbar py-2 px-1 items-stretch scroll-smooth snap-x snap-mandatory group", id: "variant-row", children: [_jsx("div", { className: "pointer-events-none absolute left-0 top-0 bottom-0 w-8 bg-gradient-to-r from-[#12171f] to-transparent opacity-70 group-hover:opacity-90" }), _jsx("div", { className: "pointer-events-none absolute right-0 top-0 bottom-0 w-8 bg-gradient-to-l from-[#12171f] to-transparent opacity-70 group-hover:opacity-90" }), getVariantsByGroup(tab).map((v, idx) => {
+                                    ].map((p, i) => (_jsxs("button", { onClick: () => setColorState(p), className: "group w-14 h-14 rounded-lg border border-white/10 overflow-hidden relative flex", title: "Apply palette", children: [_jsx("div", { className: "flex-1 h-full", style: { background: p.primary } }), _jsx("div", { className: "flex-1 h-full", style: { background: p.secondary } }), _jsx("div", { className: "flex-1 h-full", style: { background: p.skin } }), _jsx("div", { className: "absolute inset-0 opacity-0 group-hover:opacity-100 transition text-[9px] font-semibold tracking-wide flex items-center justify-center bg-black/50 text-white", children: "Use" })] }, i))) })) : (_jsxs("div", { className: "relative flex gap-4 overflow-x-auto no-scrollbar py-2 px-1 items-stretch scroll-smooth snap-x snap-mandatory group justify-center", id: "variant-row", children: [_jsx("div", { className: "pointer-events-none sticky left-0 top-0 bottom-0 w-8 bg-gradient-to-r from-[#12171f] to-transparent opacity-70 group-hover:opacity-90" }), _jsx("div", { className: "pointer-events-none sticky right-0 top-0 bottom-0 w-8 bg-gradient-to-l from-[#12171f] to-transparent opacity-70 group-hover:opacity-90" }), getVariantsByGroup(tab).map((v, idx) => {
                                             const active = picked[tab] === v.id;
                                             return (_jsx(VariantCard, { v: v, active: active, onSelect: () => selectVariant(tab, v.id), eager: idx < 6 }, v.id));
                                         }), getVariantsByGroup(tab).length === 0 && (_jsxs("div", { className: "text-xs opacity-50 px-4 py-6", children: ["No variants for ", tab] }))] })) }), _jsxs("div", { className: "px-8 py-5 flex justify-end gap-3 border-t border-white/10 bg-[#12171f]/95 sticky bottom-0", children: [_jsx(Button, { variant: "ghost", onClick: onBack, children: "Previous" }), _jsx(Button, { onClick: exportPayload, children: "Save & Continue" })] })] })] })] }));

@@ -22,7 +22,7 @@ export function usePlayerProfile(opts = {}) {
         let cancelled = false;
         (async () => {
             try {
-                // Wait for any auth user. If anonymous, still proceed so early gameplay works; will migrate later
+                // Attempt anonymous auth; if disabled, wait for a non-anonymous user (Google/email)
                 const user = await ensureAnonAuth();
                 if (cancelled)
                     return;

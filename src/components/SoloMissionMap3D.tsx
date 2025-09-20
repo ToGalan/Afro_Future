@@ -117,12 +117,13 @@ function generateTerrainMapRect(width: number, height: number, seed = 42): Tile[
     chars: TerrainChar[];         // possible chars used for this biome
     growthProb: number;           // base probability to claim neighbor (adds ragged edges)
   }> = [
-  { key: 'water',    ratio: 0.09, minSeeds: 8,  maxSeeds: 18, chars: ['L','N','V'], growthProb: 0.55 },
-  { key: 'desert',   ratio: 0.11, minSeeds: 10, maxSeeds: 20, chars: ['D'],        growthProb: 0.60 },
-  { key: 'forest',   ratio: 0.14, minSeeds: 12, maxSeeds: 24, chars: ['F'],        growthProb: 0.62 },
-  { key: 'jungle',   ratio: 0.07, minSeeds: 6,  maxSeeds: 14, chars: ['J'],        growthProb: 0.58 },
-  { key: 'hills',    ratio: 0.11, minSeeds: 10, maxSeeds: 22, chars: ['H'],        growthProb: 0.57 },
-  { key: 'mountain', ratio: 0.08, minSeeds: 8,  maxSeeds: 16, chars: ['O','R','M'],growthProb: 0.50 },
+    // Slightly reduced ratios for large maps to allow more plains buffer and clearer macro regions
+    { key: 'water',    ratio: 0.085, minSeeds: 6,  maxSeeds: 14, chars: ['L','N','V'], growthProb: 0.58 },
+    { key: 'desert',   ratio: 0.105, minSeeds: 7, maxSeeds: 16, chars: ['D'],        growthProb: 0.63 },
+    { key: 'forest',   ratio: 0.135, minSeeds: 8, maxSeeds: 18, chars: ['F'],        growthProb: 0.66 },
+    { key: 'jungle',   ratio: 0.065, minSeeds: 5, maxSeeds: 12, chars: ['J'],        growthProb: 0.60 },
+    { key: 'hills',    ratio: 0.105, minSeeds: 7, maxSeeds: 16, chars: ['H'],        growthProb: 0.60 },
+    { key: 'mountain', ratio: 0.075, minSeeds: 6, maxSeeds: 14, chars: ['O','R','M'],growthProb: 0.53 },
   ];
 
   // Shuffle helper (Fisher–Yates)
@@ -143,13 +144,18 @@ function generateTerrainMapRect(width: number, height: number, seed = 42): Tile[
   function key(a: Axial) { return `${a.q},${a.r}`; }
 
   // 4. Determine targets & seeds
+  const isLarge = width * height > 15000; // threshold for macro-region tuning
   for (const cfg of biomeConfigs) {
     const target = Math.max(1, Math.floor(total * cfg.ratio));
     targetByBiome.set(cfg.key, target);
     claimedByBiome.set(cfg.key, 0);
     frontierByBiome.set(cfg.key, []);
     // Number of seeds scaled loosely to sqrt of target for reasonable region sizes
-    const seedCount = Math.min(cfg.maxSeeds, Math.max(cfg.minSeeds, Math.floor(Math.sqrt(target) * 0.9)));
+    let seedCount = Math.min(cfg.maxSeeds, Math.max(cfg.minSeeds, Math.floor(Math.sqrt(target) * 0.9)));
+    if (isLarge) {
+      // On very large maps reduce seed counts further to encourage bigger contiguous biomes
+      seedCount = Math.max(cfg.minSeeds, Math.floor(seedCount * 0.55));
+    }
     // Pick seed tiles uniformly from unassigned coordinates (shuffle view each loop)
     const pool = shuffle([...coords]);
     let placed = 0; let idx = 0;
@@ -227,6 +233,42 @@ function generateTerrainMapRect(width: number, height: number, seed = 42): Tile[
     const char = assigned.get(k) || 'P';
     const type = charToType(char);
     tiles.push({ q: c.q, r: c.r, char, type, resource: null });
+  }
+
+  if (isLarge) {
+    // 7. Smoothing pass: unify tiny outlier cells that have a dominant neighbor biome (>=4 of 6 neighbors)
+    const byKey = new Map<string, Tile>();
+    for (const t of tiles) byKey.set(`${t.q},${t.r}`, t);
+    const toFlip: Tile[] = [];
+    for (const t of tiles) {
+      const counts = new Map<TerrainChar, number>();
+      for (const n of axialNeighbors(t)) {
+        const nt = byKey.get(`${n.q},${n.r}`);
+        if (!nt) continue;
+        counts.set(nt.char, (counts.get(nt.char) || 0) + 1);
+      }
+      let bestChar: TerrainChar | null = null; let bestCount = 0;
+      counts.forEach((cCnt, cChar) => { if (cCnt > bestCount) { bestCount = cCnt; bestChar = cChar; } });
+      if (bestChar && bestChar !== t.char && bestCount >= 4) {
+        toFlip.push(t);
+      }
+    }
+    for (const t of toFlip) {
+      t.char = byKey.get(`${t.q},${t.r}`)!.char = ( () => {
+        // Re-evaluate majority to avoid stale choice if neighbors changed earlier this loop
+        const counts = new Map<TerrainChar, number>();
+        for (const n of axialNeighbors(t)) {
+          const nt = byKey.get(`${n.q},${n.r}`);
+          if (!nt) continue;
+          counts.set(nt.char, (counts.get(nt.char) || 0) + 1);
+        }
+        let bestChar2: TerrainChar = t.char;
+        let bestCount2 = 0;
+        counts.forEach((cCnt, cChar) => { if (cCnt > bestCount2) { bestCount2 = cCnt; bestChar2 = cChar; } });
+        return bestChar2;
+      })();
+      t.type = charToType(t.char);
+    }
   }
 
   return tiles;
@@ -680,9 +722,9 @@ function HexTile({ t, size, onClick, onHover }: { t: Tile; size: number; onClick
 }
 
 export default function SoloMissionMap3D() {
-  // Reduced temporary size: 96 x 144 rectangle (performance tuning phase)
-  const GRID_W = 96;
-  const GRID_H = 144;
+  // Expanded map size (2x previous) for broader exploration
+  const GRID_W = 192;
+  const GRID_H = 288;
   const hexSize = 1.0; // smaller size to fit large grid visually
   const tiles = useMemo(() => {
     const t = generateTerrainMapRect(GRID_W, GRID_H, 1337);
@@ -716,47 +758,25 @@ export default function SoloMissionMap3D() {
 
   // Hero will be moved via keyboard commands now (auto path removed)
 
-  // Pet patrol path (independent of hero). Simple loop.
-  const petPath = useMemo<Axial[]>(() => {
-    return [
-      { q: 4, r: -1 }, { q: 6, r: -1 }, { q: 6, r: -3 }, { q: 5, r: -4 }, { q: 3, r: -4 }, { q: 2, r: -2 }
-    ];
-  }, []);
-  const [petPathIdx, setPetPathIdx] = useState(0);
-  useEffect(() => {
-    const interval = setInterval(() => {
-      setPetPathIdx(i => (i + 1) % petPath.length);
-    }, 2600);
-    return () => clearInterval(interval);
-  }, [petPath.length]);
-  useEffect(() => {
-    setPet(p => ({ ...p, pos: petPath[petPathIdx] }));
-  }, [petPathIdx, petPath]);
+  // Dynamic pet patrol state (declared early; logic after tilesByKey exists)
+  const [petTarget, setPetTarget] = useState<Axial | null>(null);
 
-  // Ensure pet always remains within hero's FOV (stay within hero.vision - 1 axial distance)
+  // Leash enforcement (rare): if external changes push pet outside leash, pull it inward one step
   useEffect(() => {
     setPet(p => {
-      const maxDist = Math.max(0, hero.vision - 1);
-      let dist = axialDistance(p.pos, hero.pos);
-      if (dist <= maxDist) return p;
-      let current = { ...p.pos };
-      // Greedy step-wise move toward hero until within range or safety iterations reached
-      let guard = 0;
-      while (axialDistance(current, hero.pos) > maxDist && guard < 32) {
-        guard++;
-        let best = current;
-        let bestDist = axialDistance(current, hero.pos);
-        for (const n of axialNeighbors(current)) {
-          const d = axialDistance(n, hero.pos);
-          if (d < bestDist) { bestDist = d; best = n; }
-        }
-        if (best.q === current.q && best.r === current.r) break; // no improvement
-        current = best;
+      const leash = Math.max(0, hero.vision - 1);
+      if (axialDistance(p.pos, hero.pos) <= leash) return p;
+      let best = p.pos; let bestDist = axialDistance(p.pos, hero.pos);
+      for (const n of axialNeighbors(p.pos)) {
+        const d = axialDistance(n, hero.pos);
+        if (d < bestDist) { bestDist = d; best = n; }
       }
-      if (current.q === p.pos.q && current.r === p.pos.r) return p;
-      return { ...p, pos: current };
+      if (best.q === p.pos.q && best.r === p.pos.r) return p;
+      return { ...p, pos: best };
     });
   }, [hero.pos, hero.vision]);
+
+  // (Patrol logic moved below tilesByKey for declaration order)
 
   const heroVisible = useMemo(() => computeVisibleSet(tiles, hero.pos, hero.vision), [tiles, hero]);
   // Explore accumulation (union of all heroVisible over time)
@@ -799,6 +819,37 @@ export default function SoloMissionMap3D() {
     for (const t of tiles) m.set(`${t.q},${t.r}`, t);
     return m;
   }, [tiles]);
+  // After tilesByKey exists, run patrol logic
+  const patrolCandidates = useMemo(() => {
+    const leash = Math.max(0, hero.vision - 1);
+    return tiles.filter(t => axialDistance(t, hero.pos) <= leash && t.type !== 'mountain' && t.type !== 'water');
+  }, [tiles, hero.pos, hero.vision]);
+  useEffect(() => {
+    if (!petTarget || axialDistance(petTarget, hero.pos) > hero.vision - 1) {
+      if (patrolCandidates.length) setPetTarget(patrolCandidates[Math.floor(Math.random() * patrolCandidates.length)]);
+    }
+  }, [petTarget, patrolCandidates, hero.pos, hero.vision]);
+  useEffect(() => {
+    const interval = setInterval(() => {
+      setPet(curr => {
+        if (!petTarget) return curr;
+        if (curr.pos.q === petTarget.q && curr.pos.r === petTarget.r) { setPetTarget(null); return curr; }
+        const leash = Math.max(0, hero.vision - 1);
+        let best = curr.pos; let bestDist = axialDistance(best, petTarget);
+        for (const n of axialNeighbors(curr.pos)) {
+          const tile = tilesByKey.get(`${n.q},${n.r}`);
+          if (!tile) continue;
+          if (tile.type === 'mountain' || tile.type === 'water') continue;
+          if (axialDistance(n, hero.pos) > leash) continue;
+          const d = axialDistance(n, petTarget);
+          if (d < bestDist) { bestDist = d; best = n; }
+        }
+        if (best.q === curr.pos.q && best.r === curr.pos.r) { setPetTarget(null); return curr; }
+        return { ...curr, pos: best };
+      });
+    }, 900);
+    return () => clearInterval(interval);
+  }, [petTarget, tilesByKey, hero.pos, hero.vision]);
   // Precompute axial bounds for collider logic
   const axialBounds = useMemo(() => {
     let minQ = Infinity, maxQ = -Infinity, minR = Infinity, maxR = -Infinity;
@@ -859,6 +910,7 @@ export default function SoloMissionMap3D() {
     return a; // fallback
   }
   useEffect(() => {
+    const downSet = new Set<string>();
     function onKey(e: KeyboardEvent) {
       const k = e.key.toLowerCase();
       const dirMap: Record<string, Axial> = {
@@ -872,6 +924,9 @@ export default function SoloMissionMap3D() {
       };
       const delta = dirMap[k];
       if (!delta) return;
+      // Single press only: ignore auto-repeat and held key until released
+      if (e.repeat || downSet.has(k)) return;
+      downSet.add(k);
       e.preventDefault();
       setHero(h => {
         const targetRaw = { q: h.pos.q + delta.q, r: h.pos.r + delta.r };
@@ -886,8 +941,13 @@ export default function SoloMissionMap3D() {
         return next;
       });
     }
+    function onKeyUp(e: KeyboardEvent){
+      const k = e.key.toLowerCase();
+      if (downSet.has(k)) downSet.delete(k);
+    }
     window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
+    window.addEventListener('keyup', onKeyUp);
+    return () => { window.removeEventListener('keydown', onKey); window.removeEventListener('keyup', onKeyUp); };
   }, [tilesByKey, saveProgress]);
   // endTurn logic removed (turn system disabled)
 
@@ -901,7 +961,7 @@ export default function SoloMissionMap3D() {
         <div className="rounded border border-white/60 bg-white/70 px-2 py-1 text-gray-800">Hover Tile: {hover ? `${hover.q},${hover.r}` : '---'}</div>
         <div className="rounded border border-white/60 bg-white/70 px-2 py-1 text-gray-800">Tile: {hover ? hover.type : '--'} | Resource: {hover?.resource ?? 'None'}</div>
   <div className="rounded border border-white/60 bg-white/70 px-2 py-1 text-gray-800">Moves: disabled</div>
-  <div className="rounded border border-white/60 bg-white/70 px-2 py-1 text-gray-800 text-right">Map: 96x144</div>
+  <div className="rounded border border-white/60 bg-white/70 px-2 py-1 text-gray-800 text-right">Map: {GRID_W}x{GRID_H}</div>
   {/* Profile debug line removed (was showing anon-failed) */}
   {/* Session debug line removed */}
   {/* FOV toggle removed (always on) */}
@@ -978,10 +1038,16 @@ export default function SoloMissionMap3D() {
                   })()}
                 </group>
               </group>
-              <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, -0.05, 0]} receiveShadow>
-                <planeGeometry args={[220, 220]} />
-                <meshStandardMaterial color="#bff0ff" />
-              </mesh>
+              {(() => {
+                const planeWidth = (mapBounds.maxX - mapBounds.minX) + 30;
+                const planeHeight = (mapBounds.maxZ - mapBounds.minZ) + 30;
+                return (
+                  <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, -0.05, 0]} receiveShadow>
+                    <planeGeometry args={[planeWidth, planeHeight]} />
+                    <meshStandardMaterial color="#bff0ff" />
+                  </mesh>
+                );
+              })()}
               <ContactShadows position={[0, 0, 0]} opacity={0.15} blur={1.5} far={15} />
               {/* OrbitControls removed in favor of custom edge + drag panning controller */}
             </Canvas>

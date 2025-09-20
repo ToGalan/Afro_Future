@@ -61,7 +61,26 @@ export const rtdbHelpers = {
 export async function ensureAnonAuth() {
     if (auth.currentUser)
         return auth.currentUser;
-    await signInAnonymously(auth);
+    try {
+        await signInAnonymously(auth);
+    }
+    catch (e) {
+        const code = e?.code || e?.message || '';
+        // If Anonymous is disabled on the project, avoid spamming 400s and just wait for a real sign-in (Google/email)
+        if (String(code).includes('operation-not-allowed') || String(code).toUpperCase().includes('OPERATION_NOT_ALLOWED')) {
+            // eslint-disable-next-line no-console
+            console.warn('[auth] Anonymous sign-in disabled. Waiting for non-anonymous user...');
+            return new Promise((resolve, reject) => {
+                const unsub = onAuthStateChanged(auth, (u) => {
+                    if (u) {
+                        unsub();
+                        resolve(u);
+                    }
+                }, reject);
+            });
+        }
+        throw e;
+    }
     return new Promise((resolve, reject) => {
         const unsub = onAuthStateChanged(auth, (u) => {
             if (u) {
