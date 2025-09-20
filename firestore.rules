@@ -1,15 +1,60 @@
 rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
-    // Player profiles stored at players/{uid}
+    function isSignedIn() { return request.auth != null; }
+    function isOwner(uid) { return isSignedIn() && request.auth.uid == uid; }
+    function isAdmin() { return isSignedIn() && request.auth.token.admin == true; }
+
+    // players/{uid}
     match /players/{playerId} {
-      allow read, update, delete: if request.auth != null && request.auth.uid == playerId;
-      allow create: if request.auth != null && request.auth.uid == request.resource.id;
+      allow create: if isOwner(request.resource.id)
+                    && request.resource.data.keys().hasOnly(['name','avatar','progress','updatedAt'])
+                    && request.resource.data.updatedAt == request.time;
+      allow read: if isOwner(playerId) || isAdmin();
+      allow update: if (isOwner(playerId) || isAdmin())
+                    && request.resource.data.keys().hasOnly(['name','avatar','progress','updatedAt'])
+                    && request.resource.data.updatedAt == request.time;
+      allow delete: if isOwner(playerId) || isAdmin();
     }
 
-    // Optionally restrict any other collections by default
+    // public/{doc} (readable by everyone, writable by admins)
+    match /public/{docId} {
+      allow read: if true;
+      allow write: if isAdmin();
+    }
+
+    // sessions/{sessionId} (host-controlled room docs)
+    match /sessions/{sessionId} {
+      allow read: if isSignedIn();
+      allow create: if isSignedIn()
+                    && request.resource.data.host == request.auth.uid
+                    && request.resource.data.keys().hasAll(['host'])
+                    && request.resource.data.host is string;
+      allow update, delete: if isSignedIn() && resource.data.host == request.auth.uid;
+    }
+
+    // leaderboards/{board}/{userId}
+    match /leaderboards/{board}/{userId} {
+      allow read: if true;
+      allow create: if isOwner(userId) || isAdmin();
+      allow update: if (isOwner(userId) && request.resource.data.score >= resource.data.score) || isAdmin();
+      allow delete: if isAdmin();
+    }
+
+    // items/{itemId} (static catalog)
+    match /items/{itemId} {
+      allow read: if true;
+      allow write: if false;
+    }
+
+    // adminFlags/{flagId}
+    match /adminFlags/{flagId} {
+      allow read, write: if isAdmin();
+    }
+
+    // Default deny
     match /{document=**} {
-      allow read, write: if false; // locked down
+      allow read, write: if false;
     }
   }
 }

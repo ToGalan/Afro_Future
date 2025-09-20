@@ -1,7 +1,7 @@
 import { initializeApp, getApps, FirebaseApp } from 'firebase/app';
-import { getAuth, signInAnonymously, onAuthStateChanged, User } from 'firebase/auth';
-import { getFirestore } from 'firebase/firestore';
-import { getDatabase, ref as rtdbRef, onDisconnect, update as rtdbUpdate, set as rtdbSet, remove as rtdbRemove, Database } from 'firebase/database';
+import { getAuth, signInAnonymously, onAuthStateChanged, User, connectAuthEmulator } from 'firebase/auth';
+import { getFirestore, connectFirestoreEmulator } from 'firebase/firestore';
+import { getDatabase, ref as rtdbRef, onDisconnect, update as rtdbUpdate, set as rtdbSet, remove as rtdbRemove, Database, connectDatabaseEmulator } from 'firebase/database';
 
 // Environment-driven config (Vite exposes import.meta.env)
 const firebaseConfig = {
@@ -53,6 +53,31 @@ if (!getApps().length) {
 export const auth = getAuth(app);
 export const db = getFirestore(app);
 export const rtdb: Database = getDatabase(app);
+
+// Optional: connect to local emulators during development.
+// Activate by setting VITE_USE_FIREBASE_EMULATORS = 'true' in .env.local
+if (import.meta.env.DEV && import.meta.env.VITE_USE_FIREBASE_EMULATORS === 'true') {
+  try {
+    // Avoid double-connect (Vite HMR) by tracking on window
+    // @ts-ignore
+    if (!(window as any).__firebaseEmulatorsConnected) {
+      // @ts-ignore
+      (window as any).__firebaseEmulatorsConnected = true;
+      const host = import.meta.env.VITE_FIREBASE_EMULATOR_HOST || 'localhost';
+      const authPort = parseInt(import.meta.env.VITE_FIREBASE_AUTH_EMULATOR_PORT || '9099', 10);
+      const fsPort = parseInt(import.meta.env.VITE_FIRESTORE_EMULATOR_PORT || '8080', 10);
+      const dbPort = parseInt(import.meta.env.VITE_RTDB_EMULATOR_PORT || '9000', 10);
+      connectAuthEmulator(auth, `http://${host}:${authPort}`, { disableWarnings: true });
+      connectFirestoreEmulator(db, host, fsPort);
+      connectDatabaseEmulator(rtdb, host, dbPort);
+      // eslint-disable-next-line no-console
+      console.warn('[firebase] Connected to local emulators', { host, authPort, fsPort, dbPort });
+    }
+  } catch (e) {
+    // eslint-disable-next-line no-console
+    console.warn('[firebase] emulator connect failed', e);
+  }
+}
 
 export const rtdbHelpers = {
   ref: rtdbRef,
