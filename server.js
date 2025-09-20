@@ -34,10 +34,13 @@ await fs.mkdir(PROFILE_DIR, { recursive: true });
 const INVITE_DIR = path.join(process.cwd(), 'invites');
 await fs.mkdir(INVITE_DIR, { recursive: true });
 
-// Optional Firestore for invite storage
+// Storage modes & shard reward config
 const INVITES_STORAGE = process.env.INVITES_STORAGE || 'fs'; // 'fs' | 'firestore'
+const PROFILE_STORAGE = process.env.PROFILE_STORAGE || 'fs'; // 'fs' | 'firestore'
+const SHARDS_INVITE_REWARD = parseInt(process.env.SHARDS_INVITE_REWARD || '50',10);
+const SHARDS_ACCEPT_REWARD = parseInt(process.env.SHARDS_ACCEPT_REWARD || '25',10);
 let firestore = null;
-if (INVITES_STORAGE === 'firestore') {
+if (INVITES_STORAGE === 'firestore' || PROFILE_STORAGE === 'firestore' || process.env.ENABLE_PUSH === 'true') {
   try {
     if(!getApps().length){
       const svcB64 = process.env.FIREBASE_SERVICE_ACCOUNT_B64;
@@ -49,9 +52,9 @@ if (INVITES_STORAGE === 'firestore') {
       }
     }
     firestore = getFirestore();
-    console.log('[invites] Firestore storage enabled');
+    console.log('[firestore] initialized');
   } catch(e){
-    console.warn('[invites] Firestore init failed; falling back to fs', e?.message || e);
+    console.warn('[firestore] init failed; falling back to fs', e?.message || e);
     firestore = null;
   }
 }
@@ -96,13 +99,44 @@ async function invitesGet(code){
     return raw ? JSON.parse(raw) : null;
   }
 }
+async function profileGet(userId){
+  if (PROFILE_STORAGE === 'firestore' && firestore){
+    const snap = await firestore.collection('profiles').doc(userId).get();
+    return snap.exists ? snap.data() : null;
+  }
+  const file = path.join(PROFILE_DIR, userId + '.json');
+  const raw = await fs.readFile(file,'utf8').catch(()=>null);
+  return raw ? JSON.parse(raw) : null;
+}
+async function profileSave(profile){
+  const out = { ...profile, userId: profile.userId, updatedAt: Date.now() };
+  if (out.email) out.emailLower = String(out.email).trim().toLowerCase();
+  if (typeof out.shards !== 'number') out.shards = 0;
+  if (PROFILE_STORAGE === 'firestore' && firestore){
+    await firestore.collection('profiles').doc(out.userId).set(out, { merge: true });
+  } else {
+    const file = path.join(PROFILE_DIR, out.userId + '.json');
+    await fs.writeFile(file, JSON.stringify(out,null,2));
+  }
+  return out;
+}
+
 async function invitesAccept(code, userId){
   const existing = await invitesGet(code);
   if(!existing) return { error:'not_found' };
   if(existing.acceptedAt) return { error:'already_accepted', invite: existing };
   const updated = { ...existing, acceptedAt: Date.now(), acceptedBy: userId };
   await invitesSave(updated);
-  return { invite: updated };
+  let inviterProfile=null, acceptorProfile=null;
+  try {
+    inviterProfile = await profileGet(existing.fromUserId) || { userId: existing.fromUserId, shards:0 };
+    acceptorProfile = await profileGet(userId) || { userId, shards:0 };
+    inviterProfile.shards = (inviterProfile.shards||0) + SHARDS_INVITE_REWARD;
+    acceptorProfile.shards = (acceptorProfile.shards||0) + SHARDS_ACCEPT_REWARD;
+    await profileSave(inviterProfile);
+    await profileSave(acceptorProfile);
+  } catch(e){ console.warn('[invite:reward] failed', e?.message||e); }
+  return { invite: updated, inviterProfile, acceptorProfile };
 }
 
 // Real Google ID token verification using google-auth-library (single source: VITE_GOOGLE_CLIENT_ID)
@@ -173,65 +207,58 @@ app.get('/snapshots/:world/latest', requireAuth, async (req, res) => {
   }
 });
 
-// -------- Profile (basic JSON persistence) --------
-// Shape: { userId, name?, email?, picture?, loadout? }
+// (Legacy profile endpoints replaced above by abstraction; push register moved earlier if needed.)
+// -------- Profile Endpoints (Firestore or FS via abstraction) --------
+// GET /profile -> returns profile (creates minimal placeholder in memory if missing)
 app.get('/profile', requireAuth, async (req, res) => {
   try {
-    const file = path.join(PROFILE_DIR, req.userId + '.json');
-    const data = await fs.readFile(file, 'utf8').catch(()=>null);
-    if(!data) {
-      console.log('[profile:get] miss', { userId: req.userId });
-      return res.json({ ok:true, profile:null });
+    let profile = await profileGet(req.userId);
+    if(!profile){
+      profile = await profileSave({ userId: req.userId, shards:0 });
     }
-    console.log('[profile:get] hit', { userId: req.userId });
-    res.json({ ok:true, profile: JSON.parse(data) });
+    res.json({ ok:true, profile });
   } catch(e){
-    res.status(500).json({ error:'profile_read_failed' });
+    console.error('[profile:get] failed', e?.message||e);
+    res.status(500).json({ ok:false, error:'profile_get_failed' });
   }
 });
 
+// PUT /profile { name?, email?, faction?, portrait? }
 app.put('/profile', requireAuth, async (req, res) => {
   try {
+    const allowed = ['name','email','faction','portrait'];
     const incoming = req.body || {};
-    const file = path.join(PROFILE_DIR, req.userId + '.json');
-    const existingRaw = await fs.readFile(file, 'utf8').catch(()=>null);
-    const existing = existingRaw ? JSON.parse(existingRaw) : { userId: req.userId };
-    const merged = { ...existing, ...incoming, userId: req.userId, updatedAt: Date.now() };
-    await fs.writeFile(file, JSON.stringify(merged, null, 2));
-    try {
-      const summary = {
-        hasLoadout: Boolean(incoming && typeof incoming.loadout === 'object'),
-        hasSkills: Boolean(incoming && typeof incoming.skills === 'object'),
-        keys: Object.keys(incoming || {}).slice(0, 8)
-      };
-      console.log('[profile:put] saved', { userId: req.userId, ...summary });
-    } catch {}
-    res.json({ ok:true, profile: merged });
+    let profile = await profileGet(req.userId) || { userId: req.userId, shards:0 };
+    for (const k of allowed){
+      if(Object.prototype.hasOwnProperty.call(incoming,k)){
+        const val = incoming[k];
+        if(val === null) continue;
+        profile[k] = typeof val === 'string' ? val.slice(0,200) : val; // mild bound
+      }
+    }
+    // Normalize emailLower if email changed
+    if(profile.email) profile.emailLower = String(profile.email).trim().toLowerCase();
+    profile = await profileSave(profile);
+    res.json({ ok:true, profile });
   } catch(e){
-    console.error('profile_write_failed', e);
-    res.status(500).json({ error:'profile_write_failed' });
+    console.error('[profile:put] failed', e?.message||e);
+    res.status(500).json({ ok:false, error:'profile_save_failed' });
   }
 });
 
-// Register push token (FCM). Body: { token }
+// Register push token (idempotent add to profile.pushTokens array)
 app.post('/push/register', requireAuth, async (req, res) => {
   try {
     const { token } = req.body || {};
-    if(!token || typeof token !== 'string' || token.length < 20){
+    if(!token || typeof token !== 'string' || token.length < 10){
       return res.status(400).json({ ok:false, error:'invalid_token' });
     }
-    const file = path.join(PROFILE_DIR, req.userId + '.json');
-    const existingRaw = await fs.readFile(file, 'utf8').catch(()=>null);
-    const existing = existingRaw ? JSON.parse(existingRaw) : { userId: req.userId };
-    const list = Array.isArray(existing.pushTokens) ? existing.pushTokens : [];
-    if(!list.includes(token)){
-      list.unshift(token);
-    }
-    // Cap to last 10 tokens
-    const trimmed = list.slice(0,10);
-    const updated = { ...existing, pushTokens: trimmed, updatedAt: Date.now() };
-    await fs.writeFile(file, JSON.stringify(updated, null, 2));
-    res.json({ ok:true, count: trimmed.length });
+    let profile = await profileGet(req.userId) || { userId: req.userId, shards:0 };
+    const tokens = Array.isArray(profile.pushTokens) ? profile.pushTokens.slice() : [];
+    if(!tokens.includes(token)) tokens.push(token);
+    profile.pushTokens = tokens.slice(0,25); // cap
+    profile = await profileSave(profile);
+    res.json({ ok:true, count: profile.pushTokens.length });
   } catch(e){
     console.error('[push:register] failed', e?.message||e);
     res.status(500).json({ ok:false, error:'push_register_failed' });
@@ -309,8 +336,30 @@ app.post('/invites', requireAuth, async (req, res) => {
       try {
         const from = process.env.SMTP_FROM || 'Afro Future <no-reply@afro-future.app>';
         const shareUrl = `${req.protocol}://${req.get('host')}/?invite=${encodeURIComponent(code)}`;
-        const body = `${invite.message ? invite.message + '\n\n' : ''}Join me in Afro-Future Rising! Use this link to jump in: ${shareUrl}`;
-        await transport.sendMail({ from, to: email, subject: 'Afro-Future Invitation', text: body });
+        // Attempt to fetch branded OG card (fallback to portrait image or skip if fails)
+        let ogImageBuffer = null; let ogFilename = 'invite.png';
+        try {
+          const portrait = 'hero1.png'; // simple default; could be dynamic from inviter profile later
+          const ogUrl = `${req.protocol}://${req.get('host')}/og/card?portrait=${encodeURIComponent(portrait)}&faction=${encodeURIComponent('Vanguard')}&name=${encodeURIComponent('Ally')}`;
+          const r = await fetch(ogUrl).catch(()=>null);
+          if(r && r.ok){
+            const arr = await r.arrayBuffer();
+            ogImageBuffer = Buffer.from(arr);
+          }
+        } catch {}
+        const plainText = `${invite.message ? invite.message + '\n\n' : ''}Join me in Afro-Future Rising! Use this link to accept: ${shareUrl}`;
+        const html = `<!doctype html><html><body style="font-family:Arial,sans-serif;background:#0f1720;color:#e2f8f0;padding:16px;">
+  <h2 style="margin-top:0;">Afro‑Future Rising Invitation</h2>
+  ${invite.message ? `<p style="white-space:pre-line;">${invite.message.replace(/</g,'&lt;')}</p>`:''}
+  <p><strong>Click to join:</strong> <a style="color:#7dd3fc;" href="${shareUrl}">Accept Invite</a></p>
+  ${ogImageBuffer ? '<p><img src="cid:ogcard" alt="Invitation" style="max-width:100%;border:1px solid #1e2938;border-radius:8px;" /></p>' : ''}
+  <p style="font-size:12px;color:#94a3b8;">If the button doesn\'t work copy this code: ${invite.code}</p>
+</body></html>`;
+        const mail = { from, to: email, subject: 'Afro-Future Invitation', text: plainText, html };
+        if(ogImageBuffer){
+          mail.attachments = [{ filename: ogFilename, content: ogImageBuffer, cid: 'ogcard' }];
+        }
+        await transport.sendMail(mail);
         sent = true;
       } catch(e){ sendError = e?.message || String(e); console.warn('[invite] send failed', sendError); }
     } else {
@@ -319,21 +368,35 @@ app.post('/invites', requireAuth, async (req, res) => {
     // Attempt push notification to recipient profile(s) if we can locate by email
     if(process.env.ENABLE_PUSH === 'true' && messaging && normEmail){
       try {
-        // Linear scan of profile directory (acceptable for small scale; replace with Firestore query if/when profiles in Firestore)
-        const profFiles = await fs.readdir(PROFILE_DIR).catch(()=>[]);
-        for (const pf of profFiles){
-          if(!pf.endsWith('.json')) continue;
-          try {
-            const raw = await fs.readFile(path.join(PROFILE_DIR, pf), 'utf8');
-            const p = JSON.parse(raw);
-            if(p.email && String(p.email).trim().toLowerCase() === normEmail && Array.isArray(p.pushTokens) && p.pushTokens.length){
-              const tokens = p.pushTokens.slice(0,5); // limit fanout
+        if(PROFILE_STORAGE === 'firestore' && firestore){
+          const snap = await firestore.collection('profiles').where('emailLower','==', normEmail).limit(3).get();
+          for (const doc of snap.docs){
+            const p = doc.data();
+            if(Array.isArray(p.pushTokens) && p.pushTokens.length){
+              const tokens = p.pushTokens.slice(0,5);
               const body = invite.message ? invite.message : 'You have a new Afro-Future invite!';
               await messaging.sendEachForMulticast({ tokens, notification: { title: 'New Invite', body }, data: { code: invite.code, type: 'invite' } });
-              console.log('[push] invite notification dispatched', { tokens: tokens.length });
+              console.log('[push] invite notification dispatched', { tokens: tokens.length, firestore:true });
               break;
             }
-          } catch {}
+          }
+        } else {
+          // Filesystem fallback
+          const profFiles = await fs.readdir(PROFILE_DIR).catch(()=>[]);
+          for (const pf of profFiles){
+            if(!pf.endsWith('.json')) continue;
+            try {
+              const raw = await fs.readFile(path.join(PROFILE_DIR, pf), 'utf8');
+              const p = JSON.parse(raw);
+              if(p.email && String(p.email).trim().toLowerCase() === normEmail && Array.isArray(p.pushTokens) && p.pushTokens.length){
+                const tokens = p.pushTokens.slice(0,5); // limit fanout
+                const body = invite.message ? invite.message : 'You have a new Afro-Future invite!';
+                await messaging.sendEachForMulticast({ tokens, notification: { title: 'New Invite', body }, data: { code: invite.code, type: 'invite' } });
+                console.log('[push] invite notification dispatched', { tokens: tokens.length, firestore:false });
+                break;
+              }
+            } catch {}
+          }
         }
       } catch(e){ console.warn('[push] dispatch failed', e?.message||e); }
     }
@@ -363,10 +426,19 @@ app.post('/invites/:code/accept', requireAuth, async (req, res) => {
   try {
     const { code } = req.params;
     if(!code || !/^[a-z0-9]{4,32}$/i.test(code)) return res.status(400).json({ ok:false, error:'invalid_code' });
-    const { error, invite } = await invitesAccept(code, req.userId);
+    const { error, invite, inviterProfile, acceptorProfile } = await invitesAccept(code, req.userId);
     if(error === 'not_found') return res.status(404).json({ ok:false, error });
     if(error === 'already_accepted') return res.status(409).json({ ok:false, error, acceptedAt: invite.acceptedAt, acceptedBy: invite.acceptedBy });
-    res.json({ ok:true, code: invite.code, acceptedAt: invite.acceptedAt, acceptedBy: invite.acceptedBy });
+    res.json({
+      ok:true,
+      code: invite.code,
+      acceptedAt: invite.acceptedAt,
+      acceptedBy: invite.acceptedBy,
+      rewardInviter: SHARDS_INVITE_REWARD,
+      rewardAcceptor: SHARDS_ACCEPT_REWARD,
+      inviter: inviterProfile ? { userId: inviterProfile.userId, shards: inviterProfile.shards } : null,
+      acceptor: acceptorProfile ? { userId: acceptorProfile.userId, shards: acceptorProfile.shards } : null
+    });
   } catch(e){
     console.error('[invite:accept] failed', e);
     res.status(500).json({ ok:false, error:'accept_failed' });
