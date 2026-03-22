@@ -2,6 +2,7 @@ import React, { useEffect, useState } from 'react';
 import { usePlayerProfile } from './hooks/usePlayerProfile';
 import { useSkillStore, availablePoints } from './store/skillStore';
 import { GROUP_ORDER, getVariantsByGroup } from './assets/threeParts';
+import { buildAvatarConfig } from './services/avatarConfig';
 import AvatarScene from './components/AvatarScene';
 import SnowflakeSkillTree from './components/SnowflakeSkillTree';
 import { fetchProducts, type ShopifyProduct } from './services/shopify';
@@ -12,11 +13,12 @@ import { joinRoom } from './services/realtimeClient';
 import { initCRDT, attachCRDTChannel, disposeCRDT } from './services/crdt';
 import { useCreatorStore } from './store/creatorStore';
 import { initGoogleIdentity, renderGoogleButton, getGoogleClientId } from './services/googleIdentity';
+import { signInWithGoogleCredential } from './services/firebase';
 import { chromeSyncGet, chromeSyncSet, chromeSyncClear } from './services/chromeSync';
 import GoogleSignInButton from './components/auth/GoogleSignInButton';
 import SoloMissionMap3D from './components/SoloMissionMap3D';
 import GameHUD from './components/gameHUD';
-import DatabaseTestPanel from './components/DatabaseTestPanel';
+import type { MinimapData } from './components/gameHUD';
 import PetPanel from './components/PetPanel';
 import { useAutoSyncSkills } from './hooks/useAutoSyncSkills';
 import { collectAndRegisterPush } from './services/messaging';
@@ -64,7 +66,7 @@ export default function App() {
     } catch {}
     return null;
   });
-  const [mainView, setMainView] = useState<'dashboard' | 'skills' | 'store' | 'help' | 'settings' | 'mission'>('store');
+  const [mainView, setMainView] = useState<'dashboard' | 'skills' | 'store' | 'help' | 'settings' | 'mission'>('dashboard');
   const [progress, setProgress] = useState(0);
   const [playerName] = useState('PlayerOne');
   // Account level is linked to profile; default to 1 if not persisted yet
@@ -189,6 +191,10 @@ export default function App() {
   async function handleSignedIn(token: string){
     setIdToken(token);
     localStorage.setItem('afrofuture.idToken', token);
+    // Sign Firebase in with the Google credential so auth.currentUser is set.
+    // This prevents usePlayerProfile / usePlayerSession from falling back to
+    // disabled anonymous sign-in (which spams 400s on identitytoolkit).
+    signInWithGoogleCredential(token);
     setPhase('boot');
     // Attempt to enter fullscreen immediately after auth (user gesture context often preserved from click)
     try {
@@ -197,7 +203,8 @@ export default function App() {
       }
     } catch(e){ console.warn('[fullscreen] request failed', e); }
     try {
-      const payload = JSON.parse(atob(token.split('.')[1] || 'e30='));
+      const _b64a = (token.split('.')[1] || 'e30').replace(/-/g, '+').replace(/_/g, '/');
+      const payload = JSON.parse(atob(_b64a.padEnd(Math.ceil(_b64a.length / 4) * 4, '=')));
   const prof = { sub: payload.sub, name: payload.name || payload.given_name || payload.family_name, email: payload.email, picture: payload.picture };
       setProfile(prof);
       try { localStorage.setItem('afrofuture.profile', JSON.stringify(prof)); } catch {}
@@ -312,7 +319,8 @@ export default function App() {
     // If profile not yet set (e.g., hydration path) attempt decode
     if(!profile){
       try {
-        const payload = JSON.parse(atob(idToken.split('.')[1]||'e30='));
+        const _b64b = (idToken.split('.')[1] || 'e30').replace(/-/g, '+').replace(/_/g, '/');
+        const payload = JSON.parse(atob(_b64b.padEnd(Math.ceil(_b64b.length / 4) * 4, '=')));
         const prof = { sub: payload.sub, name: payload.name || payload.given_name || payload.family_name, email: payload.email, picture: payload.picture };
         setProfile(prof);
         try { localStorage.setItem('afrofuture.profile', JSON.stringify(prof)); } catch {}
@@ -624,27 +632,40 @@ function MissionScreen({ onExit }: { onExit: () => void }){
       } catch {}
     })();
   },[]);
-  const bonusBlocks = Math.floor((Math.max(1,level)-1)/5);
-  const available = skillState.basePoints + bonusBlocks * skillState.bonusPer5 - skillState.spent;
+  const available = availablePoints(skillState);
   const resources = React.useMemo(()=>[
     { id:'shards', label:'Shards', value: shards, icon:'◈' },
     { id:'tokens', label:'Skill Tokens', value: available, icon:'⬢' },
   ],[shards, available]);
   const heroBuffs = skillState.traitTags;
   const loadout = activeLoadoutRaw || { name:'Hero', faction:'PAA', level, portraitUrl: undefined, pet:{ type:'CYBER_DOG', level:1, role:'SCOUT' } } as any;
-  const pet = loadout.pet ? { name: loadout.pet.type === 'CYBER_DOG' ? 'Cyber-Dog' : 'Cyber-Cat', level: loadout.pet.level || 1, hp: { current: 50, max: 50 }, ep: { current: 30, max: 30 }, icon: '🐾' } : undefined;
+  const pet = loadout.pet ? { name: loadout.pet.type === 'CYBER_DOG' ? 'Cyber-Dog' : 'Cyber-Cat', level: loadout.pet.level || 1, hp: { current: 50, max: 50 }, ep: { current: 30, max: 30 }, icon: '🐾', portraitUrl: PetIcon[loadout.pet.type] } : undefined;
   // Runtime HP/EP regeneration & cooldown ticking loop
   const [heroVitals, setHeroVitals] = React.useState({ hp: HP_MAX, ep: EP_MAX });
-  React.useEffect(()=>{ setHeroVitals(v=>({ hp: Math.min(HP_MAX, v.hp), ep: Math.min(EP_MAX, v.ep) })); },[HP_MAX, EP_MAX]);
+  // Clamp vitals when skill-derived max changes (e.g. level up). Bails out when unchanged
+  // so it doesn't trigger a re-render unnecessarily.
+  React.useEffect(()=>{
+    setHeroVitals(v=>{
+      const hp = Math.min(HP_MAX, v.hp);
+      const ep = Math.min(EP_MAX, v.ep);
+      return (hp === v.hp && ep === v.ep) ? v : { hp, ep };
+    });
+  },[HP_MAX, EP_MAX]);
+  // Keep refs so the rAF loop always reads the latest cap without restarting.
+  const hpMaxRef = React.useRef(HP_MAX);
+  hpMaxRef.current = HP_MAX;
+  const epMaxRef = React.useRef(EP_MAX);
+  epMaxRef.current = EP_MAX;
   React.useEffect(()=>{
     let raf:number; let last = performance.now();
     function frame(ts:number){
       const dt = (ts - last)/1000; last = ts;
-      // Regen rates
-      setHeroVitals(v=>({
-        hp: Math.min(HP_MAX, v.hp + 2*dt),
-        ep: Math.min(EP_MAX, v.ep + 4*dt),
-      }));
+      // Regen rates — caps read from refs so loop never needs to restart on skill changes.
+      setHeroVitals(v=>{
+        const hp = Math.min(hpMaxRef.current, v.hp + 2*dt);
+        const ep = Math.min(epMaxRef.current, v.ep + 4*dt);
+        return (hp === v.hp && ep === v.ep) ? v : { hp, ep };
+      });
       // Tick cooldowns
       setRuntimeAbilities(prev => {
         let changed = false; const next: typeof prev = {};
@@ -664,7 +685,10 @@ function MissionScreen({ onExit }: { onExit: () => void }){
     }
     raf = requestAnimationFrame(frame);
     return ()=> cancelAnimationFrame(raf);
-  },[HP_MAX, EP_MAX]);
+  // Empty deps: loop runs once for the lifetime of MissionScreen. Caps are always
+  // current via hpMaxRef/epMaxRef, so there is no need to restart the loop.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  },[]);
   // Ability activation: consume EP & start cooldown if available
   const onActivateAbility = React.useCallback((id:string)=>{
     setRuntimeAbilities(prev => {
@@ -676,12 +700,14 @@ function MissionScreen({ onExit }: { onExit: () => void }){
     setHeroVitals(v=> ({ ...v, ep: Math.max(0, v.ep - 10) }));
   },[]);
 
+  const [minimapData, setMinimapData] = React.useState<MinimapData | undefined>(undefined);
+  const onMapUpdate = React.useCallback((data: MinimapData) => setMinimapData(data), []);
+
   return (
-    <div className="fixed inset-0 bg-[#06080c] text-gray-100">
+    <div className="fixed inset-0 bg-white text-gray-100">
       <div className="absolute inset-0">
-        <SoloMissionMap3D />
+        <SoloMissionMap3D onExit={onExit} onMapUpdate={onMapUpdate} />
         <PetPanel />
-        {import.meta.env.DEV && <React.Suspense fallback={null}><div><DatabaseTestPanel /></div></React.Suspense>}
       </div>
       <GameHUD
         team={loadout.faction}
@@ -714,6 +740,7 @@ function MissionScreen({ onExit }: { onExit: () => void }){
         onAbility={(id)=>{ onActivateAbility(id); console.log('[ability]', id); }}
         onItem={(id)=>{ console.log('[item]', id); }}
         onMinimapClick={(x,y)=>{ console.log('[minimap]', x,y); }}
+        minimapData={minimapData}
       />
   {/* Standalone Exit button removed; Back to Menu now lives inside GameHUD popup */}
     </div>
@@ -823,7 +850,7 @@ function GameViewport({ children, mode = 'fixed', allowUpscale = true, minScale 
     : { width: DESIGN_W, height: DESIGN_H, transform: `scale(${scale})` };
 
   return (
-    <div className="fixed inset-0 bg-[#06080c] flex items-center justify-center overflow-hidden select-none">
+    <div className="fixed inset-0 bg-white flex items-center justify-center overflow-hidden select-none">
       <div className="relative" style={stageStyle}>
         <div className="absolute inset-0 pointer-events-none shadow-[0_0_0_1px_rgba(255,255,255,0.04)]" />
         {children}
@@ -1423,7 +1450,7 @@ function LeftPlayerPanel({ className = '', playerName, accountLevel, loadout, he
         {/* Character Portrait and Info */}
         <div className="w-full max-w-[260px] aspect-[4/3] rounded-3xl border border-white/10 bg-[#12171f] overflow-hidden relative flex flex-col items-center justify-center">
           {/* Portrait image responsive */}
-          <img className="w-[52%] h-[52%] object-cover rounded-2xl border border-white/10 shadow-lg" src={loadout.portraitUrl} alt="portrait" />
+          <img className="w-[52%] h-[52%] object-cover rounded-2xl border border-white/10 shadow-lg" src={loadout.portraitUrl} alt="portrait" onError={(e)=>{ const t=e.currentTarget; if(!t.dataset.fb){ t.dataset.fb='1'; t.src='/assets/characters/female_default.svg'; }}} />
           {/* Share button */}
           <button onClick={()=>setShareOpen(o=>!o)} title="Share Character" className="absolute top-2 right-2 w-8 h-8 rounded-lg bg-black/50 border border-white/10 flex items-center justify-center text-[13px] hover:bg-black/60 group">
             <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="opacity-80 group-hover:opacity-100">
@@ -1604,12 +1631,11 @@ function CenterHub({ className = '', loadout, view }: { className?: string; load
     return <StoreView className={className} />;
   }
   if (view === 'mission') {
+    // Redundant mission map render path removed; the dedicated MissionScreen handles live mission gameplay.
     return (
       <main className={`col-start-2 px-6 py-5 min-h-0 flex flex-col ${className}`}>
-        <div className="flex-1 rounded-3xl border border-white/10 bg-[#12171f] overflow-hidden">
-          <div className="w-full h-full">
-            <SoloMissionMap3D />
-          </div>
+        <div className="flex-1 rounded-3xl border border-white/10 bg-[#12171f] overflow-hidden flex items-center justify-center text-[11px] opacity-60">
+          Mission launching... (map handled in full-screen mission view)
         </div>
       </main>
     );
@@ -1979,7 +2005,7 @@ function CharacterCreator({ onSave, onBack, initial, locked }: { onSave: (payloa
   }
   function exportPayload() {
     const base = (initial ?? defaultLoadout);
-    const threeConfig = { parts: { ...picked }, colors: { ...colorState } } as any; // extended config
+    const threeConfig = buildAvatarConfig(picked, colorState) as any; // extended config with summary
     const payload: CharacterLoadout = locked ?
       { ...base, threeConfig, updatedAt: now() } :
       { ...base, threeConfig, id: uid('char'), createdAt: base.createdAt, updatedAt: now() };
@@ -2209,7 +2235,7 @@ function TraitTag({ tag }: { tag: string }) {
 function HeroBanner({ loadout }: { loadout: CharacterLoadout }) {
   return (
     <div className="w-full h-full rounded-3xl overflow-hidden relative border border-white/10 bg-gradient-to-br from-emerald-500/10 via-[#141b24] to-sky-500/10">
-      <img src={loadout.portraitUrl} alt="hero" className="absolute inset-0 w-full h-full object-cover opacity-30 mix-blend-lighten" />
+      <img src={loadout.portraitUrl} alt="hero" className="absolute inset-0 w-full h-full object-cover opacity-30 mix-blend-lighten" onError={(e)=>{ const t=e.currentTarget; if(!t.dataset.fb){ t.dataset.fb='1'; t.src='/assets/characters/female_default.svg'; }}} />
       <div className="absolute inset-0 bg-gradient-to-tr from-[#0b0e13]/60 to-transparent" />
       <div className="absolute left-6 bottom-6">
         <div className="text-xs uppercase tracking-wide opacity-70">Active Character</div>

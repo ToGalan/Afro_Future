@@ -12,13 +12,18 @@ const variantById = PART_VARIANTS.reduce<Record<string, typeof PART_VARIANTS[num
 function PartMesh({ file, group }: { file: string; group: string }) {
   const publicPath = `/assets/3d/${file}`;
   const { scene } = useGLTF(publicPath) as any;
-  // Clone so tagging does not mutate cached scene
-  const inst = scene.clone();
-  inst.traverse((obj: any) => {
-    if (!obj.userData) obj.userData = {};
-    obj.userData.partGroup = group; // tag for downstream tint logic
-  });
-  return <primitive object={inst} />;
+  // Memoize clone so the object reference is stable across parent re-renders.
+  // Without this, every parent re-render creates a new clone, causing R3F to
+  // dispose+remount the mesh every frame — making it invisible continuously.
+  const inst = useMemo(() => {
+    const clone = scene.clone();
+    clone.traverse((obj: any) => {
+      if (!obj.userData) obj.userData = {};
+      obj.userData.partGroup = group; // tag for downstream tint logic
+    });
+    return clone;
+  }, [scene, group]);
+  return <primitive object={inst} frustumCulled={false} />;
 }
 
 export function AvatarPartsLoader({ parts }: AvatarPartsLoaderProps) {
@@ -45,5 +50,8 @@ useGLTF.preload('/assets/3d/NakedFullBody.glb');
 
 export function BaseBody() {
   const { scene } = useGLTF('/assets/3d/NakedFullBody.glb') as any;
-  return <primitive object={scene.clone()} position={[0,-1,0]} />;
+  // Memoize so the cloned object is stable — prevents per-frame dispose/remount
+  // when the parent component (AssembledAvatarMesh) re-renders in the game loop.
+  const inst = useMemo(() => scene.clone(), [scene]);
+  return <primitive object={inst} position={[0, 0, 0]} frustumCulled={false} />;
 }

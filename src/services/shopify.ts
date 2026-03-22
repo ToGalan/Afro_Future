@@ -22,7 +22,7 @@ export interface ShopifyProduct {
 
 interface StorefrontResponse<T> { data?: T; errors?: { message: string }[] }
 
-const DOMAIN = import.meta.env.VITE_SHOPIFY_STORE_DOMAIN || 'store.afro-future.app';
+const DOMAIN = import.meta.env.VITE_SHOPIFY_STORE_DOMAIN || 'store.afro-future.app'; // Custom domain or fallback
 const TOKEN = import.meta.env.VITE_SHOPIFY_STOREFRONT_TOKEN;
 const API_VERSION = (import.meta as any)?.env?.VITE_SHOPIFY_STOREFRONT_API_VERSION || '2025-07';
 // DEBUG flag for verbose client errors
@@ -81,8 +81,7 @@ export async function fetchProducts(limit = 12): Promise<ShopifyProduct[]> {
       headers: {
         'Content-Type': 'application/json',
         'X-Shopify-Storefront-Access-Token': String(TOKEN),
-        'Accept': 'application/json',
-        'X-Debug-Trace': 'shopify-direct-v1'
+        'Accept': 'application/json'
       },
       body: JSON.stringify({ query: PRODUCTS_QUERY, variables: { first: limit } })
     });

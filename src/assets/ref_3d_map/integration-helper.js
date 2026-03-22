@@ -270,16 +270,27 @@ window.smoothMoveActor = function(actorData, newX, newY, newZ) {
 
 // Function to initialize all 3D systems once the scene is ready
 window.initialize3DSystems = function() {
-    console.log('🔧 Initializing all 3D systems...');
-    
+    // Idempotent guard (covers HMR + multiple callers: SceneBridge, DOMContentLoaded, manual)
+    if (window.__3DSystemsInitializing) {
+        return false; // another call in-flight
+    }
+    if (window.__3DSystemsInitialized) {
+        // Already initialized – silent for perf, verbose only in dev
+        if (typeof process !== 'undefined' && process.env && process.env.NODE_ENV !== 'production') {
+            console.log('🔁 initialize3DSystems skipped (already initialized)');
+        }
+        return false;
+    }
     if (!window.threeScene) {
         console.warn('⚠️ Cannot initialize 3D systems: threeScene not available');
         return false;
     }
-    
+    window.__3DSystemsInitializing = true;
+    console.log('🔧 Initializing all 3D systems...');
+
     let systemsInitialized = 0;
-    
-    // Initialize Mountain System
+
+    // Initialize Mountain System (only once)
     if (!window.mountainSystem && typeof MountainSystem === 'function') {
         try {
             window.mountainSystem = new MountainSystem(window.threeScene, {
@@ -291,22 +302,20 @@ window.initialize3DSystems = function() {
         } catch (error) {
             console.error('❌ Failed to initialize mountain system:', error);
         }
-    }    
-    // Initialize Pasture System
+    }
+    // Initialize Pasture System (only once)
     if (!window.pastureSystem && typeof PastureSystem === 'function') {
         try {
             window.pastureSystem = new PastureSystem(window.threeScene);
             console.log('✅ Pasture system initialized');
             systemsInitialized++;
-            
             // Process any deferred pasture tiles
             if (window.deferredPastureTiles && window.deferredPastureTiles.length > 0) {
                 console.log(`🔄 Processing ${window.deferredPastureTiles.length} deferred pasture tiles`);
                 const deferred = window.deferredPastureTiles.slice();
                 window.deferredPastureTiles = [];
-                
                 deferred.forEach(tile => {
-                    window.addPastureToTile(tile.tileGroup, tile.terrainChar, tile.tileX, tile.tileY, tile.actualHeight);
+                    try { window.addPastureToTile(tile.tileGroup, tile.terrainChar, tile.tileX, tile.tileY, tile.actualHeight); } catch(e) { /* ignore individual errors */ }
                 });
             }
         } catch (error) {
@@ -315,8 +324,12 @@ window.initialize3DSystems = function() {
     } else if (typeof PastureSystem === 'undefined') {
         console.warn('⚠️ PastureSystem class not available - pasture elements will not be rendered');
     }
-    
-    console.log(`✅ Initialized ${systemsInitialized} 3D systems`);
+
+    window.__3DSystemsInitializing = false;
+    if (systemsInitialized > 0) {
+        window.__3DSystemsInitialized = true;
+    }
+    console.log(`✅ Initialized ${systemsInitialized} 3D systems (idempotent)`);
     return systemsInitialized > 0;
 };
 
@@ -330,21 +343,11 @@ document.addEventListener('DOMContentLoaded', async () => {
         await new Promise(resolve => setTimeout(resolve, 100));
         attempts++;
     }
-      if (window.threeScene && typeof MountainSystem === 'function') {
-        // Initialize mountain system with main game's scene
-        window.mountainSystem = new MountainSystem(window.threeScene, {
-            mountainScale: 0.8,
-            mountainHeightVariation: 0.3
-        });
-        console.log('Mountain System initialized and integrated with main game');
-        
-        // Initialize pasture system with main game's scene
-        if (typeof initializePastureSystem === 'function') {
-            initializePastureSystem(window.threeScene);
-            console.log('Pasture System initialized and integrated with main game');
-        }
+    if (window.threeScene && typeof MountainSystem === 'function') {
+        // Use unified initializer (idempotent)
+        try { window.initialize3DSystems(); } catch(e) { console.warn('initialize3DSystems call failed in DOMContentLoaded', e); }
     } else {
-        console.warn('Failed to initialize mountain system - missing threeScene or MountainSystem');
+        console.warn('Failed to initialize 3D systems - missing threeScene or MountainSystem');
     }
     
     // Legacy 3D system integration (for test pages)

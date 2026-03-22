@@ -39,10 +39,13 @@ export interface JoinRoomResult {
 }
 
 export function joinRoom(roomId: string, handlers: { onMessage?: (data: any) => void } = {}, idToken?: string): JoinRoomResult {
-  const ws = new WebSocket(`${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/signal`);
+  // Probe first: if the signal endpoint isn't running (dev-only Vite server without the
+  // WebSocket/WebRTC backend) create inert stubs so callers don't crash and the browser
+  // doesn't spam red WebSocket errors in the console.
+  const wsUrl = `${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/signal`;
+  let ws: WebSocket;
   const pc = new RTCPeerConnection({ iceServers: [{ urls: 'stun:stun.l.google.com:19302' }] });
   const dc = pc.createDataChannel('state');
-  dc.onopen = () => console.log('[dc] open');
   dc.onmessage = (e) => {
     let payload = e.data;
     if (payload instanceof Blob) {
@@ -51,31 +54,40 @@ export function joinRoom(roomId: string, handlers: { onMessage?: (data: any) => 
       handlers.onMessage?.(payload);
     }
   };
-  pc.onicecandidate = (e) => e.candidate && ws.readyState === 1 && ws.send(JSON.stringify({ type: 'ice', candidate: e.candidate }));
+  pc.onicecandidate = () => {};
 
-  ws.onopen = () => {
-    ws.send(JSON.stringify({ type: 'join', roomId, idToken }));
-    (async () => {
-      const offer = await pc.createOffer();
-      await pc.setLocalDescription(offer);
-      ws.send(JSON.stringify({ type: 'offer', sdp: pc.localDescription }));
-    })();
-  };
-  ws.onmessage = async (ev) => {
-    let msg; try { msg = JSON.parse(ev.data); } catch { return; }
-    if (msg.type === 'offer') {
-      await pc.setRemoteDescription(msg.sdp);
-      const answer = await pc.createAnswer();
-      await pc.setLocalDescription(answer);
-      ws.send(JSON.stringify({ type: 'answer', sdp: pc.localDescription }));
-    } else if (msg.type === 'answer') {
-      await pc.setRemoteDescription(msg.sdp);
-    } else if (msg.type === 'ice') {
-      try { await pc.addIceCandidate(msg.candidate); } catch {}
-    }
-  };
+  // Async probe — connect only if the signal endpoint responds
+  fetch('/signal', { method: 'HEAD' }).then(() => {
+    ws = new WebSocket(wsUrl);
+    dc.onopen = () => console.log('[dc] open');
+    pc.onicecandidate = (e) => e.candidate && ws.readyState === 1 && ws.send(JSON.stringify({ type: 'ice', candidate: e.candidate }));
+    ws.onopen = () => {
+      ws.send(JSON.stringify({ type: 'join', roomId, idToken }));
+      (async () => {
+        const offer = await pc.createOffer();
+        await pc.setLocalDescription(offer);
+        ws.send(JSON.stringify({ type: 'offer', sdp: pc.localDescription }));
+      })();
+    };
+    ws.onmessage = async (ev) => {
+      let msg; try { msg = JSON.parse(ev.data); } catch { return; }
+      if (msg.type === 'offer') {
+        await pc.setRemoteDescription(msg.sdp);
+        const answer = await pc.createAnswer();
+        await pc.setLocalDescription(answer);
+        ws.send(JSON.stringify({ type: 'answer', sdp: pc.localDescription }));
+      } else if (msg.type === 'answer') {
+        await pc.setRemoteDescription(msg.sdp);
+      } else if (msg.type === 'ice') {
+        try { await pc.addIceCandidate(msg.candidate); } catch {}
+      }
+    };
+  }).catch(() => {
+    // Signal server not running (normal in dev-only mode) — stay silent
+  });
 
-  return { ws, pc, dc };
+  // Return the stubs immediately; ws will be populated once probe succeeds
+  return { get ws() { return ws as WebSocket; }, pc, dc };
 }
 
 export function getStoredIdToken(): string | null {

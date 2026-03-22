@@ -6,7 +6,9 @@ import * as THREE from 'three';
 import { Canvas, useThree, useFrame } from '@react-three/fiber';
 import { OrbitControls, Text, Sky, ContactShadows, useGLTF } from '@react-three/drei';
 import { BaseBody, AvatarPartsLoader } from './AvatarPartsLoader';
+import { AvatarAnimator } from './AvatarAnimator';
 import { getCharacterPortrait } from '../assets/assetPaths';
+import type { MinimapData } from './gameHUD';
 // Side-effect imports: reference systems attach to window.* and expect global THREE
 import '../assets/ref_3d_map/mountain-system.js';
 import '../assets/ref_3d_map/integration-helper.js';
@@ -14,6 +16,8 @@ import '../assets/ref_3d_map/tree-system.js';
 import '../assets/ref_3d_map/water-isometric.js';
 import '../assets/ref_3d_map/hills-system.js';
 import '../assets/ref_3d_map/desert-system.js';
+import { useVisibleChunks } from '../hooks/useVisibleChunks';
+import { getCachedChunk } from '../services/mapChunks';
 
 // Types
 type TileType = 'water' | 'desert' | 'plains' | 'forest' | 'jungle' | 'hills' | 'mountain';
@@ -295,16 +299,16 @@ function computeVisibleSet(tiles: Tile[], center: Axial, baseRange: number) {
     const posKey = keyOf(pos);
     const curTile = byKey.get(posKey);
     if (!curTile) continue;
-    // Mountains block line-of-sight
-    if (curTile.type === 'mountain') continue;
-    // Mark visible
+    // Always mark current tile visible: mountains ARE visible (you can see them &
+    // stand on them), they just don't propagate vision further.
     visible.add(posKey);
-    if (rem <= 0) continue;
+    // Mountains (and budget exhaustion) stop propagation — but the tile itself is counted above.
+    if (rem <= 0 || curTile.type === 'mountain') continue;
     for (const n of axialNeighbors(pos)) {
       const nKey = keyOf(n);
       const nTile = byKey.get(nKey);
       if (!nTile) continue;
-      if (nTile.type === 'mountain') continue; // cannot see through
+      // Allow mountain neighbors to be queued — they'll be visible but won't propagate (handled above).
       const stepCost = (nTile.type === 'forest' || nTile.type === 'jungle') ? 2 : 1;
       const nextRem = rem - stepCost;
       if (nextRem < 0) continue;
@@ -350,6 +354,25 @@ function ResourceIcon({ t, size }: { t: Tile; size: number }) {
   );
 }
 
+// Extracted so each canopy has a stable useRef + useFrame — avoids the inline-arrow-ref
+// null-flush problem that occurs when the parent re-renders (new arrow = React clears old ref).
+function SwayingCanopy({ sizeArg, phase }: { sizeArg: [number, number, number]; phase: number }) {
+  const ref = React.useRef<THREE.Mesh>(null);
+  useFrame(({ clock }) => {
+    if (!ref.current) return;
+    const t = clock.getElapsedTime();
+    // Doubled amplitude so the sway is actually visible
+    ref.current.rotation.z = Math.sin(t * 0.75 + phase) * 0.09;
+    ref.current.rotation.x = Math.cos(t * 0.55 + phase) * 0.06;
+  });
+  return (
+    <mesh ref={ref} castShadow>
+      <coneGeometry args={sizeArg} />
+      <meshStandardMaterial color="#4aa05c" roughness={0.7} metalness={0.0} />
+    </mesh>
+  );
+}
+
 function TreeCluster({ size, seed = 1 }: { size: number; seed?: number }) {
   const rng = useMemo(() => seededRand(seed), [seed]);
   const trees = useMemo(() => {
@@ -357,7 +380,7 @@ function TreeCluster({ size, seed = 1 }: { size: number; seed?: number }) {
     const arr: Array<{ x: number; z: number; s: number; h: number }> = [];
     for (let i = 0; i < count; i++) {
       const ang = rng() * Math.PI * 2;
-      const rad = (0.2 + rng() * 0.6) * size * 0.9; // stay inside hex footprint
+      const rad = (0.2 + rng() * 0.6) * size * 0.9;
       const x = Math.cos(ang) * rad;
       const z = Math.sin(ang) * rad;
       const s = 0.7 + rng() * 0.6;
@@ -366,18 +389,24 @@ function TreeCluster({ size, seed = 1 }: { size: number; seed?: number }) {
     }
     return arr;
   }, [rng, size]);
+  // Stable phase offsets derived from seed — never change between renders
+  const phaseOffsets = useMemo(() => trees.map((_, i) => i * 1.37 + seed * 0.01), [trees, seed]);
   return (
     <group>
       {trees.map((t, i) => (
         <group key={i} position={[t.x, 0, t.z]}>
-          <mesh position={[0, 0.3 * t.s, 0]} castShadow>
-            <cylinderGeometry args={[size * 0.08 * t.s, size * 0.1 * t.s, 0.5 * t.s, 6]} />
+          {/* Trunk — 2x radius, 1.5x taller */}
+          <mesh position={[0, 0.375 * t.s, 0]} castShadow>
+            <cylinderGeometry args={[size * 0.16 * t.s, size * 0.20 * t.s, 0.75 * t.s, 6]} />
             <meshStandardMaterial color="#8b5a3c" roughness={0.9} metalness={0.0} />
           </mesh>
-          <mesh position={[0, 0.7 * t.h, 0]} castShadow>
-            <coneGeometry args={[size * 0.35 * t.s, t.h, 7]} />
-            <meshStandardMaterial color="#4aa05c" roughness={0.7} metalness={0.0} />
-          </mesh>
+          {/* Canopy — SwayingCanopy owns its own stable ref + useFrame */}
+          <group position={[0, 0.7 * t.h, 0]}>
+            <SwayingCanopy
+              sizeArg={[size * 0.35 * t.s, t.h, 7]}
+              phase={phaseOffsets[i]}
+            />
+          </group>
         </group>
       ))}
     </group>
@@ -409,19 +438,22 @@ function RockScatter({ size, seed = 1, count = 3 }: { size: number; seed?: numbe
 
 function MountainDeco({ size, seed=1 }: { size: number; seed?: number }) {
   const rng = useMemo(()=>seededRand(seed),[seed]);
-  const peakScale = 0.6 + rng()*0.5;
+  // peakScale MUST be inside useMemo — rng() is a stateful closure, calling it in the
+  // render body directly gives a new value every render, making the peaks jiggle.
+  const peakScale = useMemo(() => 0.6 + rng()*0.5, [rng]);
+  // 2x size: doubled all cone radii, heights, and position offsets
   return (
     <group>
-      <mesh position={[0, 1.2*peakScale, 0]} castShadow>
-        <coneGeometry args={[size * (0.55), 2.4*peakScale, 6]} />
+      <mesh position={[0, 2.4*peakScale, 0]} castShadow>
+        <coneGeometry args={[size * 1.1, 4.8*peakScale, 6]} />
         <meshStandardMaterial color="#9aa3a7" roughness={0.85} metalness={0.03} />
       </mesh>
-      <mesh position={[-size*0.35, 0.7, size*0.2]} castShadow>
-        <coneGeometry args={[size * 0.3, 1.2, 6]} />
+      <mesh position={[-size*0.7, 1.4, size*0.4]} castShadow>
+        <coneGeometry args={[size * 0.6, 2.4, 6]} />
         <meshStandardMaterial color="#8f989c" roughness={0.85} metalness={0.03} />
       </mesh>
-      <mesh position={[size*0.4, 0.6, -size*0.25]} castShadow>
-        <coneGeometry args={[size * 0.28, 1.0, 6]} />
+      <mesh position={[size*0.8, 1.2, -size*0.5]} castShadow>
+        <coneGeometry args={[size * 0.56, 2.0, 6]} />
         <meshStandardMaterial color="#8f989c" roughness={0.85} metalness={0.03} />
       </mesh>
     </group>
@@ -436,6 +468,208 @@ function LakeDeco({ size }: { size: number }) {
         <circleGeometry args={[hexApothem(size) * 0.98, 6]} />
         <meshStandardMaterial color="#82d7ff" transparent opacity={0.9} roughness={0.3} metalness={0.1} />
       </mesh>
+    </group>
+  );
+}
+
+// Animated 3D wave rings on water tiles — three concentric ripple rings offset in time/scale.
+function WaterWaves({ size }: { size: number }) {
+  const ring1 = React.useRef<THREE.Mesh>(null);
+  const ring2 = React.useRef<THREE.Mesh>(null);
+  const ring3 = React.useRef<THREE.Mesh>(null);
+  useFrame(({ clock }) => {
+    const t = clock.getElapsedTime();
+    // Each ring pulses opacity and scales in/out at different phases
+    const animate = (ref: React.RefObject<THREE.Mesh | null>, phase: number) => {
+      if (!ref.current) return;
+      const s = 0.55 + 0.45 * Math.abs(Math.sin(t * 0.7 + phase));
+      ref.current.scale.setScalar(s);
+      const mat = ref.current.material as THREE.MeshBasicMaterial;
+      mat.opacity = 0.15 + 0.40 * (1 - Math.abs(Math.sin(t * 0.7 + phase)));
+    };
+    animate(ring1, 0);
+    animate(ring2, Math.PI * 0.65);
+    animate(ring3, Math.PI * 1.3);
+  });
+  const ap = hexApothem(size);
+  return (
+    <group>
+      {/* Static base surface */}
+      <mesh rotation={[-Math.PI/2,0,0]} position={[0, 0.06, 0]} receiveShadow>
+        <circleGeometry args={[ap * 0.98, 6]} />
+        <meshStandardMaterial color="#4ab8e8" roughness={0.2} metalness={0.25} />
+      </mesh>
+      {/* Animated ripple rings */}
+      <mesh ref={ring1} rotation={[-Math.PI/2,0,0]} position={[0, 0.12, 0]}>
+        <ringGeometry args={[ap * 0.18, ap * 0.32, 24]} />
+        <meshBasicMaterial color="#a8dff7" transparent opacity={0.5} depthWrite={false} />
+      </mesh>
+      <mesh ref={ring2} rotation={[-Math.PI/2,0,0]} position={[0, 0.13, 0]}>
+        <ringGeometry args={[ap * 0.36, ap * 0.52, 24]} />
+        <meshBasicMaterial color="#a8dff7" transparent opacity={0.4} depthWrite={false} />
+      </mesh>
+      <mesh ref={ring3} rotation={[-Math.PI/2,0,0]} position={[0, 0.14, 0]}>
+        <ringGeometry args={[ap * 0.56, ap * 0.72, 24]} />
+        <meshBasicMaterial color="#c4edfb" transparent opacity={0.3} depthWrite={false} />
+      </mesh>
+    </group>
+  );
+}
+
+// Pokemon-style grass tile: cute isometric leaf-blade tufts + occasional flower clusters.
+// Overall scale reduced 0.5x vs previous iteration (S = size * 0.5 applied throughout).
+function GrassCluster({ size, seed = 1 }: { size: number; seed?: number }) {
+  const S = size * 0.5; // 0.5x global scale
+  const rng = useMemo(() => seededRand(seed), [seed]);
+
+  const plants = useMemo(() => {
+    const count = 4 + Math.floor(rng() * 4); // 4-7 plants
+    const leafGreens = ['#5ecf6a', '#48b856', '#6dda78', '#3da84a', '#78e082'];
+    const stemColors = ['#2e7c38', '#3d9146', '#277035'];
+    // ~30% chance each plant is a flower, rest are leaf-blade tufts
+    return Array.from({ length: count }, (_, i) => {
+      const ang = rng() * Math.PI * 2;
+      const rad = (0.12 + rng() * 0.65) * S * 1.6;
+      const s = 0.55 + rng() * 0.45;
+      const isFlower = rng() < 0.30;
+      const flowerColors = ['#f9d84a', '#ff8ecb', '#ff6b6b', '#c87dff', '#ffa940'];
+      return {
+        x: Math.cos(ang) * rad,
+        z: Math.sin(ang) * rad,
+        s,
+        isFlower,
+        leafColor: leafGreens[i % leafGreens.length],
+        stemColor: stemColors[i % stemColors.length],
+        petalColor: flowerColors[Math.floor(rng() * flowerColors.length)],
+      };
+    });
+  }, [rng, S]);
+
+  return (
+    <group>
+      {plants.map((p, i) => (
+        <group key={i} position={[p.x, 0, p.z]}>
+          {p.isFlower ? (
+            /* ── Flower plant ── */
+            <>
+              {/* Stem */}
+              <mesh position={[0, S * 0.18 * p.s, 0]} castShadow>
+                <cylinderGeometry args={[S * 0.025 * p.s, S * 0.03 * p.s, S * 0.36 * p.s, 4]} />
+                <meshStandardMaterial color={p.stemColor} roughness={0.9} metalness={0} />
+              </mesh>
+              {/* Two leaf blades fanning out from stem mid-point */}
+              <mesh position={[-S * 0.06 * p.s, S * 0.14 * p.s, 0]} rotation={[0, 0, -0.6]} castShadow>
+                <boxGeometry args={[S * 0.22 * p.s, S * 0.07 * p.s, S * 0.04 * p.s]} />
+                <meshStandardMaterial color={p.leafColor} roughness={0.85} metalness={0} />
+              </mesh>
+              <mesh position={[S * 0.06 * p.s, S * 0.16 * p.s, 0]} rotation={[0, 0, 0.6]} castShadow>
+                <boxGeometry args={[S * 0.22 * p.s, S * 0.07 * p.s, S * 0.04 * p.s]} />
+                <meshStandardMaterial color={p.leafColor} roughness={0.85} metalness={0} />
+              </mesh>
+              {/* Flower head — flat disc petals (4-petal cross, low poly) */}
+              {[0, Math.PI / 2, Math.PI, 3 * Math.PI / 2].map((rot, pi) => (
+                <mesh
+                  key={pi}
+                  position={[
+                    Math.cos(rot) * S * 0.085 * p.s,
+                    S * 0.38 * p.s,
+                    Math.sin(rot) * S * 0.085 * p.s,
+                  ]}
+                  castShadow
+                >
+                  <sphereGeometry args={[S * 0.065 * p.s, 4, 3]} />
+                  <meshStandardMaterial color={p.petalColor} roughness={0.7} metalness={0} />
+                </mesh>
+              ))}
+              {/* Yellow center */}
+              <mesh position={[0, S * 0.41 * p.s, 0]} castShadow>
+                <sphereGeometry args={[S * 0.055 * p.s, 5, 4]} />
+                <meshStandardMaterial color="#ffe44a" roughness={0.6} metalness={0} />
+              </mesh>
+            </>
+          ) : (
+            /* ── Leaf-blade tuft (Pokemon-style pointy blades) ── */
+            <>
+              {/* Three blades: center upright + two angled outward */}
+              <mesh position={[0, S * 0.22 * p.s, 0]} castShadow>
+                <coneGeometry args={[S * 0.055 * p.s, S * 0.44 * p.s, 3]} />
+                <meshStandardMaterial color={p.leafColor} roughness={0.85} metalness={0} />
+              </mesh>
+              <mesh position={[-S * 0.09 * p.s, S * 0.18 * p.s, 0]} rotation={[0, 0, 0.38]} castShadow>
+                <coneGeometry args={[S * 0.045 * p.s, S * 0.36 * p.s, 3]} />
+                <meshStandardMaterial color={p.stemColor} roughness={0.85} metalness={0} />
+              </mesh>
+              <mesh position={[S * 0.09 * p.s, S * 0.18 * p.s, 0]} rotation={[0, 0, -0.38]} castShadow>
+                <coneGeometry args={[S * 0.045 * p.s, S * 0.36 * p.s, 3]} />
+                <meshStandardMaterial color={p.stemColor} roughness={0.85} metalness={0} />
+              </mesh>
+              {/* Small rounded base rosette */}
+              <mesh position={[0, S * 0.04 * p.s, 0]} castShadow>
+                <sphereGeometry args={[S * 0.1 * p.s, 5, 4]} />
+                <meshStandardMaterial color={p.leafColor} roughness={0.88} metalness={0} />
+              </mesh>
+            </>
+          )}
+        </group>
+      ))}
+    </group>
+  );
+}
+
+function DesertDunes({ size, seed = 1 }: { size: number; seed?: number }) {
+  const rng = useMemo(() => seededRand(seed), [seed]);
+  const ap = hexApothem(size);
+  const ring1 = React.useRef<THREE.Mesh>(null);
+  const ring2 = React.useRef<THREE.Mesh>(null);
+  const ring3 = React.useRef<THREE.Mesh>(null);
+  useFrame(({ clock }) => {
+    const t = clock.getElapsedTime();
+    // Same pulsing pattern as WaterWaves — scale + opacity, offset phases
+    const animate = (ref: React.RefObject<THREE.Mesh | null>, phase: number) => {
+      if (!ref.current) return;
+      const s = 0.55 + 0.45 * Math.abs(Math.sin(t * 0.55 + phase));
+      ref.current.scale.setScalar(s);
+      (ref.current.material as THREE.MeshBasicMaterial).opacity =
+        0.12 + 0.38 * (1 - Math.abs(Math.sin(t * 0.55 + phase)));
+    };
+    animate(ring1, 0);
+    animate(ring2, Math.PI * 0.65);
+    animate(ring3, Math.PI * 1.3);
+  });
+  // Only ~60% of tiles get 3D crescent dune arcs
+  const hasDunes = rng() < 0.6;
+  const duneArcs = useMemo(() => !hasDunes ? [] : [
+    { x: (rng() - 0.5) * ap * 0.5, z: -ap * 0.28, rotY: rng() * Math.PI * 2, r: ap * 0.38, tube: ap * 0.052, arc: Math.PI * 0.70 },
+    { x: (rng() - 0.5) * ap * 0.4, z:  ap * 0.06, rotY: rng() * Math.PI * 2, r: ap * 0.28, tube: ap * 0.046, arc: Math.PI * 0.62 },
+    { x: (rng() - 0.5) * ap * 0.3, z:  ap * 0.30, rotY: rng() * Math.PI * 2, r: ap * 0.20, tube: ap * 0.040, arc: Math.PI * 0.56 },
+  ], [hasDunes, rng, ap]);
+  return (
+    <group>
+      {/* Sandy base — hexagonal (6 segments matches tile shape) */}
+      <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, 0.06, 0]}>
+        <circleGeometry args={[ap * 0.98, 6]} />
+        <meshStandardMaterial color="#d9a840" roughness={0.95} metalness={0} />
+      </mesh>
+      {/* Hex ring waves — ringGeometry with 6 theta segments = hexagonal outline */}
+      <mesh ref={ring1} rotation={[-Math.PI / 2, 0, 0]} position={[0, 0.12, 0]}>
+        <ringGeometry args={[ap * 0.18, ap * 0.32, 6]} />
+        <meshBasicMaterial color="#f0c040" transparent opacity={0.5} depthWrite={false} />
+      </mesh>
+      <mesh ref={ring2} rotation={[-Math.PI / 2, 0, 0]} position={[0, 0.13, 0]}>
+        <ringGeometry args={[ap * 0.36, ap * 0.52, 6]} />
+        <meshBasicMaterial color="#e8b030" transparent opacity={0.4} depthWrite={false} />
+      </mesh>
+      <mesh ref={ring3} rotation={[-Math.PI / 2, 0, 0]} position={[0, 0.14, 0]}>
+        <ringGeometry args={[ap * 0.56, ap * 0.72, 6]} />
+        <meshBasicMaterial color="#f5cc55" transparent opacity={0.3} depthWrite={false} />
+      </mesh>
+      {/* Pokemon-style crescent dune arcs on select tiles */}
+      {duneArcs.map((d, i) => (
+        <mesh key={`arc${i}`} position={[d.x, 0.10, d.z]} rotation={[-Math.PI / 2, 0, d.rotY]}>
+          <torusGeometry args={[d.r, d.tube, 3, 16, d.arc]} />
+          <meshStandardMaterial color={i % 2 === 0 ? '#b07820' : '#9a6818'} roughness={0.92} metalness={0} />
+        </mesh>
+      ))}
     </group>
   );
 }
@@ -462,6 +696,10 @@ function WaterRipple({ radius }: { radius: number }) {
 // Bridge the R3F scene to the global window for reference systems that expect window.threeScene
 function SceneBridge({ onReady, outerRadius }: { onReady?: (caps: { mountain: boolean; tree: boolean; water: boolean; hills: boolean; desert: boolean }) => void; outerRadius: number }) {
   const { scene } = useThree();
+  // Keep onReady in a ref so changing it never re-triggers the effect (avoids infinite loop
+  // caused by an inline arrow prop regenerating on every parent render).
+  const onReadyRef = React.useRef(onReady);
+  onReadyRef.current = onReady;
   React.useEffect(() => {
     (window as any).THREE = (window as any).THREE || THREE;
     (window as any).threeScene = scene;
@@ -480,13 +718,16 @@ function SceneBridge({ onReady, outerRadius }: { onReady?: (caps: { mountain: bo
     const hasWater = typeof (window as any).addWaterToTile === 'function';
     const hasHills = typeof (window as any).addHillsToTile === 'function';
     const hasDesert = typeof (window as any).addDesertToTile === 'function';
-    onReady?.({ mountain: hasMountain, tree: hasTree, water: hasWater, hills: hasHills, desert: hasDesert });
+    onReadyRef.current?.({ mountain: hasMountain, tree: hasTree, water: hasWater, hills: hasHills, desert: hasDesert });
     return () => {
       if ((window as any).threeScene === scene) {
         (window as any).threeScene = undefined;
       }
     };
-  }, [scene, onReady]);
+  // outerRadius is stable (derived from a constant); scene changes only when Canvas remounts.
+  // onReady intentionally omitted — captured via ref above.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [scene, outerRadius]);
   return null;
 }
 
@@ -723,19 +964,120 @@ function HexTile({ t, size, onClick, onHover }: { t: Tile; size: number; onClick
   );
 }
 
-export default function SoloMissionMap3D() {
-  // Adjusted map size to requested 240 x 240 tiles (square)
+// ─── Avatar colours type (shared by AssembledAvatarMesh & GLBAvatarMesh) ────────
+interface AvatarColors { primary: string; secondary: string; skin: string; }
+
+/**
+ * Assembled avatar from individual GLB part files — game-map version.
+ * MUST be module-level (not nested inside SoloMissionMap3D) so React never treats
+ * it as a different component type between renders, which would cause hook resets.
+ *
+ * NOTE: AvatarAnimator (which calls useFBX internally) is intentionally NOT used here.
+ * useFBX can throw an actual Error (not a Promise) if the FBX fails to parse/load.
+ * <Suspense> only catches thrown Promises — an Error propagates silently upward through
+ * the Canvas, killing the entire avatar subtree. Static bind-pose is correct for game mode.
+ */
+function AssembledAvatarMesh({ parts, colors }: { parts: Record<string, string | undefined>; colors: AvatarColors }) {
+  const rootRef = React.useRef<THREE.Group>(null);
+  // Apply color tinting to materials after parts mount — mirrors applyStoreTint in AvatarScene.
+  useEffect(() => {
+    const root = rootRef.current;
+    if (!root) return;
+    root.traverse((obj: any) => {
+      const mats: any = (obj as any).material;
+      if (!mats) return;
+      const tint = (mat: any) => {
+        if (!mat?.color) return;
+        const n = (mat.name || '').toLowerCase();
+        if (n.includes('skin')) mat.color.set(colors.skin);
+        else if (n.includes('primary') || n.includes('armor') || n.includes('fabric')) mat.color.set(colors.primary);
+        else if (n.includes('secondary') || n.includes('trim') || n.includes('detail') || n.includes('accent')) mat.color.set(colors.secondary);
+      };
+      if (Array.isArray(mats)) mats.forEach(tint); else tint(mats);
+    });
+  });
+  return (
+    <group ref={rootRef} position={[0, 0, 0]} scale={0.9} rotation={[0, Math.PI, 0]}>
+      <BaseBody />
+      <AvatarPartsLoader parts={parts} />
+    </group>
+  );
+}
+
+/**
+ * Error boundary that catches errors thrown by useGLTF (e.g. bad URL / 404).
+ * React Suspense only catches thrown Promises — actual Errors need a boundary.
+ */
+class GLBErrorBoundary extends React.Component<
+  { fallback: React.ReactNode; children: React.ReactNode },
+  { errored: boolean }
+> {
+  constructor(props: any) { super(props); this.state = { errored: false }; }
+  static getDerivedStateFromError() { return { errored: true }; }
+  render() { return this.state.errored ? this.props.fallback : this.props.children; }
+}
+
+/**
+ * Inner component: useGLTF MUST be called here unconditionally (no try/catch).
+ * Wrapping useGLTF in try/catch intercepts the Suspense Promise throw, so the
+ * Suspense boundary never receives it and the model never loads.
+ * GLBErrorBoundary above handles actual JS errors (bad URL, decode failure).
+ */
+function GLBAvatarInner({ url, parts, colors }: { url: string; parts: Record<string, string | undefined>; colors: AvatarColors }) {
+  const { scene } = useGLTF(url); // unconditional — do NOT wrap in try/catch
+  const inst = useMemo(() => {
+    if (!scene) return null;
+    try { return scene.clone() as THREE.Object3D; } catch { return null; }
+  }, [scene, url]);
+  useEffect(() => {
+    if (!inst) return;
+    const { primary, secondary, skin } = colors;
+    inst.traverse((obj: any) => {
+      const mats: any = obj.material;
+      if (!mats) return;
+      const apply = (mat: any) => {
+        const name = (mat.name || '').toLowerCase();
+        if (!mat?.color) return;
+        if (name.includes('skin'))                                              mat.color.set(skin);
+        else if (name.includes('primary') || name.includes('armor') || name.includes('fabric')) mat.color.set(primary);
+        else if (name.includes('secondary') || name.includes('trim') || name.includes('detail') || name.includes('accent')) mat.color.set(secondary);
+      };
+      if (Array.isArray(mats)) mats.forEach(apply); else apply(mats);
+    });
+  }, [inst, colors, url]);
+  if (!inst) return <AssembledAvatarMesh parts={parts} colors={colors} />;
+  return <primitive object={inst} position={[0, 0, 0]} rotation={[0, Math.PI, 0]} scale={0.9} frustumCulled={false} />;
+}
+
+/**
+ * Full-GLB avatar with per-material colour tinting.
+ * MUST be module-level for the same hook-stability reason as AssembledAvatarMesh.
+ */
+function GLBAvatarMesh({ url, parts, colors }: { url: string; parts: Record<string, string | undefined>; colors: AvatarColors }) {
+  return (
+    <GLBErrorBoundary fallback={<AssembledAvatarMesh parts={parts} colors={colors} />}>
+      <GLBAvatarInner url={url} parts={parts} colors={colors} />
+    </GLBErrorBoundary>
+  );
+}
+
+export default function SoloMissionMap3D({ onExit, onMapUpdate }: { onExit?: () => void; onMapUpdate?: (data: MinimapData) => void } = {}) {
+  const useChunks = import.meta.env.VITE_USE_CHUNKS === 'true';
+  // Adjusted map size to requested 240 x 240 tiles (square) (legacy full-map path only)
   const GRID_W = 240;
   const GRID_H = 240;
-  // Increase visual scale (3x perceived size) by enlarging hex radius and render radius
   const MAP_SCALE = 3; // new scale factor
   const hexSize = 1.0 * MAP_SCALE;
+  // Only generate full tiles array if not using chunk streaming
   const tiles = useMemo(() => {
+    if (useChunks) return [] as Tile[]; // defer to chunk system
     const t = generateTerrainMapRect(GRID_W, GRID_H, 1337);
     assignResources(t);
-    console.log('[map:init]', { width: GRID_W, height: GRID_H, tileCount: t.length });
+    console.log('[map:init:full]', { width: GRID_W, height: GRID_H, tileCount: t.length });
     return t;
-  }, []);
+  }, [useChunks]);
+  // If chunk mode enabled, center using world midpoint assumptions
+  const chunkCenterAxial = useMemo(() => ({ q: Math.floor(GRID_W/2), r: Math.floor(GRID_H/2) }), []);
   // Player profile (anonymous auth + progress)
     const { profile, loading: profileLoading, saveProgress } = usePlayerProfile();
   const { session, updateHeroPosition, syncing: sessionSyncing, lastSync: sessionLastSync } = usePlayerSession();
@@ -749,8 +1091,29 @@ export default function SoloMissionMap3D() {
     const cr = Math.round((minR + maxR) / 2);
     return { q: cq, r: cr };
   }, [tiles]);
+  // Find the nearest walkable (non-mountain, non-water) tile to the map center.
+  // This prevents the hero spawning on an impassable tile which would make heroVisible empty.
+  const spawnPos = useMemo(() => {
+    if (tiles.length === 0) return { q: 0, r: 0 };
+    const tileMap = new Map<string, Tile>();
+    for (const t of tiles) tileMap.set(`${t.q},${t.r}`, t);
+    const visited = new Set<string>();
+    const bfsQueue: Axial[] = [centerAxial];
+    while (bfsQueue.length) {
+      const pos = bfsQueue.shift()!;
+      const k = `${pos.q},${pos.r}`;
+      if (visited.has(k)) continue;
+      visited.add(k);
+      const t = tileMap.get(k);
+      if (t && t.type !== 'mountain' && t.type !== 'water') return pos;
+      for (const n of axialNeighbors(pos)) {
+        if (!visited.has(`${n.q},${n.r}`)) bfsQueue.push(n);
+      }
+    }
+    return centerAxial; // fallback (shouldn't happen)
+  }, [tiles, centerAxial]);
   // Demo actors (player + pet) with different vision ranges
-  const [hero, setHero] = useState<Actor>({ id: 'hero', pos: centerAxial, vision: 6, kind: 'actor' });
+  const [hero, setHero] = useState<Actor>({ id: 'hero', pos: useChunks ? chunkCenterAxial : spawnPos, vision: 8, kind: 'actor' });
   // When profile loads, adopt stored hero position if present
   useEffect(() => {
     if (profile && profile.progress?.heroPosition) {
@@ -761,7 +1124,7 @@ export default function SoloMissionMap3D() {
     }
   }, [profile]);
   // Place pet offset from hero (one ring out) but inside bounds
-  const [pet, setPet] = useState<Actor>({ id: 'pet', pos: { q: centerAxial.q + 4, r: centerAxial.r - 1 }, vision: 3, kind: 'pet' });
+  const [pet, setPet] = useState<Actor>({ id: 'pet', pos: { q: (useChunks?chunkCenterAxial.q:centerAxial.q) + 4, r: (useChunks?chunkCenterAxial.r:centerAxial.r) - 1 }, vision: 3, kind: 'pet' });
   // FOV always on now; removed toggle state
 
   // Hero will be moved via keyboard commands now (auto path removed)
@@ -786,14 +1149,14 @@ export default function SoloMissionMap3D() {
 
   // (Patrol logic moved below tilesByKey for declaration order)
 
-  const heroVisible = useMemo(() => computeVisibleSet(tiles, hero.pos, hero.vision), [tiles, hero]);
+  const heroVisible = useMemo(() => computeVisibleSet(tiles, hero.pos, hero.vision), [tiles, hero.pos.q, hero.pos.r, hero.vision]);
 
-  // --- Render culling: only render tiles within MANHATTAN axial distance of hero to reduce DOM/scene weight on large maps ---
-  // Distance buffer chosen larger than vision for exploration context.
-  const RENDER_RADIUS = 40 * MAP_SCALE; // expanded with scale so area shown increases
+  // Primary render radius — covers active viewport around the hero.
+  // Kept at 22 (≈1520 tiles) which is well under the ~43k that caused the fiber stack overflow.
+  const RENDER_RADIUS = 22;
   const culledTiles = useMemo(() => {
     return tiles.filter(t => axialDistance(t, hero.pos) <= RENDER_RADIUS);
-  }, [tiles, hero.pos]);
+  }, [tiles, hero.pos.q, hero.pos.r]);
 
   // Memory / tile count instrumentation (periodic)
   useEffect(() => {
@@ -814,105 +1177,110 @@ export default function SoloMissionMap3D() {
   }, [tiles.length, culledTiles.length]);
   // Explore accumulation (union of all heroVisible over time)
   const exploredRef = React.useRef<Set<string>>(new Set());
+  const [exploredCount, setExploredCount] = useState(0);
+  const explorationGoal = 100; // exploration objective: discover 100 tiles
+  const [explorationComplete, setExplorationComplete] = useState(false);
   // Seed from profile once when profile loads
   useEffect(() => {
     if (profile?.progress?.explored && exploredRef.current.size === 0) {
       for (const k of profile.progress.explored) exploredRef.current.add(k);
     }
   }, [profile]);
+  // petVisible computed before explored accumulation so it can be unioned into exploredRef
+  const petVisible = useMemo(() => computeVisibleSet(tiles, pet.pos, pet.vision), [tiles, pet.pos.q, pet.pos.r, pet.vision]);
+  // Merged visible set for minimap (hero + pet FoV)
+  const minimapVisibleKeys = useMemo(
+    () => new Set([...heroVisible, ...petVisible]),
+    [heroVisible, petVisible],
+  );
+  // Push minimap data to parent whenever explored / visibility / positions change
+  useEffect(() => {
+    if (!onMapUpdate) return;
+    onMapUpdate({
+      exploredKeys: exploredRef.current,
+      exploredRevision: exploredCount,
+      visibleKeys: minimapVisibleKeys,
+      tileTypes: tileTypesMap,
+      heroPos: hero.pos,
+      petPos: pet.pos,
+      hexSize,
+      mapBounds,
+    });
+  // mapBounds and tileTypesMap are stable after initial tile generation
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [exploredCount, minimapVisibleKeys, hero.pos.q, hero.pos.r, pet.pos.q, pet.pos.r, onMapUpdate]);
   useEffect(() => {
     let changed = false;
-    heroVisible.forEach((tileKey: string) => {
+    const mark = (tileKey: string) => {
       if (!exploredRef.current.has(tileKey)) { exploredRef.current.add(tileKey); changed = true; }
-    });
+    };
+    // Hero + pet vision both contribute to the explored/discovered area
+    heroVisible.forEach(mark);
+    petVisible.forEach(mark);
     if (!changed) return; // nothing new this visibility frame
+    setExploredCount(exploredRef.current.size);
+    if(!explorationComplete && exploredRef.current.size >= explorationGoal){
+      setExplorationComplete(true);
+      console.log('[objective] exploration complete');
+    }
     const to = setTimeout(() => {
       saveProgress({ explored: Array.from(exploredRef.current) });
     }, 800);
     return () => clearTimeout(to);
-  }, [heroVisible, saveProgress]);
-  const petVisible = useMemo(() => computeVisibleSet(tiles, pet.pos, pet.vision), [tiles, pet]);
+  }, [heroVisible, petVisible, saveProgress]);
+
+  // Explored tiles outside RENDER_RADIUS — rendered as cheap "memory" layer so explored
+  // tiles don't disappear as the hero walks away. Capped at MEMORY_RADIUS to bound count.
+  const MEMORY_RADIUS = 55;
+  const exploredMemoryTiles = useMemo(() => {
+    return tiles.filter(t => {
+      const d = axialDistance(t, hero.pos);
+      return d > RENDER_RADIUS && d <= MEMORY_RADIUS && exploredRef.current.has(`${t.q},${t.r}`);
+    });
+  // exploredCount as proxy to re-run when explored set changes
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tiles, hero.pos.q, hero.pos.r, exploredCount]);
+
   // World position of hero (for camera recentering)
   const heroWorld = useMemo(() => axialToWorld(hero.pos, hexSize), [hero.pos, hexSize]);
-  // Avatar assembly / loading
-  const heroModelUrl = (profile as any)?.progress?.avatar?.modelUrl as string | undefined;
-  useEffect(()=>{
-    if(heroModelUrl){
-      console.log('[avatar] modelUrl detected', heroModelUrl);
-    } else {
-      console.log('[avatar] no modelUrl, will use assembled parts');
-    }
-  },[heroModelUrl]);
-  const heroParts = (profile as any)?.progress?.avatar?.parts || {};
-  const heroColors = (profile as any)?.progress?.avatar?.colors || { primary:'#00A37A', secondary:'#F5F5F5', skin:'#c58b66' };
 
-  const AssembledAvatar: React.FC = () => (
-    <group position={[0,0,0]} scale={0.9} rotation={[0,Math.PI,0]}>
-      <BaseBody />
-      <AvatarPartsLoader parts={heroParts} />
-    </group>
-  );
-
-  const GLBAvatar: React.FC<{ url: string }> = ({ url }) => {
-    const [failed, setFailed] = useState(false);
-    let gltf: any = null;
+  // ─── Avatar data ────────────────────────────────────────────────────────────
+  // Priority: localStorage activeLoadout.threeConfig (set by the avatar creator)
+  //        →  Firestore profile.progress.avatar (saved after creator confirmation)
+  //        →  empty defaults
+  const avatarData = useMemo(() => {
     try {
-      gltf = useGLTF(url);
-    } catch(e){
-      console.warn('[avatar] synchronous hook error for GLB', url, e);
-      setFailed(true);
-    }
-    const scene = (gltf as any)?.scene;
-    const inst = useMemo(() => {
-      if(!scene) return null;
-      try {
-        const clone = scene.clone();
-        console.log('[avatar] GLB cloned', url);
-        return clone as THREE.Object3D;
-      } catch(e){
-        console.error('[avatar] clone failed', e);
-        return null;
+      const raw = localStorage.getItem('afrofuture.activeLoadout');
+      if (raw) {
+        const loadout = JSON.parse(raw);
+        if (loadout?.threeConfig) return { parts: loadout.threeConfig.parts || {}, colors: loadout.threeConfig.colors || {} };
       }
-    }, [scene, url]);
-    useEffect(() => {
-      if (!inst) return;
-      const { primary, secondary, skin } = heroColors;
-      let materialCount = 0;
-      inst.traverse(obj => {
-        const mats: any = (obj as any).material;
-        if (!mats) return;
-        const apply = (mat:any) => {
-          const name = (mat.name||'').toLowerCase();
-          if (!mat?.color) return;
-          materialCount++;
-          if (name.includes('skin')) mat.color.set(skin);
-          else if (name.includes('primary') || name.includes('armor') || name.includes('fabric')) mat.color.set(primary);
-          else if (name.includes('secondary') || name.includes('trim') || name.includes('detail') || name.includes('accent')) mat.color.set(secondary);
-        };
-        if (Array.isArray(mats)) mats.forEach(apply); else apply(mats);
-      });
-      console.log('[avatar] tint applied', { url, materialCount, colors: heroColors });
-    }, [inst, heroColors, url]);
-    if (failed) return <AssembledAvatar />;
-    if (!inst) return <group position={[0,0,0]}><mesh><boxGeometry args={[0.4,0.4,0.4]} /><meshStandardMaterial color="#f87171" /></mesh></group>;
-    return <primitive object={inst} position={[0,0,0]} rotation={[0,Math.PI,0]} scale={0.9} />;
-  };
+    } catch {}
+    // Firestore fallback
+    return (profile as any)?.progress?.avatar || {};
+  // profile changes trigger re-evaluation; localStorage is synchronous so no dep needed
+  }, [profile]);
+  const heroModelUrl = (avatarData as any)?.modelUrl as string | undefined;
+  // Memoize parts & colors so their object references are stable across component re-renders.
+  // Without this, `(avatarData as any)?.parts || {}` creates a new {} every render when parts
+  // is undefined, causing avatarReady to flip false→true every frame and the avatar never appears.
+  const heroParts = useMemo(() => (avatarData as any)?.parts || {}, [avatarData]);
+  const heroColors: AvatarColors = useMemo(() => (
+    (avatarData as any)?.colors || { primary: '#00A37A', secondary: '#F5F5F5', skin: '#c58b66' }
+  ), [avatarData]);
 
-  const HeroAvatar3D: React.FC<{ world: { x:number; z:number } }> = ({ world }) => (
-    <group position={[world.x, 0, world.z]}>
-      <mesh rotation={[-Math.PI/2,0,0]} position={[0,0.01,0]} receiveShadow>
-        <circleGeometry args={[0.75, 24]} />
-        <meshStandardMaterial color="#000" transparent opacity={0.22} />
-      </mesh>
-      <Suspense fallback={<group position={[0,0,0]}><mesh><cylinderGeometry args={[0.3,0.3,0.6,12]} /><meshStandardMaterial color="#64748b" /></mesh></group>}>
-        {heroModelUrl ? <GLBAvatar url={heroModelUrl} /> : <AssembledAvatar />}
-      </Suspense>
-      <mesh rotation={[-Math.PI/2,0,0]} position={[0,0.015,0]}>
-        <ringGeometry args={[0.5,0.64, 40]} />
-        <meshBasicMaterial color="#facc15" transparent opacity={0.85} />
-      </mesh>
-    </group>
-  );
+  // Gating flag: delay one animation frame after avatar source changes so Suspense can begin
+  // resolving before we render (prevents a "base body only" flash before custom parts load).
+  // Deps use primitive strings (stable) — heroParts object excluded because Suspense handles
+  // per-part loading; re-gating on every object identity change caused perpetual flickering.
+  const [avatarReady, setAvatarReady] = useState(false);
+  useEffect(() => {
+    setAvatarReady(false);
+    const raf = requestAnimationFrame(() => setAvatarReady(true));
+    return () => cancelAnimationFrame(raf);
+  }, [heroModelUrl, heroColors.primary, heroColors.secondary, heroColors.skin]);
+  // AssembledAvatar and GLBAvatar are defined at module level (outside this function) to
+  // maintain stable component identity and prevent hook resets on every parent render.
   // Precompute world bounds for camera panning
   const mapBounds = useMemo(() => {
     let minX = Infinity, maxX = -Infinity, minZ = Infinity, maxZ = -Infinity;
@@ -931,45 +1299,84 @@ export default function SoloMissionMap3D() {
     for (const t of tiles) m.set(`${t.q},${t.r}`, t);
     return m;
   }, [tiles]);
-  // After tilesByKey exists, run patrol logic
+  // Separate type-only map for minimap canvas (avoids passing full Tile objects)
+  const tileTypesMap = useMemo(() => {
+    const m = new Map<string, string>();
+    for (const t of tiles) m.set(`${t.q},${t.r}`, t.type);
+    return m;
+  }, [tiles]);
+  // Patrol candidates: walkable tiles within hero leash radius
   const patrolCandidates = useMemo(() => {
     const leash = Math.max(0, hero.vision - 1);
     return tiles.filter(t => axialDistance(t, hero.pos) <= leash && t.type !== 'mountain' && t.type !== 'water');
   }, [tiles, hero.pos, hero.vision]);
+  // ─── Pet patrol — refs keep the setInterval closure always current ──────────
+  const petTargetRef = React.useRef<Axial | null>(null);
+  petTargetRef.current = petTarget;
+  const heroRef = React.useRef(hero);
+  heroRef.current = hero;
+  const tilesByKeyRef = React.useRef(tilesByKey);
+  tilesByKeyRef.current = tilesByKey;
+
+  // Pick a new patrol target whenever the current one is reached or drifts out of leash
   useEffect(() => {
     if (!petTarget || axialDistance(petTarget, hero.pos) > hero.vision - 1) {
       if (patrolCandidates.length) setPetTarget(patrolCandidates[Math.floor(Math.random() * patrolCandidates.length)]);
     }
   }, [petTarget, patrolCandidates, hero.pos, hero.vision]);
+
+  // Interval reads from refs so it never needs to restart on target/hero/tile changes.
+  // This fixes the stale-closure bug where the interval would see an outdated petTarget.
   useEffect(() => {
     const interval = setInterval(() => {
+      const target = petTargetRef.current;
+      const h = heroRef.current;
+      const byKey = tilesByKeyRef.current;
       setPet(curr => {
-        if (!petTarget) return curr;
-        if (curr.pos.q === petTarget.q && curr.pos.r === petTarget.r) { setPetTarget(null); return curr; }
-        const leash = Math.max(0, hero.vision - 1);
-        let best = curr.pos; let bestDist = axialDistance(best, petTarget);
+        if (!target) return curr;
+        if (curr.pos.q === target.q && curr.pos.r === target.r) { setPetTarget(null); return curr; }
+        const leash = Math.max(0, h.vision - 1);
+        let best = curr.pos; let bestDist = axialDistance(best, target);
         for (const n of axialNeighbors(curr.pos)) {
-          const tile = tilesByKey.get(`${n.q},${n.r}`);
+          const tile = byKey.get(`${n.q},${n.r}`);
           if (!tile) continue;
-          if (tile.type === 'mountain' || tile.type === 'water') continue;
-          if (axialDistance(n, hero.pos) > leash) continue;
-          const d = axialDistance(n, petTarget);
+          // Pet is blocked by mountains but CAN cross water tiles
+          if (tile.type === 'mountain') continue;
+          if (axialDistance(n, h.pos) > leash) continue;
+          const d = axialDistance(n, target);
           if (d < bestDist) { bestDist = d; best = n; }
         }
         if (best.q === curr.pos.q && best.r === curr.pos.r) { setPetTarget(null); return curr; }
         return { ...curr, pos: best };
       });
-  }, 400); // patrol speed increased from 900ms to 400ms
+    }, 400);
     return () => clearInterval(interval);
-  }, [petTarget, tilesByKey, hero.pos, hero.vision]);
+  // Empty deps: interval runs for the lifetime of the component; all state read via refs.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
   // Precompute axial bounds for collider logic
   const axialBounds = useMemo(() => {
     let minQ = Infinity, maxQ = -Infinity, minR = Infinity, maxR = -Infinity;
     for (const t of tiles) { if (t.q < minQ) minQ = t.q; if (t.q > maxQ) maxQ = t.q; if (t.r < minR) minR = t.r; if (t.r > maxR) maxR = t.r; }
     return { minQ, maxQ, minR, maxR };
   }, [tiles]);
-  // FoV visibility with attenuation; always include spawn tile and its ring for initial context
-  // discovered set & objectives removed for simplified prototype
+  // Precompute boundary planes (stable — only changes when tiles array changes)
+  const boundaryPlanes = useMemo(() => {
+    const planes: JSX.Element[] = [];
+    const { minQ, maxQ, minR, maxR } = axialBounds;
+    for (const t of tiles) {
+      if (t.q !== minQ && t.q !== maxQ && t.r !== minR && t.r !== maxR) continue;
+      const { x, z } = axialToWorld(t, hexSize);
+      planes.push(
+        <mesh key={`boundary-${t.q},${t.r}`} position={[x, 0.2, z]} rotation={[-Math.PI/2, 0, 0]}>
+          <circleGeometry args={[hexSize*0.95, 6]} />
+          <meshBasicMaterial color="#000" transparent opacity={0} />
+        </mesh>
+      );
+    }
+    return planes;
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tiles, axialBounds, hexSize]);
   const [hover, setHover] = useState<Tile | null>(null);
   const [refMountains, setRefMountains] = useState(false);
   const [refTrees, setRefTrees] = useState(false);
@@ -998,7 +1405,11 @@ export default function SoloMissionMap3D() {
   function tileKey(t: Axial) { return `${t.q},${t.r}`; }
   // Char-based rules closer to legacy
   function passable(t: Tile | undefined) {
-    return !!t; // still allow all existing tiles
+    if (!t) return false;
+    // Mountains are impassable for everyone; water is impassable for the player (pet can traverse it)
+    if (t.type === 'mountain') return false;
+    if (t.type === 'water') return false;
+    return true;
   }
   function clampAxial(a: Axial): Axial {
     // Clamp to nearest existing tile inside bounds. If clamped coordinate missing (edge shape differences) search nearby.
@@ -1070,31 +1481,81 @@ export default function SoloMissionMap3D() {
   <div className="relative w-screen h-screen bg-white text-gray-900 overflow-hidden">
       {/* Helper overlay removed for production */}
       <div className="absolute inset-0 select-none">
-    <Canvas shadows camera={{ position: [14, 16, 14], fov: 45 }}>
+    <Canvas shadows camera={{ position: [0, 22, 22], fov: 45 }}>
   <MapCameraController bounds={mapBounds} gameMode={true} heroWorld={heroWorld} recenterSignal={recenterSignal} />
               <SceneBridge outerRadius={hexSize} onReady={(caps) => { setRefMountains(!!caps.mountain); setRefTrees(!!caps.tree); setRefWater(!!caps.water); setRefHills(!!caps.hills); setRefDesert(!!caps.desert); }} />
               <Sky inclination={0.6} azimuth={0.25} sunPosition={[50, 50, 10]} turbidity={2} rayleigh={0.7} mieCoefficient={0.005} mieDirectionalG={0.8} />
               <hemisphereLight args={["#bde0fe", "#e6f3ff", 0.8]} />
               <directionalLight position={[30, 40, 15]} intensity={0.7} castShadow shadow-mapSize-width={2048} shadow-mapSize-height={2048} />
               <group position={[0, 0, 0]}>
+                {/* Dark ground plane: prevents white canvas showing at RENDER_RADIUS edge */}
+                <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, -0.1, 0]}>
+                  <planeGeometry args={[2000, 2000]} />
+                  <meshBasicMaterial color="#111827" />
+                </mesh>
+
+                {/* ── Explored-memory tiles outside RENDER_RADIUS — dim overlay, no decorations ── */}
+                {exploredMemoryTiles.map(t => {
+                  const { x, z } = axialToWorld(t, hexSize);
+                  const key = `exp-mem-${t.q},${t.r}`;
+                  const tileTop = heightFor(t);
+                  return (
+                    <group key={key} position={[x, 0, z]}>
+                      <HexTile t={t} size={hexSize} onClick={() => {}} onHover={setHover} />
+                      <mesh rotation={[0, Math.PI / 6, 0]} position={[0, tileTop + 0.016, 0]} renderOrder={14}>
+                        <cylinderGeometry args={[hexSize, hexSize, 0.03, 6]} />
+                        <meshBasicMaterial color="#000" transparent opacity={0.42} depthWrite={false} />
+                      </mesh>
+                    </group>
+                  );
+                })}
+
+                {/* ── Active render radius tiles ── */}
                 {culledTiles.map((t) => {
                   const { x, z } = axialToWorld(t, hexSize);
                   const key = `${t.q},${t.r}`;
                   const inHero = heroVisible.has(key);
                   const inPet = petVisible.has(key);
-                  let overlayColor: string | null = null;
-                  // Always show FOV overlays
-                  if (inHero && inPet) overlayColor = '#d946efAA'; // both -> fuchsia
-                  else if (inHero) overlayColor = '#fde047AA'; // hero -> yellow
-                  else if (inPet) overlayColor = '#38bdf8AA'; // pet -> sky
+                  const inVision = inHero || inPet;
+                  const explored = exploredRef.current.has(key);
+                  const tileTop = heightFor(t);
                   return (
                     <group key={key} position={[x, 0, z]}>
-                      <HexTile t={t} size={hexSize} onClick={()=>{}} onHover={setHover} />
-                      {overlayColor && (
-                        <mesh rotation={[0, Math.PI/6, 0]} position={[0, heightFor(t)+0.01, 0]}
-                          renderOrder={10}>
-                          <cylinderGeometry args={[hexSize*0.98, hexSize*0.98, 0.02, 6]} />
-                          <meshBasicMaterial color={overlayColor} transparent opacity={0.6} depthWrite={false} />
+                      <HexTile t={t} size={hexSize} onClick={() => {}} onHover={setHover} />
+                      {/* Terrain decorations — visible now OR previously explored (FoW dim sits on top) */}
+                      {(inVision || explored) && t.type === 'forest' && (
+                        <group position={[0, tileTop, 0]}><TreeCluster size={hexSize} seed={t.q * 31 + t.r * 17} /></group>
+                      )}
+                      {(inVision || explored) && t.type === 'jungle' && (
+                        <group position={[0, tileTop, 0]}><TreeCluster size={hexSize} seed={t.q * 31 + t.r * 17} /></group>
+                      )}
+                      {(inVision || explored) && t.type === 'mountain' && (
+                        <group position={[0, tileTop, 0]}><MountainDeco size={hexSize} seed={t.q * 31 + t.r * 17} /></group>
+                      )}
+                      {(inVision || explored) && t.type === 'hills' && (
+                        <group position={[0, tileTop, 0]}><RockScatter size={hexSize} seed={t.q * 31 + t.r * 17} count={3} /></group>
+                      )}
+                      {(inVision || explored) && t.type === 'water' && (
+                        <group position={[0, tileTop, 0]}><WaterWaves size={hexSize} /></group>
+                      )}
+                      {(inVision || explored) && t.type === 'plains' && (
+                        <group position={[0, tileTop, 0]}><GrassCluster size={hexSize} seed={t.q * 37 + t.r * 13} /></group>
+                      )}
+                      {(inVision || explored) && t.type === 'desert' && (
+                        <group position={[0, tileTop, 0]} renderOrder={5}><DesertDunes size={hexSize} seed={t.q * 41 + t.r * 19} /></group>
+                      )}
+                      {/* FoW: solid black over completely unexplored+invisible tiles */}
+                      {!inVision && !explored && (
+                        <mesh rotation={[0, Math.PI / 6, 0]} position={[0, tileTop + 0.02, 0]} renderOrder={15}>
+                          <cylinderGeometry args={[hexSize, hexSize, 0.04, 6]} />
+                          <meshBasicMaterial color="#000" transparent opacity={0.88} depthWrite={false} />
+                        </mesh>
+                      )}
+                      {/* FoW: dim overlay on explored-but-not-currently-visible tiles */}
+                      {!inVision && explored && (
+                        <mesh rotation={[0, Math.PI / 6, 0]} position={[0, tileTop + 0.016, 0]} renderOrder={14}>
+                          <cylinderGeometry args={[hexSize, hexSize, 0.03, 6]} />
+                          <meshBasicMaterial color="#000" transparent opacity={0.38} depthWrite={false} />
                         </mesh>
                       )}
                     </group>
@@ -1102,37 +1563,45 @@ export default function SoloMissionMap3D() {
                 })}
                 {/* Actor markers */}
                 {/* Hero avatar replaced with billboard; pet retains simple sphere marker */}
-                <HeroAvatar3D world={heroWorld} />
+                {/* Hero avatar — inlined JSX (not a sub-component) so React never
+                    unmounts/remounts this group on parent re-renders */}
+                <group position={[heroWorld.x, 0.4, heroWorld.z]} name="HeroAvatar" frustumCulled={false}>
+                  {/* Drop shadow — renderOrder 20 ensures it draws above water wave rings */}
+                  <mesh rotation={[-Math.PI/2, 0, 0]} position={[0, 0.01, 0]} receiveShadow renderOrder={20}>
+                    <circleGeometry args={[hexSize * 0.42, 24]} />
+                    <meshStandardMaterial color="#000" transparent opacity={0.22} depthWrite={false} />
+                  </mesh>
+                  {/* Avatar body — lifted 0.15 units above tile top so model feet (y=0
+                      in model space) clear the tile surface (tile top = y=0.4 = group y).
+                      renderOrder=22 forces draw after tile geometry (0) and FoW (14/15)
+                      to win depth-buffer ties on the first frame before depth precision
+                      has fully settled. */}
+                  {avatarReady && (
+                    <Suspense fallback={null}>
+                      <group position={[0, 0.15, 0]} renderOrder={22}>
+                        {heroModelUrl
+                          ? <GLBAvatarMesh url={heroModelUrl} parts={heroParts} colors={heroColors} />
+                          : <AssembledAvatarMesh parts={heroParts} colors={heroColors} />
+                        }
+                      </group>
+                    </Suspense>
+                  )}
+                  {/* Yellow selection ring — renderOrder 21 ensures it draws above water wave rings */}
+                  <mesh rotation={[-Math.PI/2, 0, 0]} position={[0, 0.015, 0]} renderOrder={21}>
+                    <ringGeometry args={[hexSize * 0.62, hexSize * 0.78, 40]} />
+                    <meshBasicMaterial color="#facc15" transparent opacity={0.85} depthWrite={false} />
+                  </mesh>
+                </group>
                 {(() => { const world = axialToWorld(pet.pos, hexSize); return (
-                  <group key={pet.id} position={[world.x, 0, world.z]}>
-                    <mesh position={[0, 0.5, 0]} castShadow>
-                      <sphereGeometry args={[0.35, 12, 12]} />
+                  <group key={pet.id} position={[world.x, 0.4, world.z]}>
+                    <mesh position={[0, hexSize * 0.45, 0]} castShadow>
+                      <sphereGeometry args={[hexSize * 0.28, 12, 12]} />
                       <meshStandardMaterial color="#0ea5e9" emissive="#0369a1" emissiveIntensity={0.5} />
                     </mesh>
-                    <Text position={[0, 1.15, 0]} fontSize={0.5} color="#111" anchorX="center" anchorY="middle">Pet</Text>
+                    <Text position={[0, hexSize * 1.1, 0]} fontSize={hexSize * 0.35} color="#111" anchorX="center" anchorY="middle">Pet</Text>
                   </group> ); })()}
-                {/* Invisible boundary ring (planes) for visual/interaction collider reference */}
-                <group>
-                  {(() => {
-                    // Sample boundary by collecting extreme tiles and drawing thin invisible blockers (optional future collision)
-                    const planes: JSX.Element[] = [];
-                    const { minQ, maxQ, minR, maxR } = axialBounds;
-                    const extremes: Axial[] = [];
-                    for (const t of tiles) {
-                      if (t.q === minQ || t.q === maxQ || t.r === minR || t.r === maxR) extremes.push(t);
-                    }
-                    for (const ex of extremes) {
-                      const { x, z } = axialToWorld(ex, hexSize);
-                      planes.push(
-                        <mesh key={`boundary-${ex.q},${ex.r}`} position={[x, 0.2, z]} rotation={[-Math.PI/2, 0, 0]}>
-                          <circleGeometry args={[hexSize*0.95, 6]} />
-                          <meshBasicMaterial color="#000" transparent opacity={0} />
-                        </mesh>
-                      );
-                    }
-                    return planes;
-                  })()}
-                </group>
+                {/* Boundary reference planes */}
+                <group>{boundaryPlanes}</group>
               </group>
               {(() => {
                 const planeWidth = (mapBounds.maxX - mapBounds.minX) + 30;
@@ -1142,8 +1611,68 @@ export default function SoloMissionMap3D() {
               <ContactShadows position={[0, 0, 0]} opacity={0.15} blur={1.5} far={15} />
               {/* OrbitControls removed in favor of custom edge + drag panning controller */}
             </Canvas>
+              {/* Menu button — top left */}
+              {onExit && (
+                <button
+                  onClick={onExit}
+                  className="absolute top-2 left-2 z-10 flex items-center gap-1 px-3 py-1.5 rounded-lg bg-black/60 hover:bg-black/80 active:scale-95 text-xs text-white border border-white/10 font-medium tracking-wide transition-colors select-none"
+                >
+                  ‹ Menu
+                </button>
+              )}
+              {/* Exploration objective tracker */}
+              <div className="absolute top-10 left-2 px-3 py-2 rounded-lg bg-black/60 text-xs text-white border border-white/10 font-medium tracking-wide">
+                Explore: {exploredCount}/{explorationGoal} {explorationComplete ? '✓' : ''}
+              </div>
       </div>
     </div>
+  );
+}
+
+// --- Chunk debug visual (lightweight placeholder before instancing) ---
+function ChunkDebugTiles({ heroPos, hexSize }: { heroPos: Axial; hexSize: number }) {
+  const useChunks = import.meta.env.VITE_USE_CHUNKS === 'true';
+  const viewRadius = 48; // tiles
+  const chunkSize = 32;
+  const playerCol = heroPos.q; // using axial q,r directly for now
+  const playerRow = heroPos.r;
+  const { chunks } = useVisibleChunks({ playerCol, playerRow, viewRadiusTiles: viewRadius, chunkSize, enabled: useChunks });
+  const ap = hexApothem(hexSize);
+  // Build simple cylinders per tile (temporary). Limit render count with a hard cap for safety.
+  let rendered = 0;
+  return (
+    <group name="ChunkDebugTiles">
+      {useChunks && chunks.map(ch => (
+        <group key={`chunk-${ch.cx}-${ch.cy}`}>
+          {ch.tiles.map(t => {
+            if (rendered > 5000) return null; // safety cap
+            rendered++;
+            // Quick axial->world approximation using flat-top assumptions similar to legacy col/row.
+            const x = (1.5 * hexSize) * t.col;
+            const z = (Math.sqrt(3) * hexSize) * (t.row + (t.col * 0.5));
+            let color = '#88aa77';
+            switch (t.char) {
+              case 'F': color = '#2f6b2f'; break;
+              case 'J': color = '#0f5b3f'; break;
+              case 'H': color = '#888870'; break;
+              case 'D': color = '#d2b070'; break;
+              case 'O': case 'M': color = '#777980'; break;
+              case 'L': color = '#3aa8d0'; break;
+              default: color = '#88aa77';
+            }
+            const h = (t.char === 'M' ? 2.2 : t.char === 'O' ? 1.6 : t.char === 'H' ? 1.3 : t.char === 'D' ? 0.9 : t.char === 'F' ? 1.0 : t.char === 'J' ? 1.0 : t.char === 'L' ? 0.5 : 0.8) * 0.9 * hexSize;
+            return (
+              <group key={`t-${t.col}-${t.row}`} position={[x, h/2, z]}>
+                <mesh castShadow receiveShadow rotation={[0, Math.PI/6, 0]}>
+                  <cylinderGeometry args={[ap*0.98, ap*0.98, h, 6]} />
+                  <meshStandardMaterial color={color} />
+                </mesh>
+              </group>
+            );
+          })}
+        </group>
+      ))}
+    </group>
   );
 }
 
@@ -1156,6 +1685,9 @@ function MapCameraController({ bounds, gameMode, heroWorld, recenterSignal }: { 
   const dragging = React.useRef(false);
   const altDragging = React.useRef(false); // middle/right
   const lastMouse = React.useRef({ x: 0, y: 0 });
+  const dragStartMouse = React.useRef({ x: 0, y: 0 });
+  const dragActivated = React.useRef(false); // true once mouse/touch moved ≥4px from start
+  const lastTouchDist = React.useRef(0);
   const threshold = 24; // px edge region
   const baseSpeed = 17.5; // halved for slower edge pan
   // Keyboard panning disabled (camera fixed except mouse drag / edge)
@@ -1203,49 +1735,108 @@ function MapCameraController({ bounds, gameMode, heroWorld, recenterSignal }: { 
 
   // Event handlers
   React.useEffect(() => {
+    // Shared pan helper used by both mouse and touch drag handlers
+    function panCamera(dx: number, dy: number) {
+      if (!offsetRef.current) return;
+      const off = offsetRef.current;
+      const forward = new THREE.Vector3(-off.x, 0, -off.z).normalize();
+      const right = new THREE.Vector3().crossVectors(forward, new THREE.Vector3(0,1,0)).normalize();
+      const pixelScale = 0.01 * off.length() / 45;
+      const move = new THREE.Vector3();
+      move.addScaledVector(right, -dx * pixelScale);
+      move.addScaledVector(forward, dy * pixelScale);
+      targetRef.current.add(move);
+      clampTarget();
+    }
     function onMouseMove(e: MouseEvent) {
       if (!gameMode) return;
       if (dragging.current || altDragging.current) {
-        // Drag pan
+        // Require ≥4px movement from click start before panning starts (prevents
+        // accidental panning on normal clicks)
+        if (!dragActivated.current) {
+          const tdx = e.clientX - dragStartMouse.current.x;
+          const tdy = e.clientY - dragStartMouse.current.y;
+          if (Math.abs(tdx) < 4 && Math.abs(tdy) < 4) return;
+          dragActivated.current = true;
+          gl.domElement.style.cursor = 'grabbing';
+        }
         const dx = e.clientX - lastMouse.current.x;
         const dy = e.clientY - lastMouse.current.y;
         lastMouse.current = { x: e.clientX, y: e.clientY };
-        if (offsetRef.current) {
-          // Compute forward/right on XZ plane from offset
-          const off = offsetRef.current;
-          const forward = new THREE.Vector3(-off.x, 0, -off.z).normalize();
-          const right = new THREE.Vector3().crossVectors(forward, new THREE.Vector3(0,1,0)).normalize();
-          const pixelScale = 0.01 * off.length() / 45; // halved drag scaling
-          const move = new THREE.Vector3();
-          // Mouse drag: moving mouse right should move camera right (so world target left)
-          move.addScaledVector(right, -dx * pixelScale);
-          // Mouse moving down should move camera forward (so target backward)
-          move.addScaledVector(forward, dy * pixelScale);
-          targetRef.current.add(move);
-          clampTarget();
-        }
-        return; // ignore edge pan while dragging
+        panCamera(dx, dy);
       }
-      // Edge pan detection
-      const w = window.innerWidth;
-      const h = window.innerHeight;
-      let dxEdge = 0, dyEdge = 0;
-      if (e.clientX < threshold) dxEdge = - (1 - e.clientX / threshold);
-      else if (e.clientX > w - threshold) dxEdge = (1 - (w - e.clientX) / threshold);
-      if (e.clientY < threshold) dyEdge = 1 - e.clientY / threshold; // move forward (upwards on screen)
-      else if (e.clientY > h - threshold) dyEdge = - (1 - (h - e.clientY) / threshold);
-      edgeRef.current.dx = dxEdge;
-      edgeRef.current.dy = dyEdge;
     }
     function onMouseDown(e: MouseEvent) {
       if (!gameMode) return;
       if (e.button === 0) dragging.current = true; // left
       else if (e.button === 1 || e.button === 2) altDragging.current = true; // mid/right
       lastMouse.current = { x: e.clientX, y: e.clientY };
+      dragStartMouse.current = { x: e.clientX, y: e.clientY };
+      dragActivated.current = false;
+      gl.domElement.style.cursor = 'grab';
       // Suspend edge motion while dragging
       edgeRef.current.dx = 0; edgeRef.current.dy = 0;
     }
-    function onMouseUp(e: MouseEvent) { if (e.button === 0) dragging.current = false; if (e.button === 1 || e.button === 2) altDragging.current = false; }
+    function onMouseUp(e: MouseEvent) {
+      if (e.button === 0) dragging.current = false;
+      if (e.button === 1 || e.button === 2) altDragging.current = false;
+      if (!dragging.current && !altDragging.current) {
+        dragActivated.current = false;
+        gl.domElement.style.cursor = 'grab';
+      }
+    }
+    // ── Touch support (single-finger pan, two-finger pinch-zoom) ─────────────
+    function onTouchStart(e: TouchEvent) {
+      if (!gameMode) return;
+      if (e.touches.length === 1) {
+        dragging.current = true;
+        lastMouse.current = { x: e.touches[0].clientX, y: e.touches[0].clientY };
+        dragStartMouse.current = { x: e.touches[0].clientX, y: e.touches[0].clientY };
+        dragActivated.current = false;
+        lastTouchDist.current = 0;
+      } else if (e.touches.length === 2) {
+        dragging.current = false;
+        const dx = e.touches[0].clientX - e.touches[1].clientX;
+        const dy = e.touches[0].clientY - e.touches[1].clientY;
+        lastTouchDist.current = Math.sqrt(dx * dx + dy * dy);
+      }
+      edgeRef.current.dx = 0; edgeRef.current.dy = 0;
+    }
+    function onTouchMove(e: TouchEvent) {
+      if (!gameMode) return;
+      e.preventDefault();
+      if (e.touches.length === 1 && dragging.current) {
+        if (!dragActivated.current) {
+          const tdx = e.touches[0].clientX - dragStartMouse.current.x;
+          const tdy = e.touches[0].clientY - dragStartMouse.current.y;
+          if (Math.abs(tdx) < 4 && Math.abs(tdy) < 4) return;
+          dragActivated.current = true;
+        }
+        const dx = e.touches[0].clientX - lastMouse.current.x;
+        const dy = e.touches[0].clientY - lastMouse.current.y;
+        lastMouse.current = { x: e.touches[0].clientX, y: e.touches[0].clientY };
+        panCamera(dx, dy);
+      } else if (e.touches.length === 2 && offsetRef.current) {
+        const dx = e.touches[0].clientX - e.touches[1].clientX;
+        const dy = e.touches[0].clientY - e.touches[1].clientY;
+        const dist = Math.sqrt(dx * dx + dy * dy);
+        if (lastTouchDist.current > 0) {
+          const ratio = lastTouchDist.current / dist; // pinch in = zoom out
+          const off = offsetRef.current;
+          const len = off.length();
+          const maxZoom = currentMaxZoom();
+          const next = THREE.MathUtils.clamp(len * ratio, zoomConfig.min, maxZoom);
+          off.multiplyScalar(next / len);
+          camera.position.copy(targetRef.current).add(off);
+        }
+        lastTouchDist.current = dist;
+      }
+    }
+    function onTouchEnd() {
+      dragging.current = false;
+      dragActivated.current = false;
+      lastTouchDist.current = 0;
+    }
     function onLeave() { if (!dragging.current && !altDragging.current) { edgeRef.current.dx = 0; edgeRef.current.dy = 0; } }
     function onWheel(e: WheelEvent) {
       if (!gameMode) return;
@@ -1289,13 +1880,22 @@ function MapCameraController({ bounds, gameMode, heroWorld, recenterSignal }: { 
     window.addEventListener('mouseup', onMouseUp);
     window.addEventListener('mouseleave', onLeave);
     window.addEventListener('wheel', onWheel, { passive: false });
-  // Keyboard listeners removed (fixed camera)
+    // Touch events on canvas element (needs { passive: false } so touchmove can preventDefault)
+    gl.domElement.addEventListener('touchstart', onTouchStart, { passive: true });
+    gl.domElement.addEventListener('touchmove', onTouchMove, { passive: false });
+    gl.domElement.addEventListener('touchend', onTouchEnd);
+    // Default grab cursor
+    gl.domElement.style.cursor = 'grab';
     return () => {
       window.removeEventListener('mousemove', onMouseMove);
       window.removeEventListener('mousedown', onMouseDown);
       window.removeEventListener('mouseup', onMouseUp);
       window.removeEventListener('mouseleave', onLeave);
       window.removeEventListener('wheel', onWheel as any);
+      gl.domElement.removeEventListener('touchstart', onTouchStart);
+      gl.domElement.removeEventListener('touchmove', onTouchMove);
+      gl.domElement.removeEventListener('touchend', onTouchEnd);
+      gl.domElement.style.cursor = '';
     };
   }, [gameMode]);
 
@@ -1303,6 +1903,17 @@ function MapCameraController({ bounds, gameMode, heroWorld, recenterSignal }: { 
     const t = targetRef.current;
     t.x = Math.min(bounds.maxX, Math.max(bounds.minX, t.x));
     t.z = Math.min(bounds.maxZ, Math.max(bounds.minZ, t.z));
+    // Also keep the camera body (position = target + offset) within map bounds
+    if (offsetRef.current) {
+      const ox = offsetRef.current.x;
+      const oz = offsetRef.current.z;
+      const cx = t.x + ox;
+      const cz = t.z + oz;
+      if (cx < bounds.minX) t.x += bounds.minX - cx;
+      else if (cx > bounds.maxX) t.x -= cx - bounds.maxX;
+      if (cz < bounds.minZ) t.z += bounds.minZ - cz;
+      else if (cz > bounds.maxZ) t.z -= cz - bounds.maxZ;
+    }
   }
 
   useFrame((_, delta) => {
@@ -1310,21 +1921,8 @@ function MapCameraController({ bounds, gameMode, heroWorld, recenterSignal }: { 
     if (!offsetRef.current) return;
     const off = offsetRef.current;
     // Follow mode removed; camera target only changes via edge/drag inertia
-    // Edge panning
-    const { dx, dy } = edgeRef.current;
     let appliedAny = false;
-  if (!dragging.current && (Math.abs(dx) > 0.001 || Math.abs(dy) > 0.001)) {
-      const forward = new THREE.Vector3(-off.x, 0, -off.z).normalize();
-      const right = new THREE.Vector3().crossVectors(forward, new THREE.Vector3(0,1,0)).normalize();
-      const move = new THREE.Vector3();
-      move.addScaledVector(right, dx * baseSpeed * delta);
-      move.addScaledVector(forward, dy * baseSpeed * delta);
-      targetRef.current.add(move);
-      velocity.current.copy(move.clone().divideScalar(delta)); // record instantaneous velocity
-      appliedAny = true;
-      clampTarget();
-    }
-    // Keyboard panning
+    // Camera moves only via drag / scroll — no edge panning
     // Keyboard panning removed
     // Inertia: if no inputs & velocity remains, apply damping
   if (!appliedAny && !dragging.current && velocity.current.lengthSq() > 0.0001) {

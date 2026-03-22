@@ -3,11 +3,24 @@
  * Creates low-poly, stylized mountains with African-inspired aesthetics
  */
 
-// Ensure THREE is resolved from global/window context when used as an ES module
-const THREE = (typeof window !== 'undefined' && window.THREE) ? window.THREE : (typeof globalThis !== 'undefined' ? globalThis.THREE : undefined);
+// Lazily resolve THREE from window/globalThis on each property access.
+// A module-level capture would grab undefined at import time (before SceneBridge sets window.THREE).
+const THREE = new Proxy({}, {
+    get: (_, key) => {
+        const t = (typeof window !== 'undefined' ? window.THREE : undefined)
+               || (typeof globalThis !== 'undefined' ? globalThis.THREE : undefined);
+        return t ? t[key] : undefined;
+    }
+});
 
 class MountainSystem {
     constructor(scene, terrainConfig = {}) {
+        // Guard: ensure THREE is available
+        if (!THREE || !THREE.Group) {
+            console.error('❌ MountainSystem: THREE.Group is not available. Make sure THREE is loaded before MountainSystem.');
+            throw new Error('THREE is not properly initialized');
+        }
+        
         this.scene = scene;
         this.mountains = new Map();
         this.mountainGroup = new THREE.Group();

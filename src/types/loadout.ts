@@ -27,6 +27,8 @@ export interface CharacterLoadout {
   threeConfig?: {
     parts?: Record<string, string | undefined>;
     colors?: Record<string,string>;
+    // Flat summary mapping (e.g. head -> head_head_001, eyes -> eyes_eyes_002)
+    summary?: Record<string,string>;
   };
 }
 

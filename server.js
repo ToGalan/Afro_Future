@@ -24,7 +24,30 @@ const PROFILE_DIR = path.join(process.cwd(), 'profiles');
 try { dotenv.config({ path: path.join(process.cwd(), '.env.local') }); } catch {}
 
 const app = express();
-app.use(cors());
+// ---- CORS tightening ----
+// Allowed origins can be provided as comma-separated list in ALLOWED_ORIGINS, otherwise default to localhost dev origins.
+const DEFAULT_ORIGINS = [
+  'http://localhost:5173',
+  'http://127.0.0.1:5173',
+  'http://localhost:1002',
+  'http://127.0.0.1:1002'
+];
+const allowedOriginEnv = process.env.ALLOWED_ORIGINS || '';
+const ALLOWED_ORIGINS = allowedOriginEnv
+  .split(',')
+  .map(o => o.trim())
+  .filter(Boolean);
+const ORIGIN_ALLOW_LIST = ALLOWED_ORIGINS.length ? ALLOWED_ORIGINS : DEFAULT_ORIGINS;
+app.use(cors({
+  origin: function(origin, cb){
+    if(!origin) return cb(null, true); // non-browser or same-origin
+    if(ORIGIN_ALLOW_LIST.includes(origin)) return cb(null, true);
+    return cb(new Error('CORS_NOT_ALLOWED:'+origin));
+  },
+  credentials: true,
+  methods: ['GET','POST','PUT','DELETE','OPTIONS'],
+  allowedHeaders: ['Content-Type','Authorization']
+}));
 app.use(express.json({ limit: '10mb' }));
 app.use(express.raw({ type: 'application/octet-stream', limit: '50mb' }));
 
@@ -39,6 +62,28 @@ const INVITES_STORAGE = process.env.INVITES_STORAGE || 'fs'; // 'fs' | 'firestor
 const PROFILE_STORAGE = process.env.PROFILE_STORAGE || 'fs'; // 'fs' | 'firestore'
 const SHARDS_INVITE_REWARD = parseInt(process.env.SHARDS_INVITE_REWARD || '50',10);
 const SHARDS_ACCEPT_REWARD = parseInt(process.env.SHARDS_ACCEPT_REWARD || '25',10);
+// Map / Chunk config (deterministic generation placeholder)
+const WORLD_WIDTH = parseInt(process.env.WORLD_WIDTH || '240', 10); // tiles (cols)
+const WORLD_HEIGHT = parseInt(process.env.WORLD_HEIGHT || '240', 10); // tiles (rows)
+const CHUNK_SIZE = parseInt(process.env.CHUNK_SIZE || '32', 10);
+const WORLD_SEED = parseInt(process.env.WORLD_SEED || '42', 10);
+// Simple biome char set for stub (align loosely with existing chars)
+const BIOME_CHARS = ['P','F','J','H','D','O','M','L'];
+function mulberry32(a){return function(){let t=a+=0x6D2B79F5;t=Math.imul(t^(t>>>15),t|1);t^=t+Math.imul(t^(t>>>7),t|61);return ((t^(t>>>14))>>>0)/4294967296;}};
+function tileCharFor(col,row){ // deterministic pseudo noise based on seed+coords
+  const h = (WORLD_SEED ^ (col*73856093) ^ (row*19349663)) >>> 0;
+  const rand = mulberry32(h)();
+  // Weighted selection (plains more common)
+  if (rand < 0.55) return 'P';
+  if (rand < 0.66) return 'F';
+  if (rand < 0.72) return 'J';
+  if (rand < 0.81) return 'H';
+  if (rand < 0.88) return 'D';
+  if (rand < 0.93) return 'O';
+  if (rand < 0.97) return 'M';
+  return 'L';
+}
+const chunkCache = new Map(); // key -> { cx, cy, w, h, tiles, seed, version }
 let firestore = null;
 if (INVITES_STORAGE === 'firestore' || PROFILE_STORAGE === 'firestore' || process.env.ENABLE_PUSH === 'true') {
   try {
@@ -139,31 +184,72 @@ async function invitesAccept(code, userId){
   return { invite: updated, inviterProfile, acceptorProfile };
 }
 
-// Real Google ID token verification using google-auth-library (single source: VITE_GOOGLE_CLIENT_ID)
+// ---- Multi-strategy token verification ----
+// 1) Firebase ID Token via firebase-admin/auth
+// 2) Google OAuth ID token via google-auth-library (for direct Google One Tap if ever used)
+import { getAuth as getAdminAuth } from 'firebase-admin/auth';
 const GOOGLE_CLIENT_ID = process.env.VITE_GOOGLE_CLIENT_ID || '';
 const oauthClient = GOOGLE_CLIENT_ID ? new OAuth2Client(GOOGLE_CLIENT_ID) : null;
-async function verifyGoogleIdToken(idToken) {
-  if (!idToken || !oauthClient) return null;
+
+async function ensureAdminInitialized(){
+  if(!getApps().length){
+    const svcB64 = process.env.FIREBASE_SERVICE_ACCOUNT_B64;
+    try {
+      if (svcB64) {
+        const json = JSON.parse(Buffer.from(svcB64,'base64').toString('utf8'));
+        initAdminApp({ credential: cert(json) });
+      } else {
+        initAdminApp({ credential: applicationDefault() });
+      }
+      console.log('[admin] initialized for token verification');
+    } catch(e){
+      console.warn('[admin] init failed - Firebase token verification unavailable', e?.message||e);
+    }
+  }
+}
+
+async function verifyFirebaseIdToken(idToken){
+  try {
+    await ensureAdminInitialized();
+    const auth = getAdminAuth();
+    const decoded = await auth.verifyIdToken(idToken, true); // throws if invalid/expired
+    return decoded.uid || decoded.sub || null;
+  } catch(e){
+    if(process.env.DEBUG_AUTH === 'true') console.warn('[auth] firebase verify failed', e?.message||e);
+    return null;
+  }
+}
+
+async function verifyGoogleIdToken(idToken){
+  if(!idToken || !oauthClient) return null;
   try {
     const ticket = await oauthClient.verifyIdToken({ idToken, audience: GOOGLE_CLIENT_ID });
     const payload = ticket.getPayload();
     return payload?.sub || null;
-  } catch (e) {
-    console.warn('Token verify failed', e.message);
+  } catch(e){
+    if(process.env.DEBUG_AUTH === 'true') console.warn('[auth] google verify failed', e?.message||e);
     return null;
   }
+}
+
+async function verifyAnyIdToken(idToken){
+  if(!idToken) return null;
+  // Strategy order: Firebase first (covers anonymous + providers), then Google fallback
+  const firebaseUid = await verifyFirebaseIdToken(idToken);
+  if(firebaseUid) return firebaseUid;
+  return await verifyGoogleIdToken(idToken);
 }
 
 async function requireAuth(req, res, next) {
   try {
     const auth = req.headers.authorization || '';
     const idToken = auth.startsWith('Bearer ') ? auth.slice(7) : null;
-    const userId = await verifyGoogleIdToken(idToken);
+    const userId = await verifyAnyIdToken(idToken);
     if (!userId) return res.status(401).json({ error: 'unauthorized' });
     req.userId = userId;
     next();
   } catch (e) {
-    console.error('Auth error', e);
+    console.error('Auth error', e?.message||e);
     res.status(401).json({ error: 'auth_failed' });
   }
 }
@@ -720,6 +806,49 @@ app.get('/storefront/products', async (req, res) => {
   } catch (e) {
     console.error('[storefront-proxy] failed', { error: e?.message || e, ms: Date.now()-started });
     res.status(500).json({ error: 'storefront_proxy_failed' });
+  }
+});
+
+// -------- Map Chunk API (deterministic stub) --------
+app.get('/api/map/chunk', async (req, res) => {
+  try {
+    const cx = parseInt(String(req.query.cx||'0'),10);
+    const cy = parseInt(String(req.query.cy||'0'),10);
+    if (Number.isNaN(cx) || Number.isNaN(cy)) return res.status(400).json({ error:'bad_params' });
+    const maxCx = Math.ceil(WORLD_WIDTH / CHUNK_SIZE) - 1;
+    const maxCy = Math.ceil(WORLD_HEIGHT / CHUNK_SIZE) - 1;
+    if (cx < 0 || cy < 0 || cx > maxCx || cy > maxCy) return res.status(400).json({ error:'out_of_bounds', cx, cy, maxCx, maxCy });
+    const key = cx+':'+cy;
+    if (chunkCache.has(key)) {
+      return res.json(chunkCache.get(key));
+    }
+    const startCol = cx * CHUNK_SIZE;
+    const startRow = cy * CHUNK_SIZE;
+    const w = Math.min(CHUNK_SIZE, WORLD_WIDTH - startCol);
+    const h = Math.min(CHUNK_SIZE, WORLD_HEIGHT - startRow);
+    const tiles = [];
+    for (let r = 0; r < h; r++) {
+      for (let c = 0; c < w; c++) {
+        const col = startCol + c;
+        const row = startRow + r;
+        const char = tileCharFor(col, row);
+        // Resource stub (rare energy crystal on some plains) – placeholder
+        let resource = null;
+        if (char === 'P') {
+          const h = (WORLD_SEED ^ (col*92837111) ^ (row*689287499)) >>> 0;
+            if ((h & 0xFFF) === 0xABC) resource = 'energy';
+        }
+        tiles.push({ col, row, char, resource });
+      }
+    }
+    const payload = { cx, cy, w, h, tiles, seed: WORLD_SEED, version:1 };
+    chunkCache.set(key, payload);
+    // Basic cache control (world static for this stub)
+    res.setHeader('Cache-Control','public, max-age=300, immutable');
+    return res.json(payload);
+  } catch (e) {
+    console.error('[chunk] error', e?.message||e);
+    return res.status(500).json({ error:'chunk_internal' });
   }
 });
 

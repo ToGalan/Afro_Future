@@ -4,4 +4,4 @@
 
 html, body, #root { height: 100%; }
 html, body { margin: 0; padding: 0; overflow: hidden; }
-body { @apply bg-[#06080c] text-gray-100 antialiased select-none; }
+body { @apply bg-white text-gray-100 antialiased select-none; }

@@ -1,5 +1,5 @@
 import { initializeApp, getApps, FirebaseApp } from 'firebase/app';
-import { getAuth, signInAnonymously, onAuthStateChanged, User, connectAuthEmulator } from 'firebase/auth';
+import { getAuth, signInAnonymously, onAuthStateChanged, User, GoogleAuthProvider, signInWithCredential, connectAuthEmulator } from 'firebase/auth';
 import { getFirestore, connectFirestoreEmulator } from 'firebase/firestore';
 import { getDatabase, ref as rtdbRef, onDisconnect, update as rtdbUpdate, set as rtdbSet, remove as rtdbRemove, Database, connectDatabaseEmulator } from 'firebase/database';
 
@@ -87,8 +87,34 @@ export const rtdbHelpers = {
   remove: rtdbRemove,
 };
 
+// Sign Firebase in with a Google id_token obtained from GIS / Google One Tap.
+// Call this immediately after receiving the credential so auth.currentUser is set,
+// which prevents ensureAnonAuth from attempting (disabled) anonymous sign-in.
+export async function signInWithGoogleCredential(idToken: string): Promise<void> {
+  try {
+    const credential = GoogleAuthProvider.credential(idToken);
+    await signInWithCredential(auth, credential);
+  } catch (e: any) {
+    // eslint-disable-next-line no-console
+    console.warn('[firebase] signInWithCredential failed:', e?.code || e?.message);
+  }
+}
+
 export async function ensureAnonAuth(): Promise<User> {
   if (auth.currentUser) return auth.currentUser;
+
+  // If a Google token is present, signInWithGoogleCredential() will resolve auth.
+  // Wait indefinitely — never fall through to signInAnonymously (which would 400
+  // on projects where anonymous auth is disabled).
+  const hasGoogleToken = !!localStorage.getItem('afrofuture.idToken');
+  if (hasGoogleToken) {
+    return new Promise<User>((resolve, reject) => {
+      const unsub = onAuthStateChanged(auth, (u) => {
+        if (u) { unsub(); resolve(u); }
+      }, reject);
+    });
+  }
+
   try {
     await signInAnonymously(auth);
   } catch (e: any) {
