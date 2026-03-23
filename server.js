@@ -16,7 +16,7 @@ import { getFirestore } from 'firebase-admin/firestore';
 const gzip = promisify(zlib.gzip);
 
 // Config precedence: explicit process.env overrides .env file.
-const PORT = process.env.PORT || 1002;
+const PORT = process.env.PORT || 1003;
 const SNAP_DIR = path.join(process.cwd(), 'snapshots');
 const PROFILE_DIR = path.join(process.cwd(), 'profiles');
 

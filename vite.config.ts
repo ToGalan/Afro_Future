@@ -7,6 +7,15 @@ export default defineConfig({
     port: 1002,
     strictPort: true,
     host: true,
+    proxy: {
+      // Forward API calls to the backend server (port 1003)
+      '/profile': 'http://localhost:1003',
+      '/snapshots': 'http://localhost:1003',
+      '/invites': 'http://localhost:1003',
+      '/push': 'http://localhost:1003',
+      '/admin': 'http://localhost:1003',
+      '/ws': { target: 'ws://localhost:1003', ws: true },
+    },
   },
   preview: {
     port: 1002,

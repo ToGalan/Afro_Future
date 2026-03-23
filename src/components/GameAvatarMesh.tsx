@@ -2,8 +2,9 @@ import React, { useEffect, useRef, useMemo } from 'react';
 import { useFrame } from '@react-three/fiber';
 import { useGLTF } from '@react-three/drei';
 import * as THREE from 'three';
-import { AvatarPartsLoader, BaseBody } from './AvatarPartsLoader';
+import { AvatarPartsLoader } from './AvatarPartsLoader';
 import type { AvatarColors } from '../services/avatarConfig';
+import { IsometricCharacter, type CharacterGender } from './IsometricCharacter';
 
 export type { AvatarColors };
 
@@ -49,15 +50,19 @@ function AvatarVisibilityDebugger(_props: { containerRef: React.RefObject<THREE.
  * (including GLB primitives with baked transforms) receive fresh world matrices.
  */
 export function GameAvatar({
-  heroModelUrl, heroParts, heroColors, hexSize,
+  heroModelUrl, heroParts, heroColors, hexSize, gender,
 }: {
   heroModelUrl?: string;
   heroParts: Record<string, string | undefined>;
   heroColors: AvatarColors;
   hexSize: number;
+  /** Character gender — selects male/female IsometricCharacter variant. */
+  gender?: CharacterGender;
 }) {
   const avatarGroupRef = React.useRef<THREE.Group>(null);
-  const ENABLE_FOOT_ANCHOR = true;
+  // Foot anchor only needed for external GLB models with unknown origins.
+  // IsometricCharacter positions its own feet at y=0 so the anchor is skipped.
+  const ENABLE_FOOT_ANCHOR = !!heroModelUrl;
 
   // Force matrix cascade every frame to ensure GLB primitives with baked transforms
   // properly inherit parent world matrices, especially when the parent group moves.
@@ -75,19 +80,13 @@ export function GameAvatar({
 
   return (
     <group frustumCulled={false}>
-      {/* Pink wireframe box — visual confirmation that the container tracks the hero */}
-      <mesh name="debug-avatar-box" frustumCulled={false} renderOrder={100}>
-        <boxGeometry args={[hexSize * 0.6, hexSize * 1.2, hexSize * 0.6]} />
-        <meshBasicMaterial wireframe color="#ff00ff" transparent opacity={0.8} depthWrite={false} depthTest={false} />
-      </mesh>
-
       {heroModelUrl ? (
         <group ref={avatarGroupRef} name="glb-avatar" position={[0, 0, 0]} frustumCulled={false}>
-          <GLBAvatarMesh url={heroModelUrl} parts={heroParts} colors={heroColors} />
+          <GLBAvatarMesh url={heroModelUrl} parts={heroParts} colors={heroColors} gender={gender} hexSize={hexSize} />
         </group>
       ) : (
         <group ref={avatarGroupRef} name="assembled-avatar" position={[0, 0, 0]} frustumCulled={false}>
-          <AssembledAvatarMesh parts={heroParts} colors={heroColors} />
+          <AssembledAvatarMesh parts={heroParts} colors={heroColors} gender={gender} hexSize={hexSize} />
         </group>
       )}
 
@@ -106,13 +105,25 @@ export function GameAvatar({
  * <Suspense> only catches thrown Promises — an Error propagates silently upward through
  * the Canvas, killing the entire avatar subtree. Static bind-pose is correct for game mode.
  */
-function AssembledAvatarMesh({ parts, colors }: { parts: Record<string, string | undefined>; colors: AvatarColors }) {
+function AssembledAvatarMesh({
+  parts,
+  colors,
+  gender,
+  hexSize,
+}: {
+  parts: Record<string, string | undefined>;
+  colors: AvatarColors;
+  gender?: CharacterGender;
+  hexSize?: number;
+}) {
   const rootRef = React.useRef<THREE.Group>(null);
+  const hasCustomParts = Object.values(parts).some(p => p);
+
   // Apply color tinting to materials after parts mount — mirrors applyStoreTint in AvatarScene.
   useEffect(() => {
+    if (!hasCustomParts) return; // IsometricCharacter applies its own colors
     const root = rootRef.current;
     if (!root) return;
-    console.log('[AssembledAvatarMesh] Tinting, parts:', Object.keys(parts).length);
     root.traverse((obj: any) => {
       const mats: any = (obj as any).material;
       if (!mats) return;
@@ -122,24 +133,33 @@ function AssembledAvatarMesh({ parts, colors }: { parts: Record<string, string |
         if (n.includes('skin')) mat.color.set(colors.skin);
         else if (n.includes('primary') || n.includes('armor') || n.includes('fabric')) mat.color.set(colors.primary);
         else if (n.includes('secondary') || n.includes('trim') || n.includes('detail') || n.includes('accent')) mat.color.set(colors.secondary);
-        // Ensure materials render on top
         mat.depthTest = true;
         mat.depthWrite = true;
         mat.renderOrder = 100;
       };
       if (Array.isArray(mats)) mats.forEach(tint); else tint(mats);
     });
-    console.log('[AssembledAvatarMesh] Tinting complete. Meshes in group:', root.children.length);
-  }, [parts, colors]);
+  }, [parts, colors, hasCustomParts]);
+
+  const procFallback = (
+    <IsometricCharacter gender={gender ?? 'FEMALE'} colors={colors} hexSize={hexSize ?? 3} />
+  );
+
+  if (!hasCustomParts) {
+    // No custom parts loaded — procedural character with faction colours.
+    return procFallback;
+  }
+
+  // Custom parts exist. Wrap in Suspense so the procedural character shows while
+  // GLB files load, and in an error boundary so 404s never leave the player invisible.
   return (
-    <group ref={rootRef} position={[0, 0, 0]} scale={0.9} rotation={[0, Math.PI, 0]}>
-      {/* Only render parts if provided; otherwise use full BaseBody */}
-      {Object.values(parts).some(p => p) ? (
-        <AvatarPartsLoader parts={parts} />
-      ) : (
-        <BaseBody />
-      )}
-    </group>
+    <GLBErrorBoundary fallback={procFallback}>
+      <React.Suspense fallback={procFallback}>
+        <group ref={rootRef} position={[0, 0, 0]} scale={0.9} rotation={[0, Math.PI, 0]}>
+          <AvatarPartsLoader parts={parts} />
+        </group>
+      </React.Suspense>
+    </GLBErrorBoundary>
   );
 }
 
@@ -162,7 +182,7 @@ class GLBErrorBoundary extends React.Component<
  * Suspense boundary never receives it and the model never loads.
  * GLBErrorBoundary above handles actual JS errors (bad URL, decode failure).
  */
-function GLBAvatarInner({ url, parts, colors }: { url: string; parts: Record<string, string | undefined>; colors: AvatarColors }) {
+function GLBAvatarInner({ url, parts, colors, gender, hexSize }: { url: string; parts: Record<string, string | undefined>; colors: AvatarColors; gender?: CharacterGender; hexSize?: number }) {
   const { scene } = useGLTF(url); // unconditional — do NOT wrap in try/catch
   const inst = useMemo(() => {
     if (!scene) return null;
@@ -229,8 +249,7 @@ function GLBAvatarInner({ url, parts, colors }: { url: string; parts: Record<str
     });
   }, [inst]);
   if (!inst) {
-    console.log('[GLBAvatarInner] No inst, using AssembledAvatarMesh fallback');
-    return <AssembledAvatarMesh parts={parts} colors={colors} />;
+    return <AssembledAvatarMesh parts={parts} colors={colors} gender={gender} hexSize={hexSize} />;
   }
   // Wrap in a group so R3F owns the scene-graph parenting; primitive only carries mesh data
   return (
@@ -244,10 +263,10 @@ function GLBAvatarInner({ url, parts, colors }: { url: string; parts: Record<str
  * Full-GLB avatar with per-material colour tinting.
  * MUST be module-level for the same hook-stability reason as AssembledAvatarMesh.
  */
-function GLBAvatarMesh({ url, parts, colors }: { url: string; parts: Record<string, string | undefined>; colors: AvatarColors }) {
+function GLBAvatarMesh({ url, parts, colors, gender, hexSize }: { url: string; parts: Record<string, string | undefined>; colors: AvatarColors; gender?: CharacterGender; hexSize?: number }) {
   return (
-    <GLBErrorBoundary fallback={<AssembledAvatarMesh parts={parts} colors={colors} />}>
-      <GLBAvatarInner url={url} parts={parts} colors={colors} />
+    <GLBErrorBoundary fallback={<AssembledAvatarMesh parts={parts} colors={colors} gender={gender} hexSize={hexSize} />}>
+      <GLBAvatarInner url={url} parts={parts} colors={colors} gender={gender} hexSize={hexSize} />
     </GLBErrorBoundary>
   );
 }

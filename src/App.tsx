@@ -21,6 +21,7 @@ import GameHUD from './components/gameHUD';
 import type { MinimapData } from './components/gameHUD';
 import PetPanel from './components/PetPanel';
 import { useAutoSyncSkills } from './hooks/useAutoSyncSkills';
+import { useSkillsProgress } from './hooks/useSkillsProgress';
 import { collectAndRegisterPush } from './services/messaging';
 
 // Lazy-load heavy view components (only loaded when accessed)
@@ -559,10 +560,13 @@ export default function App() {
 
   return (
     mainView === 'mission' ? (
-      <MissionScreen 
-        onExit={() => setMainView('dashboard')} 
-        onOpenSkillTree={() => setMainView('skills')}
-      />
+      <MissionErrorBoundary onExit={() => setMainView('dashboard')}>
+        <MissionScreen 
+          onExit={() => setMainView('dashboard')} 
+          onOpenSkillTree={() => setMainView('skills')}
+          activeLoadout={activeLoadout}
+        />
+      </MissionErrorBoundary>
     ) : (
       <GameViewport mode="fit">
         <MainMenu
@@ -794,55 +798,81 @@ function SkillsModal({ loadout, onClose }: { loadout: CharacterLoadout; onClose:
   );
 }
 
-function MissionScreen({ onExit, onOpenSkillTree }: { onExit: () => void; onOpenSkillTree?: () => void }){
+// ErrorBoundary to prevent blank screen if SoloMissionMap3D or its Canvas throws
+class MissionErrorBoundary extends React.Component<
+  { onExit: () => void; children: React.ReactNode },
+  { hasError: boolean; message: string }
+> {
+  constructor(props: { onExit: () => void; children: React.ReactNode }) {
+    super(props);
+    this.state = { hasError: false, message: '' };
+  }
+  static getDerivedStateFromError(err: unknown) {
+    const message = err instanceof Error
+      ? err.message
+      : typeof err === 'string'
+      ? err
+      : 'Unknown render error';
+    return { hasError: true, message };
+  }
+  componentDidCatch(err: unknown, info: React.ErrorInfo) {
+    console.error('[MissionScreen] Fatal render error:', err, info);
+  }
+  render() {
+    if (this.state.hasError) {
+      return (
+        <div className="fixed inset-0 bg-[#0b0e13] text-gray-100 flex flex-col items-center justify-center gap-4">
+          <p className="text-red-400 text-lg font-semibold">3D scene failed to load</p>
+          <p className="text-gray-500 text-sm max-w-sm text-center">{this.state.message}</p>
+          <button
+            className="mt-4 px-6 py-2 bg-[#00A37A] rounded text-white"
+            onClick={this.props.onExit}
+          >
+            Return to Menu
+          </button>
+        </div>
+      );
+    }
+    return this.props.children;
+  }
+}
+
+function MissionScreen({ onExit, onOpenSkillTree, activeLoadout }: { onExit: () => void; onOpenSkillTree?: () => void; activeLoadout?: CharacterLoadout | null }){
   // Access active loadout & skill state for HUD
+  // Prefer the live prop from App (stays in sync with configurator changes),
+  // fall back to localStorage only when the prop is not available.
   const activeLoadoutRaw = React.useMemo(() => {
+    if (activeLoadout) return activeLoadout;
     try { const raw = localStorage.getItem('afrofuture.activeLoadout'); if(raw) return JSON.parse(raw); } catch {}
     return null;
-  }, []);
-  const skillState = useSkillStore();
-  // Derive hero vitals from skill stats (mirrors LeftPlayerPanel logic)
-  const level = skillState.level;
-  const defense = skillState.defense;
-  const utility = skillState.utility;
-  const baseHP = 100; const hpPerLevel = 12; const hpPerDefense = 10;
-  const baseEP = 60; const epPerLevel = 6; const epPerUtility = 6;
-  const HP_MAX = baseHP + (level-1)*hpPerLevel + defense*hpPerDefense;
-  const EP_MAX = baseEP + (level-1)*epPerLevel + utility*epPerUtility;
-  // Simple XP progress placeholder (next level curve rough)
-  const XP_MAX = 100 + (level-1)*40;
-  const XP_CUR = Math.min(XP_MAX-1, (level-1)*40 + 10);
-  // Map unlocked skills (excluding root) into ability slots
-  // Local runtime ability state (cooldowns & disabled flags)
-  const [runtimeAbilities, setRuntimeAbilities] = React.useState<{[id:string]: { cooldown: number; max: number } }>({});
-  const BASE_COOLDOWN = 8; // seconds placeholder
-  const AB_KEYS = ['q', 'w', 'e', 'r'] as const;
+  }, [activeLoadout]);
 
-  // --- Derive ability arrays from the loadout slots ---
-  // Offensive abilities (Q/W/E/R) from abilityLoadout.offensive
-  const abilities = React.useMemo(() => {
-    return skillState.abilityLoadout.offensive.map((id, i) => {
-      if (!id) return null;
-      const rt = runtimeAbilities[id];
-      return { id, icon: skillIconFn(id), cooldown: rt?.cooldown || 0, maxCooldown: rt?.max || BASE_COOLDOWN, disabled: !!rt?.cooldown, key: AB_KEYS[i] };
-    }).filter(Boolean) as { id: string; icon: string; cooldown: number; maxCooldown: number; disabled: boolean; key: string }[];
-  }, [skillState.abilityLoadout.offensive, runtimeAbilities]);
+  // Playtime tracking
+  const { profile, saveProgress } = usePlayerProfile();
 
-  // Defensive abilities (Z/X/C/V) from abilityLoadout.defensive
-  const defensiveAbilities = React.useMemo(() => {
-    return skillState.abilityLoadout.defensive.map((id, i) => {
-      if (!id) return null;
-      const rt = runtimeAbilities[id];
-      const defKeys = ['z', 'x', 'c', 'v'] as const;
-      return { id, icon: skillIconFn(id), cooldown: rt?.cooldown || 0, maxCooldown: rt?.max || BASE_COOLDOWN, disabled: !!rt?.cooldown, key: defKeys[i] };
-    }).filter(Boolean) as { id: string; icon: string; cooldown: number; maxCooldown: number; disabled: boolean; key: string }[];
-  }, [skillState.abilityLoadout.defensive, runtimeAbilities]);
+  // ── Skills progress: vitals, cooldowns, derived abilities, persistence ──
+  const idToken = localStorage.getItem('afrofuture.idToken');
+  const skillsProgress = useSkillsProgress({
+    uid: profile?.uid ?? '',
+    email: profile?.email,
+    displayName: profile?.displayName,
+    idToken,
+  });
+  const {
+    skillState,
+    heroVitals, setHeroVitals, hpMaxRef, epMaxRef,
+    HP_MAX, EP_MAX, XP_MAX, XP_CUR,
+    abilities, defensiveAbilities, onActivateAbility,
+  } = skillsProgress;
+
+  const available = availablePoints(skillState);
+  const heroBuffs = skillState.traitTags;
+
   // Resources: shards (if present in profile) + skill tokens remaining
   const [shards, setShards] = React.useState<number>(0);
   React.useEffect(()=>{
     (async()=>{
       try {
-        const idToken = localStorage.getItem('afrofuture.idToken');
         if(!idToken) return;
         const r = await fetch('/profile', { headers: { 'Authorization':'Bearer '+idToken } });
         if(r.ok){ 
@@ -855,18 +885,15 @@ function MissionScreen({ onExit, onOpenSkillTree }: { onExit: () => void; onOpen
         console.log('[shards] Server unavailable');
       }
     })();
-  },[]);
-  const available = availablePoints(skillState);
+  },[idToken]);
   const resources = React.useMemo(()=>[
     { id:'shards', label:'Shards', value: shards, icon:'◈' },
     { id:'tokens', label:'Skill Tokens', value: available, icon:'⬢' },
   ],[shards, available]);
-  const heroBuffs = skillState.traitTags;
-  const loadout = activeLoadoutRaw || { name:'Hero', faction:'PAA', level, portraitUrl: undefined, pet:{ type:'CYBER_DOG', level:1, role:'SCOUT' } } as any;
+
+  const loadout = activeLoadoutRaw || { name:'Hero', faction:'PAA', level: skillState.level, portraitUrl: undefined, pet:{ type:'CYBER_DOG', level:1, role:'SCOUT' } } as any;
   const pet = loadout.pet ? { name: loadout.pet.type === 'CYBER_DOG' ? 'Cyber-Dog' : 'Cyber-Cat', level: loadout.pet.level || 1, hp: { current: 50, max: 50 }, ep: { current: 30, max: 30 }, icon: '🐾', portraitUrl: PetIcon[loadout.pet.type] } : undefined;
-  
-  // Playtime tracking
-  const { profile, saveProgress } = usePlayerProfile();
+
   const [sessionStartTime] = React.useState(() => Date.now());
   const [elapsedSeconds, setElapsedSeconds] = React.useState(0);
   
@@ -906,66 +933,6 @@ function MissionScreen({ onExit, onOpenSkillTree }: { onExit: () => void; onOpen
     const s = seconds % 60;
     return `${h.toString().padStart(2, '0')}:${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}`;
   };
-  
-  // Runtime HP/EP regeneration & cooldown ticking loop
-  const [heroVitals, setHeroVitals] = React.useState({ hp: HP_MAX, ep: EP_MAX });
-  // Clamp vitals when skill-derived max changes (e.g. level up). Bails out when unchanged
-  // so it doesn't trigger a re-render unnecessarily.
-  React.useEffect(()=>{
-    setHeroVitals(v=>{
-      const hp = Math.min(HP_MAX, v.hp);
-      const ep = Math.min(EP_MAX, v.ep);
-      return (hp === v.hp && ep === v.ep) ? v : { hp, ep };
-    });
-  },[HP_MAX, EP_MAX]);
-  // Keep refs so the rAF loop always reads the latest cap without restarting.
-  const hpMaxRef = React.useRef(HP_MAX);
-  hpMaxRef.current = HP_MAX;
-  const epMaxRef = React.useRef(EP_MAX);
-  epMaxRef.current = EP_MAX;
-  React.useEffect(()=>{
-    let raf:number; let last = performance.now();
-    function frame(ts:number){
-      const dt = (ts - last)/1000; last = ts;
-      // Regen rates — caps read from refs so loop never needs to restart on skill changes.
-      setHeroVitals(v=>{
-        const hp = Math.min(hpMaxRef.current, v.hp + 2*dt);
-        const ep = Math.min(epMaxRef.current, v.ep + 4*dt);
-        return (hp === v.hp && ep === v.ep) ? v : { hp, ep };
-      });
-      // Tick cooldowns
-      setRuntimeAbilities(prev => {
-        let changed = false; const next: typeof prev = {};
-        for(const k in prev){
-          const c = prev[k];
-            if(c.cooldown > 0){
-              const nc = Math.max(0, c.cooldown - dt);
-              if(nc!==c.cooldown) changed = true;
-              next[k] = { cooldown: nc, max: c.max };
-            } else {
-              next[k] = c;
-            }
-        }
-        return changed ? next : prev;
-      });
-      raf = requestAnimationFrame(frame);
-    }
-    raf = requestAnimationFrame(frame);
-    return ()=> cancelAnimationFrame(raf);
-  // Empty deps: loop runs once for the lifetime of MissionScreen. Caps are always
-  // current via hpMaxRef/epMaxRef, so there is no need to restart the loop.
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  },[]);
-  // Ability activation: consume EP & start cooldown if available
-  const onActivateAbility = React.useCallback((id:string)=>{
-    setRuntimeAbilities(prev => {
-      const cur = prev[id];
-      if(cur && cur.cooldown > 0) return prev; // still cooling
-      return { ...prev, [id]: { cooldown: (cur?.max)||BASE_COOLDOWN, max: (cur?.max)||BASE_COOLDOWN } };
-    });
-    // EP cost heuristic
-    setHeroVitals(v=> ({ ...v, ep: Math.max(0, v.ep - 10) }));
-  },[]);
 
   const [minimapData, setMinimapData] = React.useState<MinimapData | undefined>(undefined);
   const onMapUpdate = React.useCallback((data: MinimapData) => setMinimapData(data), []);
@@ -990,7 +957,7 @@ function MissionScreen({ onExit, onOpenSkillTree }: { onExit: () => void; onOpen
             hp: { current: Math.floor(heroVitals.hp), max: HP_MAX },
             ep: { current: Math.floor(heroVitals.ep), max: EP_MAX },
             xp: { current: XP_CUR, max: XP_MAX },
-            level,
+            level: skillState.level,
             name: loadout.name,
             portraitUrl: loadout.portraitUrl,
             buffs: heroBuffs,
@@ -1011,6 +978,9 @@ function MissionScreen({ onExit, onOpenSkillTree }: { onExit: () => void; onOpen
             faction: loadout.faction 
           } : undefined}
           onOpenSkillTree={onOpenSkillTree}
+          onHealHP={(amount) => setHeroVitals(v => ({ ...v, hp: Math.min(hpMaxRef.current, v.hp + amount) }))}
+          onRestoreEP={(amount) => setHeroVitals(v => ({ ...v, ep: Math.min(epMaxRef.current, v.ep + amount) }))}
+          heroAvatar={activeLoadout}
         />
         <PetPanel />
       </div>

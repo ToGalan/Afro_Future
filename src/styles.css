@@ -14,3 +14,43 @@ body { @apply bg-white text-gray-100 antialiased select-none; }
 .scrollbar-hide::-webkit-scrollbar {
   display: none;  /* Chrome, Safari, Opera */
 }
+
+/* ─── HUD design tokens ─────────────────────────────────────────────────────
+   All responsive sizing for the bottom HUD bar in one place.
+   Change the clamp values here to adjust across the entire HUD at once.
+──────────────────────────────────────────────────────────────────────────── */
+
+/* HUD bar total height */
+.hud-bar {
+  height: clamp(8rem, 20vh, 15.5rem);
+}
+
+/* Ability AND inventory slots — identical size so they match visually */
+.hud-slot {
+  width:  clamp(2.275rem, 5.85vh, 4.7rem);
+  height: clamp(2.275rem, 5.85vh, 4.7rem);
+  flex-shrink: 0;
+}
+
+/* Portrait (hero / pet) — fills available HUD height minus small margin */
+.hud-portrait {
+  height: calc(100% - 0.25rem);
+  aspect-ratio: 1;
+  flex-shrink: 0;
+}
+
+/* HP/EP bar height */
+.hud-bar-row {
+  height: clamp(0.5rem, 1.5vh, 1.125rem);
+}
+
+/* Character name font size */
+.hud-name {
+  font-size: clamp(0.6rem, 1.4vh, 0.875rem);
+}
+
+/* Action buttons (⚔️ / 🛡️) */
+.hud-action-btn {
+  width:  clamp(1.6rem, 4vh, 3rem);
+  height: clamp(1.6rem, 4vh, 3rem);
+}

@@ -1,11 +1,15 @@
 import React, { useMemo, useState, useEffect, Suspense, useRef } from 'react';
 import { usePlayerProfile } from '../hooks/usePlayerProfile';
 import { usePlayerSession } from '../hooks/usePlayerSession';
+import { usePetXP } from '../hooks/usePetXP';
+import { useCollectibles } from '../hooks/useCollectibles';
 import type { Mesh } from 'three';
 import * as THREE from 'three';
 import { Canvas, useThree, useFrame } from '@react-three/fiber';
 import { OrbitControls, Text, Sky, ContactShadows } from '@react-three/drei';
 import { GameAvatar, type AvatarColors } from './GameAvatarMesh';
+import { IsometricCharacter } from './IsometricCharacter';
+import type { Archetype, CharacterLoadout } from '../types/loadout';
 import { GameHUD, type MinimapData, type Ability, type Item } from './gameHUD';
 import { SceneSetupVerifier, AvatarRenderingVerifier, PerformanceChecker } from './SceneSetupVerifier';
 // Side-effect imports: reference systems attach to window.* and expect global THREE
@@ -427,7 +431,7 @@ function RockScatter({ size, seed = 1, count = 3 }: { size: number; seed?: numbe
   }, [rng, count, size]);
   return (
     <group>
-      {rocks.map((r,i)=> (
+      {rocks.map((r, i)=> (
         <mesh key={i} position={[r.x, 0.4*r.s, r.z]} castShadow>
           <icosahedronGeometry args={[size * 0.18 * r.s, 0]} />
           <meshStandardMaterial color="#bfbcb6" roughness={0.9} metalness={0.05} />
@@ -648,6 +652,7 @@ function CollectibleFlower({ size }: { size: number }) {
           metalness={0}
         />
       </mesh>
+      {/* Petals and stem - rest of component */}
       {/* Stem */}
       <mesh position={[0, S * 0.18, 0]} castShadow>
         <cylinderGeometry args={[S * 0.035, S * 0.04, S * 0.4, 4]} />
@@ -667,7 +672,7 @@ function CollectibleFlower({ size }: { size: number }) {
         const rot = (i / 6) * Math.PI * 2;
         return (
           <mesh
-            key={i}
+            key={`petal-${i}`}
             position={[
               Math.cos(rot) * S * 0.12,
               S * 0.42,
@@ -697,6 +702,69 @@ function CollectibleFlower({ size }: { size: number }) {
           emissiveIntensity={0.8}
         />
       </mesh>
+    </group>
+  );
+}
+
+// Collectible mushroom for forest tiles - restores EP
+function CollectibleMushroom({ size }: { size: number }) {
+  const S = size * 0.7;
+  const glowRef = React.useRef<THREE.Mesh>(null);
+  useFrame(({ clock }) => {
+    const t = clock.getElapsedTime();
+    if (glowRef.current) {
+      (glowRef.current.material as any).emissiveIntensity = 0.8 + 0.5 * Math.sin(t * 2.5);
+    }
+  });
+
+  return (
+    <group>
+      {/* Pulsing blue glow halo at ground level */}
+      <mesh ref={glowRef} position={[0, S * 0.28, 0]} renderOrder={24}>
+        <sphereGeometry args={[S * 0.45, 10, 10]} />
+        <meshStandardMaterial
+          color="#00aaff"
+          emissive="#00aaff"
+          emissiveIntensity={1.0}
+          transparent
+          opacity={0.30}
+          depthWrite={false}
+          roughness={1}
+          metalness={0}
+        />
+      </mesh>
+      {/* Stem - sits on tile surface, center at half stem height */}
+      <mesh position={[0, S * 0.18, 0]} renderOrder={25}>
+        <cylinderGeometry args={[S * 0.06, S * 0.08, S * 0.36, 7]} />
+        <meshStandardMaterial
+          color="#aaddff"
+          emissive="#66bbff"
+          emissiveIntensity={0.6}
+          roughness={0.4}
+          metalness={0.1}
+        />
+      </mesh>
+      {/* Cap - vivid blue dome sitting on top of stem */}
+      <mesh position={[0, S * 0.44, 0]} renderOrder={25}>
+        <sphereGeometry args={[S * 0.24, 10, 7, 0, Math.PI * 2, 0, Math.PI * 0.6]} />
+        <meshStandardMaterial
+          color="#0066ff"
+          emissive="#0044cc"
+          emissiveIntensity={0.8}
+          roughness={0.3}
+          metalness={0.2}
+        />
+      </mesh>
+      {/* White spots on cap */}
+      {Array.from({ length: 5 }).map((_, i) => {
+        const angle = (i / 5) * Math.PI * 2;
+        return (
+          <mesh key={`spot-${i}`} position={[Math.cos(angle) * S * 0.12, S * 0.48, Math.sin(angle) * S * 0.12]} renderOrder={26}>
+            <sphereGeometry args={[S * 0.04, 5, 4]} />
+            <meshStandardMaterial color="#ffffff" emissive="#aaddff" emissiveIntensity={1.0} roughness={0.2} metalness={0} />
+          </mesh>
+        );
+      })}
     </group>
   );
 }
@@ -1127,6 +1195,9 @@ export default function SoloMissionMap3D({
   petInventory,
   playerProfile,
   onOpenSkillTree,
+  onHealHP,
+  onRestoreEP,
+  heroAvatar,
 }: { 
   onExit?: () => void; 
   onMapUpdate?: (data: MinimapData) => void; 
@@ -1144,6 +1215,11 @@ export default function SoloMissionMap3D({
   petInventory?: Array<{ id: string; type: string; quantity: number; value?: number }>;
   playerProfile?: { uid: string; displayName?: string; email?: string; faction?: string };
   onOpenSkillTree?: () => void;
+  onHealHP?: (amount: number) => void;
+  onRestoreEP?: (amount: number) => void;
+  /** Active loadout passed from App — used as the source of truth for avatar data
+   *  so changes in the configurator reflect immediately without a page reload. */
+  heroAvatar?: CharacterLoadout | null;
 } = {}) {
   const useChunks = import.meta.env.VITE_USE_CHUNKS === 'true';
   // Adjusted map size to requested 240 x 240 tiles (square) (legacy full-map path only)
@@ -1240,96 +1316,73 @@ export default function SoloMissionMap3D({
   // Demo actors (player + pet) with different vision ranges
   const [hero, setHero] = useState<Actor>({ id: 'hero', pos: useChunks ? chunkCenterAxial : spawnPos, vision: 8, kind: 'actor' });
   const [collisionMessage, setCollisionMessage] = useState<{ type: 'water' | 'mountain'; show: boolean }>({ type: 'water', show: false });
-  const [pet, setPet] = useState<Actor>({ id: 'pet', pos: { q: (useChunks?chunkCenterAxial.q:centerAxial.q) + 4, r: (useChunks?chunkCenterAxial.r:centerAxial.r) - 1 }, vision: 3, kind: 'pet', xp: 0 });
-  
-  // Collectible flowers on the map (for pet to collect and restore HP)
-  const [collectibleFlowers, setCollectibleFlowers] = useState<Set<string>>(new Set());
+  const [pet, setPet] = useState<Actor>({ id: 'pet', pos: { q: (useChunks?chunkCenterAxial.q:centerAxial.q) + 4, r: (useChunks?chunkCenterAxial.r:centerAxial.r) - 1 }, vision: 3, kind: 'pet' });
   const heroAvatarRef = React.useRef<THREE.Group>(null); // For collision detection
-  const [localPetInventory, setLocalPetInventory] = useState<Array<{ id: string; type: string; quantity: number; value?: number }>>(
-    petInventory || profile?.progress?.petInventory || []
-  );
-  const [localHeroInventory, setLocalHeroInventory] = useState<Array<{ id: string; type: string; quantity: number; value?: number }>>(
-    heroInventory || profile?.progress?.heroInventory || []
-  );
-  
-  // Ability and item slots (QWER, 1-8)
-  // Use abilities from skilltree if provided, otherwise use defaults
+
+  // ── Pet XP system (standalone hook) ─────────────────────────────────────
+  const petXPSystem = usePetXP({
+    uid: profile?.uid ?? '',
+    email: profile?.email,
+    displayName: profile?.displayName,
+    profile,
+    saveProgress,
+  });
+
+  // ── Collectibles / inventory / item-slot system (standalone hook) ────────
+  const collectibles = useCollectibles({
+    uid: profile?.uid ?? '',
+    email: profile?.email,
+    displayName: profile?.displayName,
+    tiles,
+    heroQ: hero.pos.q,
+    heroR: hero.pos.r,
+    profile,
+    heroInventoryProp: heroInventory as any,
+    petInventoryProp: petInventory as any,
+    saveProgress,
+    onHealHP,
+    onRestoreEP,
+  });
+
+  // Destructure for convenience (avoids updating all downstream call sites)
+  const {
+    collectibleFlowers, collectibleMushrooms,
+    nearbyFlower, nearbyMushroom,
+    collectingFlower, collectingMushroom, collectingProgress,
+    nearbyFlowerRef, nearbyMushroomRef, collectingFlowerRef, collectingMushroomRef, collectTimerRef,
+    localHeroInventory, setLocalHeroInventory,
+    localPetInventory, setLocalPetInventory,
+    itemSlots, setItemSlots,
+    handleCollect,
+    handleItemUse,
+  } = collectibles;
+
+  // Ability slots (QWER) — still managed locally as they are tightly coupled
+  // to the in-map keydown handler; skill-tree abilities come in via externalAbilities prop.
   const [abilitySlots, setAbilitySlots] = useState<Ability[]>(externalAbilities || [
     { id: 'slash', icon: '⚔️', key: 'Q', cooldown: 0, maxCooldown: 3 },
     { id: 'fireball', icon: '🔥', key: 'W', cooldown: 0, maxCooldown: 5 },
     { id: 'shield', icon: '🛡️', key: 'E', cooldown: 0, maxCooldown: 8 },
     { id: 'heal', icon: '💚', key: 'R', cooldown: 0, maxCooldown: 10 },
   ]);
-  
+
   // Update abilities when external ones change (from skilltree)
   React.useEffect(() => {
     if (externalAbilities && externalAbilities.length > 0) {
       setAbilitySlots(externalAbilities);
     }
   }, [externalAbilities]);
-  
+
   // Ability cooldown countdown (1 second intervals)
   React.useEffect(() => {
     const interval = setInterval(() => {
-      setAbilitySlots(prev => prev.map(ability => 
-        (ability.cooldown ?? 0) > 0 ? { ...ability, cooldown: (ability.cooldown ?? 0) - 1 } : ability
+      setAbilitySlots(prev => prev.map(ability =>
+        (ability.cooldown ?? 0) > 0 ? { ...ability, cooldown: Math.max(0, (ability.cooldown ?? 0) - 1) } : ability
       ));
     }, 1000);
     return () => clearInterval(interval);
   }, []);
-  
-  const [itemSlots, setItemSlots] = useState<Item[]>([
-    { id: 'item-empty-1', icon: '', qty: 0, key: '1' },
-    { id: 'item-empty-2', icon: '', qty: 0, key: '2' },
-    { id: 'item-empty-3', icon: '', qty: 0, key: '3' },
-    { id: 'item-empty-4', icon: '', qty: 0, key: '4' },
-    { id: 'item-empty-5', icon: '', qty: 0, key: '5' },
-    { id: 'item-empty-6', icon: '', qty: 0, key: '6' },
-    { id: 'item-empty-7', icon: '', qty: 0, key: '7' },
-    { id: 'item-empty-8', icon: '', qty: 0, key: '8' },
-  ]);
-  
-  // Collision detection: hero nearby flower
-  const [nearbyFlower, setNearbyFlower] = useState<string | null>(null);
-  const [collectingFlower, setCollectingFlower] = useState<string | null>(null); // For animation
-  const [collectingProgress, setCollectingProgress] = useState(0); // 0-1 progress
-  const nearbyFlowerRef = React.useRef<string | null>(null);
-  const collectingFlowerRef = React.useRef<string | null>(null);
-  const collectTimerRef = React.useRef<number | null>(null);
-  
-  // Keep refs in sync with state
-  useEffect(() => {
-    nearbyFlowerRef.current = nearbyFlower;
-    collectingFlowerRef.current = collectingFlower;
-  }, [nearbyFlower, collectingFlower]);
-  
-  // Generate collectible flowers when tiles are ready
-  useEffect(() => {
-    if (tiles.length === 0) return;
-    const flowers = new Set<string>();
-    for (const t of tiles) {
-      // 8% chance for each non-mountain, non-water tile to have a collectible flower
-      // Increased from 2% to ensure flowers are always visible in the map
-      if (t.type !== 'mountain' && t.type !== 'water' && Math.random() < 0.08) {
-        flowers.add(`${t.q},${t.r}`);
-      }
-    }
-    setCollectibleFlowers(flowers);
-    console.log('[map] Generated', flowers.size, 'collectible flowers out of', tiles.filter(t => t.type !== 'mountain' && t.type !== 'water').length, 'walkable tiles');
-  }, [tiles]);
-  
-  // Collision detection: check if hero is overlapping a flower (same tile)
-  useEffect(() => {
-    if (collectibleFlowers.size === 0) {
-      setNearbyFlower(null);
-      return;
-    }
-    // Check if hero is on the same tile as any collectible flower (distance = 0)
-    const heroKey = `${hero.pos.q},${hero.pos.r}`;
-    const flowerOnHeroTile = collectibleFlowers.has(heroKey) ? heroKey : null;
-    setNearbyFlower(flowerOnHeroTile);
-  }, [collectibleFlowers, hero.pos.q, hero.pos.r]);
-  
+
   const tilesMoveRef = React.useRef(0); // Track tiles moved for pet XP reward
   // When profile loads, adopt stored hero position if present
   useEffect(() => {
@@ -1340,6 +1393,23 @@ export default function SoloMissionMap3D({
       setRecenterSignal(s => s + 1);
     }
   }, [profile]);
+
+  // After tiles load, move hero to the real spawn position (center of map) if no
+  // saved profile position exists. This is needed because useState initializes
+  // with spawnPos={q:0,r:0} before tiles are available from the worker.
+  const heroMovedToSpawn = React.useRef(false);
+  useEffect(() => {
+    if (tiles.length === 0 || heroMovedToSpawn.current) return;
+    if (profile && profile.progress?.heroPosition) return; // profile will handle it
+    heroMovedToSpawn.current = true;
+    setHero(h => ({ ...h, pos: spawnPos }));
+    // Pet must also teleport to spawn — without this, pet stays at its useState
+    // initial position ({q:4, r:-1} near the map origin) while the hero and camera
+    // move to the real map center, leaving the pet hundreds of units off-screen.
+    setPet(p => ({ ...p, pos: spawnPos }));
+    setRecenterSignal(s => s + 1);
+    console.log('[hero] moved to map spawn', spawnPos);
+  }, [tiles, spawnPos, profile]);
 
   // FOV always on now; removed toggle state
 
@@ -1446,35 +1516,6 @@ export default function SoloMissionMap3D({
     return () => clearTimeout(to);
   }, [heroVisible, petVisible, saveProgress]);
 
-  // Sync hero inventory with item slots - ONLY show collectibles
-  useEffect(() => {
-    const flowers = localPetInventory.find((i: any) => i.type === 'flower');
-    const herbs = localPetInventory.find((i: any) => i.type === 'herb');
-    
-    setItemSlots(prev => [
-      // Slot 1: flowers (show icon only if we have them)
-      {
-        id: 'flower-slot',
-        qty: flowers?.quantity ?? 0,
-        icon: (flowers?.quantity ?? 0) > 0 ? '🌸' : '',
-        key: '1',
-      },
-      // Slot 2: herbs (show icon only if we have them)
-      {
-        id: 'herb-slot',
-        qty: herbs?.quantity ?? 0,
-        icon: (herbs?.quantity ?? 0) > 0 ? '🍃' : '',
-        key: '2',
-      },
-      // Slots 3-8: always empty
-      { id: 'item-empty-3', icon: '', qty: 0, key: '3' },
-      { id: 'item-empty-4', icon: '', qty: 0, key: '4' },
-      { id: 'item-empty-5', icon: '', qty: 0, key: '5' },
-      { id: 'item-empty-6', icon: '', qty: 0, key: '6' },
-      { id: 'item-empty-7', icon: '', qty: 0, key: '7' },
-      { id: 'item-empty-8', icon: '', qty: 0, key: '8' },
-    ]);
-  }, [petInventory]);
   // Explored tiles outside RENDER_RADIUS — rendered as cheap "memory" layer so explored
   // tiles don't disappear as the hero walks away. Capped at MEMORY_RADIUS to bound count.
   const MEMORY_RADIUS = 55;
@@ -1507,56 +1548,74 @@ export default function SoloMissionMap3D({
   }, [hero.pos.q, hero.pos.r, pet.pos.q, pet.pos.r, heroWorld, hexSize]);
 
   // ─── Avatar data ────────────────────────────────────────────────────────────
-  // Priority: localStorage activeLoadout.threeConfig (set by the avatar creator)
-  //        →  Firestore profile.progress.avatar (saved after creator confirmation)
-  //        →  empty defaults (shows base body only)
-  const avatarData = useMemo(() => {
-    try {
-      const raw = localStorage.getItem('afrofuture.activeLoadout');
-      if (raw) {
-        const loadout = JSON.parse(raw);
-        if (loadout?.threeConfig) {
-          const data = { parts: loadout.threeConfig.parts || {}, colors: loadout.threeConfig.colors || {} };
-          console.log('[avatar:load] From localStorage - Parts:', Object.keys(data.parts), 'Colors:', data.colors);
-          return data;
-        }
-      }
-    } catch (err) {
-      console.warn('[avatar:load] localStorage parse failed:', err);
-    }
-    // Firestore fallback
-    const fallback = (profile as any)?.progress?.avatar || { parts: {}, colors: { primary: '#00A37A', secondary: '#F5F5F5', skin: '#c58b66' } };
-    console.log('[avatar:load] Using fallback - Parts:', Object.keys(fallback.parts), 'Colors:', fallback.colors);
-    return fallback;
-  // profile changes trigger re-evaluation; localStorage is synchronous so no dep needed
-  }, [profile]);
-  const heroModelUrl = (avatarData as any)?.modelUrl as string | undefined;
-  // Memoize parts & colors so their object references are stable across component re-renders.
-  // Without this, `(avatarData as any)?.parts || {}` creates a new {} every render when parts
-  // is undefined, causing avatarReady to flip false→true every frame and the avatar never appears.
-  const heroParts = useMemo(() => {
-    const parts = (avatarData as any)?.parts || {};
-    console.log('[avatar:heroParts] Assembled from avatarData:', { count: Object.keys(parts).length, keys: Object.keys(parts) });
-    return parts;
-  }, [avatarData]);
-  const heroColors: AvatarColors = useMemo(() => {
-    const colors = (avatarData as any)?.colors || { primary: '#00A37A', secondary: '#F5F5F5', skin: '#c58b66' };
-    console.log('[avatar:heroColors] Colors set to:', colors);
-    return colors;
-  }, [avatarData]);
+  // Faction-specific default colours — used when threeConfig has no explicit overrides.
+  // Each faction has a distinct palette + skin tone matching its world lore.
+  const FACTION_DEFAULTS: Record<string, AvatarColors> = useMemo(() => ({
+    PAA: { primary: '#00A37A', secondary: '#D4AF37', skin: '#8B5A2B' }, // Afrofuture green + gold
+    ASF: { primary: '#C75B1E', secondary: '#4A4A5A', skin: '#5C3317' }, // Military amber + dark
+    WC:  { primary: '#1E40AF', secondary: '#9CA3AF', skin: '#D4A87A' }, // Corporate blue + light
+  }), []);
 
-  // Gating flag: delay one animation frame after avatar source changes so Suspense can begin
-  // resolving before we render (prevents a "base body only" flash before custom parts load).
-  // Deps use primitive strings (stable) — heroParts object excluded because Suspense handles
-  // per-part loading; re-gating on every object identity change caused perpetual flickering.
-  const [avatarReady, setAvatarReady] = useState(false);
+  // Priority: localStorage activeLoadout → Firestore profile.progress.avatar → faction defaults.
+  // Always returns all four fields (parts, colors, archetype, modelUrl) with safe values.
+  const avatarData = useMemo(() => {
+    // Prefer the live prop from App (stays in sync when loadout changes in configurator)
+    const src = heroAvatar ?? (() => {
+      try {
+        const raw = localStorage.getItem('afrofuture.activeLoadout');
+        if (raw) return JSON.parse(raw) as CharacterLoadout;
+      } catch (err) {
+        console.warn('[avatar:load] localStorage parse failed:', err);
+      }
+      return null;
+    })();
+
+    if (src) {
+      const faction: string = src.faction || 'PAA';
+      const archetype: Archetype = src.archetype === 'MALE' ? 'MALE' : 'FEMALE';
+      const fd: AvatarColors = FACTION_DEFAULTS[faction] ?? FACTION_DEFAULTS.PAA;
+      const tc = src.threeConfig;
+      const colors: AvatarColors = {
+        primary:   tc?.colors?.primary   || fd.primary,
+        secondary: tc?.colors?.secondary || fd.secondary,
+        skin:      (tc?.colors as any)?.skin || fd.skin,
+      };
+      const parts = (tc?.parts || {}) as Record<string, string | undefined>;
+      const modelUrl = (tc as any)?.modelUrl as string | undefined;
+      return { parts, colors, archetype, faction, modelUrl };
+    }
+
+    // Firestore / default fallback — use profile faction if available
+    const fpFaction: string = (profile as any)?.progress?.faction || 'PAA';
+    const fd: AvatarColors = FACTION_DEFAULTS[fpFaction] ?? FACTION_DEFAULTS.PAA;
+    const fpAvatar = (profile as any)?.progress?.avatar;
+    return {
+      parts: (fpAvatar?.parts || {}) as Record<string, string | undefined>,
+      modelUrl: undefined as string | undefined,
+      colors: {
+        primary:   fpAvatar?.colors?.primary   || fd.primary,
+        secondary: fpAvatar?.colors?.secondary || fd.secondary,
+        skin:      fpAvatar?.colors?.skin      || fd.skin,
+      } as AvatarColors,
+      archetype: 'FEMALE' as Archetype,
+      faction: fpFaction,
+    };
+  }, [heroAvatar, profile, FACTION_DEFAULTS]);
+
+  const heroModelUrl = avatarData.modelUrl;
+  const heroGender   = avatarData.archetype;
+  const heroParts    = avatarData.parts;
+  const heroColors   = avatarData.colors;
+
+  // avatarReady: always true since IsometricCharacter is procedural (no async loading).
+  // Only reset briefly when a custom GLB modelUrl changes to avoid stale-model flash.
+  const [avatarReady, setAvatarReady] = useState(true);
   useEffect(() => {
+    if (!heroModelUrl) return; // procedural — no need to gate
     setAvatarReady(false);
     const raf = requestAnimationFrame(() => setAvatarReady(true));
     return () => cancelAnimationFrame(raf);
-  }, [heroModelUrl, heroColors.primary, heroColors.secondary, heroColors.skin]);
-  // AssembledAvatar and GLBAvatar are defined at module level (outside this function) to
-  // maintain stable component identity and prevent hook resets on every parent render.
+  }, [heroModelUrl]);
   // Precompute world bounds for camera panning
   const mapBounds = useMemo(() => {
     let minX = Infinity, maxX = -Infinity, minZ = Infinity, maxZ = -Infinity;
@@ -1763,14 +1822,12 @@ export default function SoloMissionMap3D({
           updateHeroPosition(clamped);
           tilesMoveRef.current++;
           if (tilesMoveRef.current >= 40) {
-            const newPetXp = (pet.xp || 0) + 1;
-            const newHeroXp = (profile?.progress?.hero?.xp ?? 0) + 0.5;
-            setPet(p => ({ ...p, xp: newPetXp }));
             tilesMoveRef.current = 0;
-            saveProgress({
-              pet: { xp: newPetXp, type: undefined, level: 1 },
-              hero: { xp: newHeroXp, level: profile?.progress?.hero?.level || 1, traits: [], unlockedSkillIds: [], unlockOrder: [] }
-            });
+            // Pet XP + hero XP gain delegated to usePetXP hook
+            petXPSystem.gainXPOnMove(
+              profile?.progress?.hero?.xp ?? 0,
+              profile?.progress?.hero?.level ?? 1,
+            );
             console.log('[XP] Hero +0.5 XP, Pet +1 XP!');
           }
           return next;
@@ -1807,21 +1864,12 @@ export default function SoloMissionMap3D({
       const itemMap: Record<string, string> = {
         '1': '1', '2': '2', '3': '3', '4': '4', '5': '5', '6': '6', '7': '7', '8': '8',
       };
-      
+
       if (itemMap[k]) {
         if (e.repeat) return;
         const slotIndex = parseInt(itemMap[k]) - 1;
-        const item = itemSlots[slotIndex];
-        if (item && (item.qty ?? 0) > 0) {
-          console.log(`[Item] Used ${item.id} (${item.icon})`);
-          // Decrease quantity
-          setItemSlots(prev => prev.map((itm, idx) => 
-            idx === slotIndex ? { ...itm, qty: Math.max(0, (itm.qty ?? 0) - 1) } : itm
-          ));
-          // TODO: Apply item effect from inventory
-        } else {
-          console.log(`[Item] Slot ${itemMap[k]} is empty`);
-        }
+        // Item use delegated to useCollectibles hook
+        handleItemUse(slotIndex);
         return;
       }
     }
@@ -1832,40 +1880,29 @@ export default function SoloMissionMap3D({
     window.addEventListener('keydown', onKey);
     window.addEventListener('keyup', onKeyUp);
     return () => { window.removeEventListener('keydown', onKey); window.removeEventListener('keyup', onKeyUp); };
-  }, [tilesByKey, saveProgress, pet.xp, profile?.progress?.hero?.xp, profile?.progress?.hero?.level]);
+  }, [tilesByKey, saveProgress, profile?.progress?.hero?.xp, profile?.progress?.hero?.level, abilitySlots, setAbilitySlots, setCollisionMessage, updateHeroPosition, petXPSystem.gainXPOnMove, handleItemUse]);
   // endTurn logic removed (turn system disabled)
 
   // Keyboard hex movement (pointy axial layout with q,r; adapt to 6 neighbors)
   // Keyboard disabled for now
 
   return (
-  <div className="relative w-screen h-screen bg-white text-gray-900 overflow-hidden">
+  <div className="relative w-screen h-screen bg-[#111827] overflow-hidden">
       {/* Helper overlay removed for production */}
       <div className="absolute inset-0 select-none">
-    <Canvas shadows camera={{ position: [0, 22, 22], fov: 45 }}>
+    <Canvas shadows camera={{ position: [0, 22, 22], fov: 45 }} gl={{ alpha: false }} style={{ background: '#111827' }} onCreated={({ gl, scene }) => { gl.setClearColor('#111827', 1); scene.background = new THREE.Color('#111827'); }}>
   <MapCameraController
     bounds={mapBounds}
     gameMode={true}
     heroWorld={heroWorld}
     recenterSignal={recenterSignal}
-    petInventory={localPetInventory}
-    setPetInventory={setLocalPetInventory}
-    heroInventory={localHeroInventory}
-    setHeroInventory={setLocalHeroInventory}
     nearbyFlowerRef={nearbyFlowerRef}
-    collectibleFlowers={collectibleFlowers}
+    nearbyMushroomRef={nearbyMushroomRef}
     collectingFlowerRef={collectingFlowerRef}
-    collectTimerRef={collectTimerRef}
-    setCollectingFlower={setCollectingFlower}
-    setCollectingProgress={setCollectingProgress}
-    setCollectibleFlowers={setCollectibleFlowers}
-    setNearbyFlower={setNearbyFlower}
-    saveProgress={saveProgress}
-    profile={profile}
+    collectingMushroomRef={collectingMushroomRef}
+    handleCollect={handleCollect}
     abilitySlots={abilitySlots}
     setAbilitySlots={setAbilitySlots}
-    itemSlots={itemSlots}
-    setItemSlots={setItemSlots}
   />
               <SceneSetupVerifier />
               <AvatarRenderingVerifier />
@@ -1911,7 +1948,7 @@ export default function SoloMissionMap3D({
                     <group key={key} position={[x, 0, z]}>
                       <HexTile t={t} size={hexSize} onClick={() => {}} onHover={setHover} />
                       {/* Terrain decorations — visible now OR previously explored (FoW dim sits on top) */}
-                      {(inVision || explored) && t.type === 'forest' && (
+                      {(inVision || explored) && t.type === 'forest' && !collectibleMushrooms.has(key) && (
                         <group position={[0, tileTop, 0]}><TreeCluster size={hexSize} seed={t.q * 31 + t.r * 17} /></group>
                       )}
                       {(inVision || explored) && t.type === 'jungle' && (
@@ -1932,10 +1969,16 @@ export default function SoloMissionMap3D({
                       {(inVision || explored) && t.type === 'desert' && (
                         <group position={[0, tileTop, 0]} renderOrder={5}><DesertDunes size={hexSize} seed={t.q * 41 + t.r * 19} /></group>
                       )}
-                      {/* Collectible healing flowers */}
+                      {/* Collectible healing flowers (plains only) */}
                       {inVision && collectibleFlowers.has(key) && (
                         <group position={[0, tileTop, 0]} renderOrder={23}>
                           <CollectibleFlower size={hexSize} />
+                        </group>
+                      )}
+                      {/* Collectible mushrooms (forest only) - raised so they show above trees */}
+                      {inVision && collectibleMushrooms.has(key) && (
+                        <group position={[0, tileTop, 0]} renderOrder={30}>
+                          <CollectibleMushroom size={hexSize} />
                         </group>
                       )}
                       {/* FoW: solid black over completely unexplored+invisible tiles */}
@@ -1982,19 +2025,125 @@ export default function SoloMissionMap3D({
                       group.position.set() + updateMatrix(), setting matrixWorldNeedsUpdate=true.
                       During gl.render → scene.updateMatrixWorld(), force=true cascades through
                       all descendants including GLB primitive nodes. */}
-                  {avatarReady && (
-                    <Suspense fallback={null}>
-                      <GameAvatar heroModelUrl={heroModelUrl} heroParts={heroParts} heroColors={heroColors} hexSize={hexSize} />
-                    </Suspense>
+                  {/* Default path: render IsometricCharacter directly (same approach as the pet)
+                      when no custom GLB/parts are loaded. Only use GameAvatar for custom assets. */}
+                  {(heroModelUrl || Object.values(heroParts).some(Boolean)) ? (
+                    avatarReady && (
+                      <Suspense fallback={
+                        <IsometricCharacter gender={heroGender ?? 'FEMALE'} colors={heroColors} hexSize={hexSize} />
+                      }>
+                        <GameAvatar heroModelUrl={heroModelUrl} heroParts={heroParts} heroColors={heroColors} hexSize={hexSize} gender={heroGender} />
+                      </Suspense>
+                    )
+                  ) : (
+                    <IsometricCharacter gender={heroGender ?? 'FEMALE'} colors={heroColors} hexSize={hexSize} />
                   )}
                 </group>
-                {(() => { const world = axialToWorld(pet.pos, hexSize); return (
-                  <group key={pet.id} position={[world.x, 0.4, world.z]}>
-                    <mesh position={[0, hexSize * 0.45, 0]} castShadow>
-                      <sphereGeometry args={[hexSize * 0.28, 12, 12]} />
-                      <meshStandardMaterial color="#0ea5e9" emissive="#0369a1" emissiveIntensity={0.5} />
+                {(() => { const world = axialToWorld(pet.pos, hexSize); const ps = hexSize * 0.32; return (
+                  <group key={pet.id} position={[world.x, 0.48, world.z]} frustumCulled={false}>
+                    {/* ── Isometric cat Pokemon-style pet ── */}
+                    {/* Drop shadow */}
+                    <mesh rotation={[-Math.PI/2, 0, 0]} position={[0, 0.01, 0]} frustumCulled={false}>
+                      <circleGeometry args={[ps * 0.85, 20]} />
+                      <meshBasicMaterial color="#000" transparent opacity={0.18} depthWrite={false} />
                     </mesh>
-                    <Text position={[0, hexSize * 1.1, 0]} fontSize={hexSize * 0.35} color="#111" anchorX="center" anchorY="middle">Pet</Text>
+                    {/* Body */}
+                    <mesh position={[0, ps * 0.72, 0]} castShadow frustumCulled={false}>
+                      <sphereGeometry args={[ps * 0.62, 14, 10]} />
+                      <meshStandardMaterial color="#f5c97a" roughness={0.6} />
+                    </mesh>
+                    {/* Belly patch */}
+                    <mesh position={[0, ps * 0.68, ps * 0.48]} frustumCulled={false}>
+                      <sphereGeometry args={[ps * 0.36, 10, 8]} />
+                      <meshStandardMaterial color="#fdecc8" roughness={0.7} />
+                    </mesh>
+                    {/* Head — large sphere (big-head Pokemon ratio) */}
+                    <mesh position={[0, ps * 1.5, 0]} castShadow frustumCulled={false}>
+                      <sphereGeometry args={[ps * 0.72, 16, 12]} />
+                      <meshStandardMaterial color="#f5c97a" roughness={0.6} />
+                    </mesh>
+                    {/* Muzzle */}
+                    <mesh position={[0, ps * 1.42, ps * 0.56]} frustumCulled={false}>
+                      <sphereGeometry args={[ps * 0.28, 10, 8]} />
+                      <meshStandardMaterial color="#fdecc8" roughness={0.7} />
+                    </mesh>
+                    {/* Nose */}
+                    <mesh position={[0, ps * 1.52, ps * 0.8]} frustumCulled={false}>
+                      <sphereGeometry args={[ps * 0.08, 8, 6]} />
+                      <meshStandardMaterial color="#e07090" roughness={0.4} />
+                    </mesh>
+                    {/* Left eye */}
+                    <mesh position={[-ps * 0.28, ps * 1.64, ps * 0.56]} frustumCulled={false}>
+                      <sphereGeometry args={[ps * 0.14, 10, 8]} />
+                      <meshStandardMaterial color="#1a1a2e" roughness={0.3} />
+                    </mesh>
+                    {/* Left eye shine */}
+                    <mesh position={[-ps * 0.24, ps * 1.68, ps * 0.67]} frustumCulled={false}>
+                      <sphereGeometry args={[ps * 0.05, 6, 6]} />
+                      <meshBasicMaterial color="white" />
+                    </mesh>
+                    {/* Right eye */}
+                    <mesh position={[ps * 0.28, ps * 1.64, ps * 0.56]} frustumCulled={false}>
+                      <sphereGeometry args={[ps * 0.14, 10, 8]} />
+                      <meshStandardMaterial color="#1a1a2e" roughness={0.3} />
+                    </mesh>
+                    {/* Right eye shine */}
+                    <mesh position={[ps * 0.24, ps * 1.68, ps * 0.67]} frustumCulled={false}>
+                      <sphereGeometry args={[ps * 0.05, 6, 6]} />
+                      <meshBasicMaterial color="white" />
+                    </mesh>
+                    {/* Left ear — pointy cone */}
+                    <mesh position={[-ps * 0.48, ps * 2.18, 0]} rotation={[0, 0, -0.35]} frustumCulled={false}>
+                      <coneGeometry args={[ps * 0.22, ps * 0.52, 8]} />
+                      <meshStandardMaterial color="#f5c97a" roughness={0.6} />
+                    </mesh>
+                    {/* Left ear inner */}
+                    <mesh position={[-ps * 0.44, ps * 2.18, ps * 0.06]} rotation={[0, 0, -0.35]} frustumCulled={false}>
+                      <coneGeometry args={[ps * 0.12, ps * 0.34, 8]} />
+                      <meshStandardMaterial color="#f0a0b0" roughness={0.5} />
+                    </mesh>
+                    {/* Right ear */}
+                    <mesh position={[ps * 0.48, ps * 2.18, 0]} rotation={[0, 0, 0.35]} frustumCulled={false}>
+                      <coneGeometry args={[ps * 0.22, ps * 0.52, 8]} />
+                      <meshStandardMaterial color="#f5c97a" roughness={0.6} />
+                    </mesh>
+                    {/* Right ear inner */}
+                    <mesh position={[ps * 0.44, ps * 2.18, ps * 0.06]} rotation={[0, 0, 0.35]} frustumCulled={false}>
+                      <coneGeometry args={[ps * 0.12, ps * 0.34, 8]} />
+                      <meshStandardMaterial color="#f0a0b0" roughness={0.5} />
+                    </mesh>
+                    {/* Front left leg */}
+                    <mesh position={[-ps * 0.32, ps * 0.38, ps * 0.28]} castShadow frustumCulled={false}>
+                      <cylinderGeometry args={[ps * 0.13, ps * 0.14, ps * 0.45, 8]} />
+                      <meshStandardMaterial color="#f5c97a" roughness={0.6} />
+                    </mesh>
+                    {/* Front right leg */}
+                    <mesh position={[ps * 0.32, ps * 0.38, ps * 0.28]} castShadow frustumCulled={false}>
+                      <cylinderGeometry args={[ps * 0.13, ps * 0.14, ps * 0.45, 8]} />
+                      <meshStandardMaterial color="#f5c97a" roughness={0.6} />
+                    </mesh>
+                    {/* Back left leg */}
+                    <mesh position={[-ps * 0.36, ps * 0.38, -ps * 0.24]} castShadow frustumCulled={false}>
+                      <cylinderGeometry args={[ps * 0.13, ps * 0.14, ps * 0.42, 8]} />
+                      <meshStandardMaterial color="#f5c97a" roughness={0.6} />
+                    </mesh>
+                    {/* Back right leg */}
+                    <mesh position={[ps * 0.36, ps * 0.38, -ps * 0.24]} castShadow frustumCulled={false}>
+                      <cylinderGeometry args={[ps * 0.13, ps * 0.14, ps * 0.42, 8]} />
+                      <meshStandardMaterial color="#f5c97a" roughness={0.6} />
+                    </mesh>
+                    {/* Tail — angled cylinder */}
+                    <mesh position={[-ps * 0.1, ps * 0.9, -ps * 0.62]} rotation={[0.7, 0.3, 0.1]} frustumCulled={false}>
+                      <cylinderGeometry args={[ps * 0.08, ps * 0.12, ps * 0.8, 8]} />
+                      <meshStandardMaterial color="#f5a040" roughness={0.5} />
+                    </mesh>
+                    {/* Tail tip */}
+                    <mesh position={[-ps * 0.14, ps * 1.3, -ps * 0.9]} frustumCulled={false}>
+                      <sphereGeometry args={[ps * 0.16, 8, 8]} />
+                      <meshStandardMaterial color="#fff5e0" roughness={0.5} />
+                    </mesh>
+                    {/* Name label */}
+                    <Text position={[0, ps * 3.1, 0]} fontSize={ps * 0.55} color="#fff" anchorX="center" anchorY="middle">Pet</Text>
                   </group> ); })()}
                 {/* Boundary reference planes */}
                 <group>{boundaryPlanes}</group>
@@ -2041,18 +2190,18 @@ export default function SoloMissionMap3D({
                 Explore: {exploredCount}/{explorationGoal} {explorationComplete ? '✓' : ''}
               </div>
               
-              {/* Nearby flower collection prompt */}
-              {nearbyFlower && (
+              {/* Nearby collectible prompt (flower or mushroom) */}
+              {(nearbyFlower || nearbyMushroom) && (
                 <div className="fixed bottom-56 left-1/2 -translate-x-1/2 animate-bounce">
                   <div className="relative px-6 py-3 rounded-xl bg-emerald-900/80 border border-emerald-400/60 text-sm font-semibold text-emerald-100 backdrop-blur-sm shadow-lg overflow-hidden">
-                    {collectingFlower && (
+                    {(collectingFlower || collectingMushroom) && (
                       <div className="absolute inset-0 rounded-xl pointer-events-none" style={{
                         background: `conic-gradient(#10b981 ${collectingProgress * 360}deg, transparent 0)`,
                       }} />
                     )}
                     <div className="relative z-10 flex items-center gap-2">
-                      🌸 Press <span className="px-1.5 py-0.5 rounded bg-emerald-700 font-bold">C</span> to Collect
-                      {collectingFlower && <span className="ml-1 text-xs text-emerald-300">{Math.round(collectingProgress * 100)}%</span>}
+                      {nearbyFlower ? '🌸 Flower' : '🍃 Mushroom'} Press <span className="px-1.5 py-0.5 rounded bg-emerald-700 font-bold">C</span> to Collect
+                      {(collectingFlower || collectingMushroom) && <span className="ml-1 text-xs text-emerald-300">{Math.round(collectingProgress * 100)}%</span>}
                     </div>
                   </div>
                 </div>
@@ -2115,15 +2264,16 @@ function ChunkDebugTiles({ heroPos, hexSize }: { heroPos: Axial; hexSize: number
   const playerRow = heroPos.r;
   const { chunks } = useVisibleChunks({ playerCol, playerRow, viewRadiusTiles: viewRadius, chunkSize, enabled: useChunks });
   const ap = hexApothem(hexSize);
-  // Build simple cylinders per tile (temporary). Limit render count with a hard cap for safety.
-  let rendered = 0;
+  // Pre-cap total tiles to 5000 to avoid mutable counter in render body.
+  const cappedChunks = useMemo(() => {
+    let count = 0;
+    return chunks.map(ch => ({ ...ch, tiles: ch.tiles.filter(() => count++ < 5000) }));
+  }, [chunks]);
   return (
     <group name="ChunkDebugTiles">
-      {useChunks && chunks.map(ch => (
+      {useChunks && cappedChunks.map(ch => (
         <group key={`chunk-${ch.cx}-${ch.cy}`}>
           {ch.tiles.map(t => {
-            if (rendered > 5000) return null; // safety cap
-            rendered++;
             // Quick axial->world approximation using flat-top assumptions similar to legacy col/row.
             const x = (1.5 * hexSize) * t.col;
             const z = (Math.sqrt(3) * hexSize) * (t.row + (t.col * 0.5));
@@ -2156,37 +2306,26 @@ function ChunkDebugTiles({ heroPos, hexSize }: { heroPos: Axial; hexSize: number
 // Custom camera controller: edge pan & drag (game mode) with optional follow axial coord
 function MapCameraController({
   bounds, gameMode, heroWorld, recenterSignal,
-  petInventory, setPetInventory, 
-  heroInventory, setHeroInventory,
-  nearbyFlowerRef, collectibleFlowers, collectingFlowerRef, collectTimerRef,
-  setCollectingFlower, setCollectingProgress, setCollectibleFlowers, setNearbyFlower,
-  saveProgress, profile,
+  nearbyFlowerRef, nearbyMushroomRef, collectingFlowerRef, collectingMushroomRef,
+  handleCollect,
   abilitySlots, setAbilitySlots,
-  itemSlots, setItemSlots
 }: {
   bounds: { minX: number; maxX: number; minZ: number; maxZ: number; minY?: number; maxY?: number };
   gameMode: boolean;
   heroWorld?: { x: number; z: number };
   recenterSignal?: number;
-  petInventory: Array<{ id: string; type: string; quantity: number; value?: number }>;
-  setPetInventory: (inv: Array<{ id: string; type: string; quantity: number; value?: number }>) => void;
-  heroInventory: Array<{ id: string; type: string; quantity: number; value?: number }>;
-  setHeroInventory: (inv: Array<{ id: string; type: string; quantity: number; value?: number }>) => void;
   nearbyFlowerRef: React.MutableRefObject<string | null>;
-  collectibleFlowers: Set<string>;
+  nearbyMushroomRef: React.MutableRefObject<string | null>;
   collectingFlowerRef: React.MutableRefObject<string | null>;
-  collectTimerRef: React.MutableRefObject<number | null>;
-  setCollectingFlower: (flower: string | null) => void;
-  setCollectingProgress: (progress: number) => void;
-  setCollectibleFlowers: (flowers: Set<string>) => void;
-  setNearbyFlower: (flower: string | null) => void;
-  saveProgress: (progress: any) => void;
-  profile: any;
+  collectingMushroomRef: React.MutableRefObject<string | null>;
+  /** Delegated to useCollectibles — starts the 1200 ms collection animation. */
+  handleCollect: (flowerKey: string | null, mushroomKey: string | null) => void;
   abilitySlots: Ability[];
   setAbilitySlots: React.Dispatch<React.SetStateAction<Ability[]>>;
-  itemSlots: Item[];
-  setItemSlots: React.Dispatch<React.SetStateAction<Item[]>>;
 }) {
+  // Keep handleCollect in a ref so the keydown closure never goes stale
+  const handleCollectRef = React.useRef(handleCollect);
+  handleCollectRef.current = handleCollect;
   const { camera, gl } = useThree();
   const targetRef = React.useRef(new THREE.Vector3(0, 0, 0));
   const offsetRef = React.useRef<THREE.Vector3 | null>(null); // camera.position - target
@@ -2305,64 +2444,10 @@ function MapCameraController({
           keysPressed.current.ArrowDown = true;
           keysPressed.current.PageDown = true;
         }
-        // 'C' key to collect nearby flower
-        if (e.key.toLowerCase() === 'c' && nearbyFlowerRef.current && !collectingFlowerRef.current) {
-          const flowerKey = nearbyFlowerRef.current;
-          if (!flowerKey) return;
-          
-          setCollectingFlower(flowerKey);
-          setCollectingProgress(0);
-          
-          // Animate collection over 1.2 seconds
-          const startTime = performance.now();
-          const collectDuration = 1200; // ms
-          
-          const animateCollection = (currentTime: number) => {
-            const elapsed = currentTime - startTime;
-            const progress = Math.min(1, elapsed / collectDuration);
-            setCollectingProgress(progress);
-            
-            if (progress < 1) {
-              collectTimerRef.current = requestAnimationFrame(animateCollection);
-            } else {
-              // Collection complete!
-              const updatedFlowers = new Set<string>(collectibleFlowers);
-              updatedFlowers.delete(flowerKey);
-              setCollectibleFlowers(updatedFlowers);
-              
-              // Add to HERO inventory (player decides what to collect)
-              const existing = heroInventory.find((i: any) => i.type === 'flower');
-              const newHeroInventory = existing
-                ? heroInventory.map((i: any) => i.type === 'flower' ? { ...i, quantity: i.quantity + 1 } : i)
-                : [...heroInventory, { id: 'flower-' + flowerKey, type: 'flower', quantity: 1, effect: 'heal', value: 20, icon: '🌸' }];
-              setHeroInventory(newHeroInventory);
-              
-              // Award XP to player for collection (safely access profile)
-              if (profile?.progress?.hero) {
-                const newHeroXp = (profile.progress.hero.xp ?? 0) + 5; // 5 XP per flower
-                const heroLevel = profile.progress.hero.level ?? 1;
-                
-                // Persist to database: hero inventory + XP, pet XP
-                const inventoryToSave = newHeroInventory.filter((i: any) => i.type === 'flower' || i.type === 'herb') as Array<{ id: string; type: 'herb' | 'flower'; quantity: number; effect?: 'heal'; value?: number }>;
-                saveProgress({
-                  heroInventory: inventoryToSave,
-                  hero: { xp: newHeroXp, level: heroLevel, traits: [], unlockedSkillIds: [], unlockOrder: [] },
-                });
-                
-                console.log('[Hero] Collected flower! XP:', newHeroXp, 'Total in inventory:', newHeroInventory.find((i: any) => i.type === 'flower')?.quantity || 0);
-              }
-              
-              // Clear collection state
-              setCollectingFlower(null);
-              setCollectingProgress(0);
-            }
-          };
-          
-          collectTimerRef.current = requestAnimationFrame(animateCollection);
-          
-          setNearbyFlower(null);
-          // Clear collecting animation after 0.5s
-          setTimeout(() => setCollectingFlower(null), 500);
+        // 'C' key to collect nearby flower (plains) or mushroom (forest)
+        // Delegated to useCollectibles hook via handleCollect ref
+        if (e.key.toLowerCase() === 'c' && !collectingFlowerRef.current && !collectingMushroomRef.current) {
+          handleCollectRef.current(nearbyFlowerRef.current, nearbyMushroomRef.current);
         }
       } catch (err) {
         console.error('[KeybindError]', err);
@@ -2497,7 +2582,8 @@ function MapCameraController({
       gl.domElement.removeEventListener('touchend', onTouchEnd);
       gl.domElement.style.cursor = '';
     };
-  }, [gameMode, saveProgress, profile, setCollectingProgress, setCollectingFlower, setHeroInventory, heroInventory, collectibleFlowers, abilitySlots, setAbilitySlots, itemSlots, setItemSlots]);
+  // NOTE: abilitySlots intentionally omitted — unused in these handlers.
+  }, [gameMode]);
 
   function clampTarget() {
     const t = targetRef.current;

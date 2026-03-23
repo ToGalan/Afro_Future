@@ -29,13 +29,14 @@ const TERRAIN_LIT: Record<string, string> = {
 const MinimapCanvas = React.memo(
   function MinimapCanvas({ data }: { data: MinimapData }) {
     const canvasRef = React.useRef<HTMLCanvasElement>(null);
-    React.useEffect(() => {
+
+    const draw = React.useCallback(() => {
       const canvas = canvasRef.current;
       if (!canvas) return;
-      const cw = canvas.offsetWidth || 448;
-      const ch = canvas.offsetHeight || 264;
-      canvas.width = cw;
-      canvas.height = ch;
+      const cw = canvas.offsetWidth || 200;
+      const ch = canvas.offsetHeight || 200;
+      if (canvas.width !== cw) canvas.width = cw;
+      if (canvas.height !== ch) canvas.height = ch;
       const ctx = canvas.getContext('2d');
       if (!ctx) return;
       const { exploredKeys, visibleKeys, tileTypes, heroPos, petPos, hexSize, mapBounds } = data;
@@ -79,8 +80,22 @@ const MinimapCanvas = React.memo(
       ctx.fillStyle = 'rgba(255,255,255,0.35)';
       ctx.font = 'bold 10px sans-serif';
       ctx.fillText('N', cw - 14, 13);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [data.exploredRevision, data.visibleKeys, data.heroPos.q, data.heroPos.r, data.petPos?.q, data.petPos?.r]);
+    }, [data]); // eslint-disable-line react-hooks/exhaustive-deps
+
+    // Redraw when data changes
+    React.useEffect(() => { draw(); },
+      // eslint-disable-next-line react-hooks/exhaustive-deps
+      [data.exploredRevision, data.visibleKeys, data.heroPos.q, data.heroPos.r, data.petPos?.q, data.petPos?.r]);
+
+    // Also redraw when container resizes (e.g. window resize changes 20vw width)
+    React.useEffect(() => {
+      const canvas = canvasRef.current;
+      if (!canvas) return;
+      const ro = new ResizeObserver(() => draw());
+      ro.observe(canvas);
+      return () => ro.disconnect();
+    }, [draw]);
+
     return (
       <canvas
         ref={canvasRef}
@@ -165,12 +180,9 @@ const CooldownOverlay = React.memo(function CooldownOverlay({ value, max }: { va
 });
 
 interface SlotProps { icon?: string; hotkey?: string; qty?: number; cooldown?: number; maxCooldown?: number; disabled?: boolean; onClick?: () => void; sizeCls?: string; tooltip?: string; }
-const Slot = React.memo(function Slot({ icon = '', hotkey, qty, cooldown, maxCooldown, disabled, onClick, sizeCls = 'w-14 h-14', tooltip }: SlotProps) {
+const Slot = React.memo(function Slot({ icon = '', hotkey, qty, cooldown, maxCooldown, disabled, onClick, sizeCls = 'hud-slot', tooltip }: SlotProps) {
   const [showTooltip, setShowTooltip] = React.useState(false);
-  // Determine icon size based on slot size class
-  const iconSize = sizeCls.includes('w-7') || sizeCls.includes('w-8') ? 'text-sm' : 
-                   sizeCls.includes('w-10') || sizeCls.includes('w-11') ? 'text-lg sm:text-xl' : 
-                   'text-xl sm:text-2xl';
+  const iconSize = 'text-xl sm:text-2xl';
   return (
     <div className="relative">
       <button
@@ -220,7 +232,7 @@ const ITEM_ICONS: Record<string, string> = {
 
 const ITEM_TOOLTIPS: Record<string, string> = {
   '🌸': 'Flower - Heal 20 HP',
-  '🍃': 'Herb - Restore 10 EP',
+  '🍃': 'Mushroom - Restore 5 EP',
   '🧪': 'Potion - Restore 50 HP',
   '📦': 'Consumable Item'
 };
@@ -311,11 +323,11 @@ export const GameHUD: React.FC<GameHUDProps> = ({
           [MINIMAP]  [scan/glyph]  [HERO + ABILITIES — player]  │  [PET + INVENTORY — pet]
       */}
       <div className={`fixed bottom-0 left-0 right-0 z-30 ${panelCls} border-t border-white/5 shadow-2xl pointer-events-auto`}>
-        <div className="flex items-stretch h-[8rem] sm:h-[11.5rem] md:h-[14.25rem]"> {/* portraits + abilities/inventory rows */}
+        <div className="hud-bar flex items-stretch overflow-visible"> {/* portraits + abilities/inventory rows — extra height gives room for XP labels above portraits */}
 
           {/* ── MINIMAP (replaces DatabaseTestPanel area — bottom-left) ─── */}
           <div
-            className="w-[4rem] sm:w-[8rem] md:w-[12rem] h-full shrink-0 cursor-crosshair relative overflow-hidden border-r border-white/5"
+            className="w-1/5 h-full shrink-0 cursor-crosshair relative overflow-hidden border-r border-white/5"
             style={{ background: 'radial-gradient(ellipse at center, #1a5c33 0%, #0e3a20 55%, #081f11 100%)' }}
             onClick={e => {
               const rect = e.currentTarget.getBoundingClientRect();
@@ -341,10 +353,10 @@ export const GameHUD: React.FC<GameHUDProps> = ({
           </div>
 
           {/* ── Action buttons ──────────────────────────────────────────── */}
-          <div className="flex flex-col items-center justify-center gap-1.5 sm:gap-2 px-1 sm:px-2 border-r border-white/5 shrink-0">
+          <div className="flex flex-col items-center justify-center gap-1 px-1 border-r border-white/5 shrink-0">
             <button
               onClick={() => setAbilityMode('offense')}
-              className={`w-7 h-7 sm:w-10 sm:h-10 md:w-12 md:h-12 rounded-lg sm:rounded-xl ring-2 flex items-center justify-center text-base sm:text-xl transition active:scale-90 ${
+              className={`hud-action-btn rounded-lg ring-2 flex items-center justify-center transition active:scale-90 text-base sm:text-xl ${
                 abilityMode === 'offense'
                   ? 'bg-rose-900/70 ring-rose-500'
                   : 'bg-[#1c2838] ring-white/10 hover:ring-rose-500/50 opacity-50 hover:opacity-80'
@@ -353,7 +365,7 @@ export const GameHUD: React.FC<GameHUDProps> = ({
             >⚔️</button>
             <button
               onClick={() => setAbilityMode('defense')}
-              className={`w-7 h-7 sm:w-10 sm:h-10 md:w-12 md:h-12 rounded-lg sm:rounded-xl ring-2 flex items-center justify-center text-base sm:text-xl transition active:scale-90 ${
+              className={`hud-action-btn rounded-lg ring-2 flex items-center justify-center transition active:scale-90 text-base sm:text-xl ${
                 abilityMode === 'defense'
                   ? 'bg-sky-900/70 ring-sky-400'
                   : 'bg-[#1c2838] ring-white/10 hover:ring-sky-400/50 opacity-50 hover:opacity-80'
@@ -362,46 +374,46 @@ export const GameHUD: React.FC<GameHUDProps> = ({
             >🛡️</button>
           </div>
 
-          {/* ── HERO + ABILITIES (player section — flex-[1]) ─────────────── */}
-          <div className="flex flex-col justify-center gap-1 px-2 flex-[1] min-w-0 border-r border-white/5 pt-2 pb-1">
+          {/* ── HERO + ABILITIES (player section — flex-[1]) ───────────── */}
+          <div className="flex flex-col justify-center px-2 flex-[1] min-w-0 border-r border-white/5 h-full">
             {/* Hero row: XP-ring portrait + hp/ep bars */}
-            <div className="flex gap-2 items-center">
+            <div className="flex gap-2 items-center h-full pt-5 pb-2">
               {/* Portrait with XP progressive frame (conic-gradient ring) */}
               <div
-                className="relative shrink-0 w-[56px] h-[56px] sm:w-[88px] sm:h-[88px] md:w-[117px] md:h-[117px] rounded-[8px] sm:rounded-[12px] md:rounded-[15px] p-[3px] md:p-[4px]"
+                className="hud-portrait relative rounded-xl p-[3px]"
                 style={{
                   background: `conic-gradient(#f59e0b ${pct(hero.xp.current, hero.xp.max) * 360}deg, rgba(255,255,255,0.10) 0deg)`,
                 }}
               >
-                <div className="w-full h-full rounded-[6px] sm:rounded-[10px] md:rounded-[12px] overflow-hidden bg-slate-900">
+                <div className="w-full h-full rounded-[10px] overflow-hidden bg-slate-900">
                   {hero.portraitUrl
                     ? <img src={hero.portraitUrl} alt={hero.name} className="w-full h-full object-cover" />
                     : <div className="w-full h-full flex items-center justify-center text-2xl sm:text-4xl">👤</div>
                   }
                 </div>
-                {/* XP label above portrait — hidden on mobile where portrait is too small */}
-                <div className="hidden sm:block absolute -top-3.5 left-1/2 -translate-x-1/2 text-[10px] text-amber-400/70 whitespace-nowrap pointer-events-none tabular-nums">
+                {/* XP label above portrait */}
+                <div className="absolute -top-3.5 left-1/2 -translate-x-1/2 text-[9px] text-amber-400/70 whitespace-nowrap pointer-events-none tabular-nums hidden sm:block">
                   XP {hero.xp.current}/{hero.xp.max}
                 </div>
-                {/* Level badge below portrait — hidden on mobile */}
-                <div className="hidden sm:block absolute -bottom-2 left-1/2 -translate-x-1/2 bg-amber-500 text-black text-[10px] font-bold px-1.5 py-px rounded-full z-20 whitespace-nowrap leading-none">
+                {/* Level badge below portrait */}
+                <div className="absolute -bottom-2 left-1/2 -translate-x-1/2 bg-amber-500 text-black text-[9px] font-bold px-1.5 py-px rounded-full z-20 whitespace-nowrap leading-none hidden sm:block">
                   Lv {hero.level}
                 </div>
               </div>
               {/* HP / EP bars + abilities stacked */}
-              <div className="flex-1 min-w-0 flex flex-col gap-0.5">
-                <span className="font-bold text-sm truncate leading-none mb-0.5">{hero.name}</span>
-                <Bar value={hero.hp.current} max={hero.hp.max} color="bg-rose-500" h="h-2 sm:h-3 md:h-[17px]" label={`${hero.hp.current}/${hero.hp.max} HP`} />
-                <Bar value={hero.ep.current} max={hero.ep.max} color="bg-sky-400" h="h-2 sm:h-3 md:h-[17px]" label={`${hero.ep.current}/${hero.ep.max} EP`} />
+              <div className="flex-1 min-w-0 flex flex-col gap-0.5 h-full justify-center">
+                <span className="hud-name font-bold truncate leading-none mb-0.5">{hero.name}</span>
+                <Bar value={hero.hp.current} max={hero.hp.max} color="bg-rose-500" h="hud-bar-row" label={`${hero.hp.current}/${hero.hp.max} HP`} />
+                <Bar value={hero.ep.current} max={hero.ep.max} color="bg-sky-400" h="hud-bar-row" label={`${hero.ep.current}/${hero.ep.max} EP`} />
                 {/* Abilities — centered below bars */}
-                <div className={`flex justify-center gap-1 sm:gap-1.5 mt-0.5 p-1 sm:p-1.5 rounded-lg ring-1 transition-all ${
+                <div className={`flex justify-center gap-1 mt-0.5 p-1 rounded-lg ring-1 transition-all ${
                   abilityMode === 'offense' ? 'ring-rose-500/60' : 'ring-sky-400/60'
                 }`}>
                   {Array.from({ length: 4 }, (_, i) => {
                     const a = abilitySlots[i];
                     return a
-                      ? <Slot key={a.id} icon={a.icon || '✦'} hotkey={AB_KEYS[i]} cooldown={a.cooldown} maxCooldown={a.maxCooldown} disabled={a.disabled} onClick={() => onAbility && onAbility(a.id)} sizeCls="w-8 h-8 sm:w-10 sm:h-10 md:w-[57px] md:h-[57px]" />
-                      : <Slot key={`ab-e-${i}`} hotkey={AB_KEYS[i]} disabled sizeCls="w-8 h-8 sm:w-10 sm:h-10 md:w-[57px] md:h-[57px]" />;
+                      ? <Slot key={a.id} icon={a.icon || '✦'} hotkey={AB_KEYS[i]} cooldown={a.cooldown} maxCooldown={a.maxCooldown} disabled={a.disabled} onClick={() => onAbility && onAbility(a.id)} />
+                      : <Slot key={`ab-e-${i}`} hotkey={AB_KEYS[i]} disabled />;
                   })}
                 </div>
               </div>
@@ -409,45 +421,48 @@ export const GameHUD: React.FC<GameHUDProps> = ({
           </div>
 
           {/* ── PET + INVENTORY (pet section — flex-[1]) ──────────────────── */}
-          <div className="flex flex-col justify-center gap-1 px-1.5 sm:px-2 flex-[1] min-w-0 pt-2 pb-1 overflow-hidden">
+          <div className="flex flex-col justify-center px-1.5 sm:px-2 flex-[1] min-w-0 h-full">
             {/* Pet row — same layout as hero */}
             {pet && (
-              <div className="flex gap-2 items-center min-w-0">
+              <div className="flex gap-2 items-center min-w-0 h-full pt-5 pb-2">
                 {/* Pet portrait with XP ring */}
                 <div
-                  className="relative shrink-0 w-[56px] h-[56px] sm:w-[88px] sm:h-[88px] md:w-[117px] md:h-[117px] rounded-[8px] sm:rounded-[12px] md:rounded-[15px] p-[3px] md:p-[4px]"
+                  className="hud-portrait relative rounded-xl p-[3px]"
                   style={{
                     background: `conic-gradient(#f59e0b ${pct(pet.xp?.current ?? 0, pet.xp?.max ?? 100) * 360}deg, rgba(255,255,255,0.10) 0deg)`,
                   }}
                 >
-                  <div className="w-full h-full rounded-[6px] sm:rounded-[10px] md:rounded-[12px] overflow-hidden bg-slate-900">
+                  <div className="w-full h-full rounded-[10px] overflow-hidden bg-slate-900">
                     {pet.portraitUrl
                       ? <img src={pet.portraitUrl} alt={pet.name} className="w-full h-full object-cover" />
                       : <div className="w-full h-full flex items-center justify-center text-2xl sm:text-4xl">{pet.icon || '🐾'}</div>
                     }
                   </div>
-                  {/* XP label above portrait — hidden on mobile where portrait is too small */}
-                  <div className="hidden sm:block absolute -top-3.5 left-1/2 -translate-x-1/2 text-[10px] text-amber-400/70 whitespace-nowrap pointer-events-none tabular-nums">
+                  {/* XP label above portrait */}
+                  <div className="absolute -top-3.5 left-1/2 -translate-x-1/2 text-[9px] text-amber-400/70 whitespace-nowrap pointer-events-none tabular-nums hidden sm:block">
                     XP {pet.xp?.current ?? 0}/{pet.xp?.max ?? 100}
                   </div>
-                  {/* Level badge below portrait — hidden on mobile */}
-                  <div className="hidden sm:block absolute -bottom-2 left-1/2 -translate-x-1/2 bg-emerald-500 text-black text-[10px] font-bold px-1.5 py-px rounded-full z-20 whitespace-nowrap leading-none">
+                  {/* Level badge below portrait */}
+                  <div className="absolute -bottom-2 left-1/2 -translate-x-1/2 bg-emerald-500 text-black text-[9px] font-bold px-1.5 py-px rounded-full z-20 whitespace-nowrap leading-none hidden sm:block">
                     Lv {pet.level}
                   </div>
                 </div>
                 {/* Pet HP / EP bars + inventory */}
-                <div className="flex-1 min-w-0 flex flex-col gap-0.5 overflow-hidden">
-                  <span className="font-bold text-sm truncate leading-none mb-0.5">{pet.name}</span>
-                  <Bar value={pet.hp.current} max={pet.hp.max} color="bg-lime-400" h="h-2 sm:h-3 md:h-[17px]" label={`${pet.hp.current}/${pet.hp.max} HP`} />
-                  <Bar value={pet.ep.current} max={pet.ep.max} color="bg-cyan-400" h="h-2 sm:h-3 md:h-[17px]" label={`${pet.ep.current}/${pet.ep.max} EP`} />
+                <div className="flex-1 min-w-0 flex flex-col gap-0.5 overflow-hidden h-full justify-center">
+                  <span className="hud-name font-bold truncate leading-none mb-0.5">{pet.name}</span>
+                  <Bar value={pet.hp.current} max={pet.hp.max} color="bg-lime-400" h="hud-bar-row" label={`${pet.hp.current}/${pet.hp.max} HP`} />
+                  <Bar value={pet.ep.current} max={pet.ep.max} color="bg-cyan-400" h="hud-bar-row" label={`${pet.ep.current}/${pet.ep.max} EP`} />
                   {/* Inventory — centered below bars */}
-                  <div className="flex flex-row justify-center gap-0.5 sm:gap-1 mt-0.5 flex-wrap overflow-hidden">
+                  <div className="flex flex-row flex-nowrap justify-center items-center gap-0.5 sm:gap-1 mt-0.5">
                     {Array.from({ length: 8 }, (_, i) => {
                       const it = itemSlots[i];
                       return it && it.icon
-                        ? <Slot key={it.id} icon={it.icon} hotkey={IT_KEYS[i]} qty={it.qty} tooltip={ITEM_TOOLTIPS[it.icon] || ''} cooldown={it.cooldown} maxCooldown={it.maxCooldown} onClick={() => onItem && onItem(it.id)} sizeCls="w-7 h-7 sm:w-10 sm:h-10 md:w-[57px] md:h-[57px]" />
-                        : <div key={`it-e-${i}`} className="relative w-7 h-7 sm:w-10 sm:h-10 md:w-[57px] md:h-[57px]">
-                            <span className="absolute top-0.5 left-1 text-[9px] sm:text-[11px] text-white/50 font-semibold leading-none">{IT_KEYS[i]}</span>
+                        ? <Slot key={it.id} icon={it.icon} hotkey={IT_KEYS[i]} qty={it.qty} tooltip={ITEM_TOOLTIPS[it.icon] || ''} cooldown={it.cooldown} maxCooldown={it.maxCooldown} onClick={() => onItem && onItem(it.id)} />
+                        : <div
+                            key={`it-e-${i}`}
+                            className="hud-slot relative rounded-lg ring-1 ring-white/10 bg-gradient-to-b from-[#1c2535] to-[#0f1720]"
+                          >
+                            <span className="absolute top-0.5 left-1 text-[9px] text-white/40 font-semibold leading-none">{IT_KEYS[i]}</span>
                           </div>;
                     })}
                   </div>
@@ -713,7 +728,7 @@ export const GameHUD: React.FC<GameHUDProps> = ({
                                 <div className="text-2xl mb-1">{displayIcon}</div>
                                 <div className="text-xs font-semibold capitalize mb-1">{item.type}</div>
                                 <div className="font-bold text-emerald-300">×{item.quantity}</div>
-                                {item.value && <div className="text-xs opacity-60">+{item.value} HP</div>}
+                                {item.value && <div className="text-xs opacity-60">+{item.value} {item.type === 'herb' ? 'EP' : 'HP'}</div>}
                               </div>
                             );
                           })}
@@ -766,7 +781,7 @@ export const GameHUD: React.FC<GameHUDProps> = ({
                                 <div className="text-2xl mb-1">{displayIcon}</div>
                                 <div className="text-xs font-semibold capitalize mb-1">{item.type}</div>
                                 <div className="font-bold text-emerald-300">×{item.quantity}</div>
-                                {item.value && <div className="text-xs opacity-60">+{item.value} HP</div>}
+                                {item.value && <div className="text-xs opacity-60">+{item.value} {item.type === 'herb' ? 'EP' : 'HP'}</div>}
                               </div>
                             );
                           })}
