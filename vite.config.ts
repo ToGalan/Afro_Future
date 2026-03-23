@@ -35,10 +35,7 @@ export default defineConfig({
           'vendor-react': ['react', 'react-dom'],
           'vendor-three': ['three', '@react-three/fiber', '@react-three/drei'],
           'vendor-firebase': ['firebase/app', 'firebase/auth', 'firebase/firestore', 'firebase/messaging'],
-          // View-specific chunks (lazy-loaded, only loaded when needed)
-          'view-skills': ['./src/views/SkillsView.tsx'],
-          'view-store': ['./src/views/StoreView.tsx'],
-          'view-settings': ['./src/views/SettingsView.tsx'],
+
         },
       },
     },

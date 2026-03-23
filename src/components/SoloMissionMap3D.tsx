@@ -2343,18 +2343,23 @@ function MapCameraController({
   const velocity = React.useRef(new THREE.Vector3()); // world-space velocity applied to target
   const lastMoveFrame = React.useRef(0);
   const frameCount = React.useRef(0);
-  // Dynamic zoom limits: prevent zooming out beyond map canvas and enforce 5x aspect rule
-  const mapWidth = bounds.maxX - bounds.minX;
-  const mapHeight = bounds.maxZ - bounds.minZ;
-  const mapDiag = Math.sqrt(mapWidth * mapWidth + mapHeight * mapHeight);
+  // Always-current bounds ref — event-handler closures (useEffect([gameMode])) are stale;
+  // reading boundsRef.current avoids the stale-closure + Infinity-bounds dark-screen bug.
+  const boundsRef = React.useRef(bounds);
+  boundsRef.current = bounds;
   const baseMin = 12;
   const zoomConfig = { min: baseMin, zoomSpeed: 0.12 };
   function currentMaxZoom() {
-    const aspect = gl.domElement.clientWidth / gl.domElement.clientHeight;
-    // Limit: at most 5x aspect ratio factor from min distance; still cap by map diagonal framing and legacy 110 safety
+    const b = boundsRef.current;
+    const bw = b.maxX - b.minX;
+    const bh = b.maxZ - b.minZ;
+    // Use live bounds to compute diagonal; fall back to 250 if bounds are still Infinity (tiles not loaded).
+    const diag = (isFinite(bw) && isFinite(bh) && bw > 0) ? Math.sqrt(bw * bw + bh * bh) : 250;
+    const aspect = gl.domElement.clientWidth / Math.max(1, gl.domElement.clientHeight);
     const aspectCap = baseMin * 5 * aspect;
-    const diagCap = mapDiag * 0.55;
-    return Math.min(aspectCap, diagCap, 110);
+    const diagCap = diag * 0.55;
+    // Never return less than 2× min so off.setLength() never collapses the offset to (0,0,0).
+    return Math.max(baseMin * 2, Math.min(aspectCap, diagCap, 110));
   }
 
   // Initialize offset and optionally center on heroWorld once tiles/hero provided
@@ -2586,12 +2591,16 @@ function MapCameraController({
   }, [gameMode]);
 
   function clampTarget() {
+    const b = boundsRef.current;
+    // Skip clamping entirely while bounds are still Infinity (tiles not yet loaded);
+    // applying Infinity/−Infinity bounds pushes the target to −∞, causing a black screen.
+    if (!isFinite(b.minX) || !isFinite(b.maxX) || !isFinite(b.minZ) || !isFinite(b.maxZ)) return;
     const t = targetRef.current;
-    t.x = Math.min(bounds.maxX, Math.max(bounds.minX, t.x));
-    t.z = Math.min(bounds.maxZ, Math.max(bounds.minZ, t.z));
+    t.x = Math.min(b.maxX, Math.max(b.minX, t.x));
+    t.z = Math.min(b.maxZ, Math.max(b.minZ, t.z));
     // Clamp Y (vertical camera movement) if bounds provided
-    if (bounds.minY !== undefined && bounds.maxY !== undefined) {
-      t.y = Math.min(bounds.maxY, Math.max(bounds.minY, t.y));
+    if (b.minY !== undefined && b.maxY !== undefined) {
+      t.y = Math.min(b.maxY, Math.max(b.minY, t.y));
     }
     // Also keep the camera body (position = target + offset) within map bounds
     if (offsetRef.current) {
@@ -2599,10 +2608,10 @@ function MapCameraController({
       const oz = offsetRef.current.z;
       const cx = t.x + ox;
       const cz = t.z + oz;
-      if (cx < bounds.minX) t.x += bounds.minX - cx;
-      else if (cx > bounds.maxX) t.x -= cx - bounds.maxX;
-      if (cz < bounds.minZ) t.z += bounds.minZ - cz;
-      else if (cz > bounds.maxZ) t.z -= cz - bounds.maxZ;
+      if (cx < b.minX) t.x += b.minX - cx;
+      else if (cx > b.maxX) t.x -= cx - b.maxX;
+      if (cz < b.minZ) t.z += b.minZ - cz;
+      else if (cz > b.maxZ) t.z -= cz - b.maxZ;
     }
   }
 
