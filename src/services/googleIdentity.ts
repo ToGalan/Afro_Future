@@ -64,10 +64,16 @@ export async function initGoogleIdentity(clientId: string, callback: (resp: Goog
   console.log('[gis] initGoogleIdentity start', clientId);
   const g = await loadGoogleIdentity();
   // @ts-ignore
-  g.accounts.id.initialize({ client_id: clientId, callback: (resp: GoogleCredentialResponse) => { 
-    console.log('[gis] credential callback received', resp?.select_by);
-    callback(resp);
-  }});
+  (g.accounts.id as any).initialize({
+    client_id: clientId,
+    callback: (resp: GoogleCredentialResponse) => {
+      console.log('[gis] credential callback received', resp?.select_by);
+      callback(resp);
+    },
+    // Always show the account chooser — never silently pick the default signed-in account.
+    auto_select: false,
+    cancel_on_tap_outside: false,
+  });
   console.log('[gis] initialize call completed');
   return g;
 }

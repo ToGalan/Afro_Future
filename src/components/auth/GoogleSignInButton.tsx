@@ -58,6 +58,8 @@ export const GoogleSignInButton: React.FC<GoogleSignInButtonProps> = ({
             text,
             shape,
             logo_alignment: logoAlignment,
+            // Ensure a click always opens the full account chooser popup.
+            ux_mode: 'popup',
           });
         }
       }
