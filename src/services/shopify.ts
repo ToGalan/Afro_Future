@@ -22,6 +22,11 @@ export interface ShopifyProduct {
 
 interface StorefrontResponse<T> { data?: T; errors?: { message: string }[] }
 
+// Simple in-memory cache for products (5 minute TTL)
+const CACHE_TTL = 5 * 60 * 1000; // 5 minutes
+let cachedProducts: ShopifyProduct[] | null = null;
+let cacheTimestamp = 0;
+
 const DOMAIN = import.meta.env.VITE_SHOPIFY_STORE_DOMAIN || 'store.afro-future.app'; // Custom domain or fallback
 const TOKEN = import.meta.env.VITE_SHOPIFY_STOREFRONT_TOKEN;
 const API_VERSION = (import.meta as any)?.env?.VITE_SHOPIFY_STOREFRONT_API_VERSION || '2025-07';
@@ -40,6 +45,13 @@ query Products($first:Int!) {
 }`;
 
 export async function fetchProducts(limit = 12): Promise<ShopifyProduct[]> {
+  // Check cache first
+  const now = Date.now();
+  if (cachedProducts && (now - cacheTimestamp) < CACHE_TTL) {
+    if (DEBUG) console.log('[shopify] returning cached products', { age: now - cacheTimestamp });
+    return cachedProducts;
+  }
+
   if(!DOMAIN || !TOKEN) throw new Error('missing_shopify_env');
   // Guard against using an Admin token on the Storefront API; admin tokens start with 'shpat_'
   if (typeof TOKEN === 'string' && TOKEN.startsWith('shpat_')) {
@@ -145,5 +157,10 @@ export async function fetchProducts(limit = 12): Promise<ShopifyProduct[]> {
   }).filter((p:any) => !!p.id);
 
   if (DEBUG) console.log('[shopify] success', { count: products.length, ms: +(performance.now()-t0).toFixed(1) });
+  
+  // Update cache
+  cachedProducts = products;
+  cacheTimestamp = now;
+  
   return products;
 }

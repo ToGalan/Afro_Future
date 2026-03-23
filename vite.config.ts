@@ -13,4 +13,37 @@ export default defineConfig({
     strictPort: true,
     host: true,
   },
+  worker: {
+    // Configure Web Worker bundling
+    format: 'es',
+  },
+  build: {
+    // Optimize chunk splitting for better caching and parallel loading
+    rollupOptions: {
+      output: {
+        manualChunks: {
+          // Vendor chunks to separate cache-friendly bundles
+          'vendor-react': ['react', 'react-dom'],
+          'vendor-three': ['three', '@react-three/fiber', '@react-three/drei'],
+          'vendor-firebase': ['firebase/app', 'firebase/auth', 'firebase/firestore', 'firebase/messaging'],
+          // View-specific chunks (lazy-loaded, only loaded when needed)
+          'view-skills': ['./src/views/SkillsView.tsx'],
+          'view-store': ['./src/views/StoreView.tsx'],
+          'view-settings': ['./src/views/SettingsView.tsx'],
+        },
+      },
+    },
+    // Increase chunk size warnings threshold since Three.js adds size
+    chunkSizeWarningLimit: 600,
+    // Source maps for development debugging
+    sourcemap: false,
+    // Minification
+    minify: 'terser',
+    terserOptions: {
+      compress: {
+        drop_console: true,
+        drop_debugger: true,
+      },
+    },
+  },
 });

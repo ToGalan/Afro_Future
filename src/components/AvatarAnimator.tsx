@@ -42,7 +42,7 @@ export function useAvatarAnimation() {
 const RIG_PATH = '/assets/3d/FullBody.fbx';
 const IDLE_PATH = '/assets/3d/Idle.fbx';
 
-export const AvatarAnimator: React.FC<AvatarAnimatorProps> = ({ children, speed = 1, paused = false, clip, onState }) => {
+export const AvatarAnimator: React.FC<AvatarAnimatorProps> = React.memo(({ children, speed = 1, paused = false, clip, onState }) => {
   // Attempt to load rig & idle; if fail, Drei will error to console. We keep try/catch nuance by conditional flags.
   // (Optional) If a separate rig FBX is needed later, load it similarly to Idle and parent children appropriately.
   const groupRef = useRef<Group | null>(null);
@@ -99,7 +99,7 @@ export const AvatarAnimator: React.FC<AvatarAnimatorProps> = ({ children, speed 
       </group>
     </AvatarAnimationContext.Provider>
   );
-};
+});
 
 // Preload helper (optional call from app root)
 export function preloadAvatarAnimation() {

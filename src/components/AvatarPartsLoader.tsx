@@ -17,19 +17,39 @@ function PartMesh({ file, group }: { file: string; group: string }) {
   // dispose+remount the mesh every frame — making it invisible continuously.
   const inst = useMemo(() => {
     const clone = scene.clone();
+    // Clear any baked root transform so the clone renders at parent-relative origin.
+    // Also re-enable matrixAutoUpdate on every node — Three.js's GLTFLoader sets it
+    // to false for nodes exported with a baked matrix, which prevents world-matrix
+    // propagation when the parent group moves (avatar won't follow the player).
+    clone.position.set(0, 0, 0);
+    clone.rotation.set(0, 0, 0);
+    clone.scale.set(1, 1, 1);
     clone.traverse((obj: any) => {
+      obj.matrixAutoUpdate = true;
+      obj.matrixWorldAutoUpdate = true;
+      obj.updateMatrix();
       if (!obj.userData) obj.userData = {};
-      obj.userData.partGroup = group; // tag for downstream tint logic
+      obj.userData.partGroup = group;
     });
     return clone;
   }, [scene, group]);
-  return <primitive object={inst} frustumCulled={false} />;
+  // Wrap in a group so R3F controls parenting; primitive only carries mesh geometry
+  return (
+    <group position={[0, 0, 0]} frustumCulled={false}>
+      <primitive object={inst} frustumCulled={false} />
+    </group>
+  );
 }
 
 export function AvatarPartsLoader({ parts }: AvatarPartsLoaderProps) {
   const activeVariants = useMemo(() => {
-    if (!parts) return [] as string[];
-    return Object.values(parts).filter(Boolean) as string[];
+    if (!parts) {
+      console.log('[AvatarPartsLoader] No parts provided, only base body will show');
+      return [] as string[];
+    }
+    const variants = Object.values(parts).filter(Boolean) as string[];
+    console.log('[AvatarPartsLoader] Loading parts:', variants);
+    return variants;
   }, [parts]);
 
   return (
@@ -37,7 +57,10 @@ export function AvatarPartsLoader({ parts }: AvatarPartsLoaderProps) {
       <Suspense fallback={null}>
         {activeVariants.map(id => {
           const v = variantById[id];
-          if (!v) return null;
+          if (!v) {
+            console.warn('[AvatarPartsLoader] Variant ID not found:', id);
+            return null;
+          }
           return <PartMesh key={id} file={v.file} group={v.group} />;
         })}
       </Suspense>
@@ -45,13 +68,26 @@ export function AvatarPartsLoader({ parts }: AvatarPartsLoaderProps) {
   );
 }
 
-// Legacy direct preload kept (harmless). Centralized tiered preloads now in assets/preloadAssets.ts
-useGLTF.preload('/assets/3d/NakedFullBody.glb');
-
 export function BaseBody() {
   const { scene } = useGLTF('/assets/3d/NakedFullBody.glb') as any;
   // Memoize so the cloned object is stable — prevents per-frame dispose/remount
   // when the parent component (AssembledAvatarMesh) re-renders in the game loop.
-  const inst = useMemo(() => scene.clone(), [scene]);
-  return <primitive object={inst} position={[0, 0, 0]} frustumCulled={false} />;
+  const inst = useMemo(() => {
+    const clone = scene.clone();
+    // Clear baked root transform and re-enable matrixAutoUpdate on entire hierarchy.
+    clone.position.set(0, 0, 0);
+    clone.rotation.set(0, 0, 0);
+    clone.scale.set(1, 1, 1);
+    clone.traverse((obj: any) => {
+      obj.matrixAutoUpdate = true;
+      obj.matrixWorldAutoUpdate = true;
+      obj.updateMatrix();
+    });
+    return clone;
+  }, [scene]);
+  return (
+    <group position={[0, 0, 0]} frustumCulled={false}>
+      <primitive object={inst} frustumCulled={false} />
+    </group>
+  );
 }

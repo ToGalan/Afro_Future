@@ -1,4 +1,4 @@
-import React, { Suspense, useEffect, useRef, useState } from 'react';
+import React, { Suspense, useEffect, useRef } from 'react';
 import { Canvas, useFrame, useThree } from '@react-three/fiber';
 import { Environment, OrbitControls } from '@react-three/drei';
 import { AvatarPartsLoader, BaseBody } from './AvatarPartsLoader';
@@ -105,51 +105,65 @@ function applyStoreTint(root: THREE.Object3D, store: { groupColors: Record<strin
   }
 }
 
-function AutoFrameHelper({ rootRef, enabled, margin, deps, manualOffset }: { rootRef: React.RefObject<THREE.Group>; enabled: boolean; margin: number; deps: any[]; manualOffset: [number,number,number]; }) {
+/**
+ * FrameAdjuster — inside Canvas (has access to useFrame/useThree).
+ * Runs every frame until geometry loads, then:
+ *   1. If autoFrame: scales outerRef to fit the viewport height.
+ *   2. Always: shifts innerRef.position.y so the model is foot-anchored (feet at y=0).
+ * Resets when partsKey changes (user swaps a part) so it recomputes.
+ */
+function FrameAdjuster({
+  outerRef, innerRef, autoFrame, margin, baseScale, partsKey,
+}: {
+  outerRef: React.RefObject<THREE.Group>;
+  innerRef: React.RefObject<THREE.Group>;
+  autoFrame: boolean;
+  margin: number;
+  baseScale: number;
+  partsKey: string;
+}) {
   const { camera } = useThree();
-  const [computed, setComputed] = useState<{ scale: number; offset: [number,number,number]; ready: boolean }>({ scale: 1, offset: manualOffset, ready: false });
+  const doneRef = useRef(false);
+
   useEffect(() => {
-    if (!enabled) return;
-    if (!rootRef.current) return;
-    const attempt = () => {
-      const root = rootRef.current!;
-      // Compute bounds
-      const box = new THREE.Box3().setFromObject(root);
-      if (box.isEmpty() || !isFinite(box.min.y) || !isFinite(box.max.y)) {
-        // try again shortly (assets may still be streaming)
-        requestAnimationFrame(attempt);
-        return;
-      }
-      const size = new THREE.Vector3();
-      box.getSize(size);
-      const height = size.y || 1;
-      // Distance from camera to origin (assumes target near origin); more robust would use provided target
+    // Reset every time parts change so we recompute with fresh geometry.
+    if (innerRef.current) innerRef.current.position.y = 0;
+    if (autoFrame && outerRef.current) outerRef.current.scale.setScalar(baseScale);
+    doneRef.current = false;
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [partsKey]);
+
+  useFrame(() => {
+    if (doneRef.current || !outerRef.current || !innerRef.current) return;
+    const box = new THREE.Box3().setFromObject(innerRef.current);
+    if (box.isEmpty() || !isFinite(box.min.y) || !isFinite(box.max.y)) return; // not loaded yet
+    const height = box.max.y - box.min.y;
+    if (height < 0.01) return;
+    doneRef.current = true;
+
+    if (autoFrame) {
       const dist = camera.position.length();
-      const vFov = (camera as any).fov * Math.PI / 180;
-      const totalVisibleHeight = 2 * Math.tan(vFov / 2) * dist;
-      const allowed = totalVisibleHeight * (1 - margin);
-      const scale = allowed / height;
-      // Center horizontally, lift so feet sit slightly above bottom (keep small positive to avoid clip)
-      const minY = box.min.y;
-      const maxY = box.max.y;
-      const centerX = (box.min.x + box.max.x) / 2;
-      const centerZ = (box.min.z + box.max.z) / 2;
-      // We want feet ~ at y = - (allowed/2) + smallPadding after scale because camera looks at mid torso.
-      // Simpler: shift so minY becomes -height*scale*0.02 (tiny padding) then apply manualOffset additive.
-      const footPad = height * scale * 0.02;
-      const yOffset = (-minY * scale) - footPad;
-      const offset: [number,number,number] = [(-centerX) * scale + manualOffset[0], yOffset + manualOffset[1], (-centerZ) * scale + manualOffset[2]];
-      setComputed({ scale, offset, ready: true });
-    };
-    // Delay one rAF to ensure suspense content present
-    requestAnimationFrame(attempt);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [enabled, camera, margin, rootRef, ...deps]);
-  return <group visible={false} userData={computed} />; // marker; parent AvatarScene will read this state
+      const vFov = (camera as THREE.PerspectiveCamera).fov * Math.PI / 180;
+      const visH = 2 * Math.tan(vFov / 2) * dist;
+      const allowed = visH * (1 - margin * 2);
+      outerRef.current.scale.setScalar((allowed / height) * outerRef.current.scale.x);
+    }
+
+    // Re-read bounding box after potential scale change, then foot-anchor.
+    // box.min.y is the world-space Y of the feet. Subtracting it from position.y
+    // shifts the group up so feet land exactly at y = 0 inside the parent group.
+    const finalBox = new THREE.Box3().setFromObject(innerRef.current);
+    innerRef.current.position.y -= finalBox.min.y;
+  });
+
+  return null;
 }
 
 export function AvatarScene({ parts, colors, debugTint, animPaused, animSpeed, rotateSpeed, disableControls, cameraPosition, cameraFov, target, modelOffset, modelScale, autoFrame, frameMargin }: AvatarSceneProps) {
+  // outerRef: receives scale/position from props (manual offset + autoFrame scale)
   const rootRef = useRef<THREE.Group>(null);
+  // contentRef: inner group whose Y is mutated by FrameAdjuster to foot-anchor the model
+  const contentRef = useRef<THREE.Group>(null);
   const groupColors = useCreatorStore(s => s.groupColors);
   const skinMaterial = useCreatorStore(s => s.skinMaterial);
   // Re-apply tint when parts mount, group colors change, or skin color changes
@@ -166,8 +180,8 @@ export function AvatarScene({ parts, colors, debugTint, animPaused, animSpeed, r
   const offset = modelOffset ?? [0,0,0];
   const scale = modelScale ?? 1;
   const margin = frameMargin ?? 0.12;
-  // We'll read auto-frame result through ref to hidden helper group to avoid extra renders
-  const autoDataRef = useRef<{ scale:number; offset:[number,number,number]; ready:boolean }|null>(null);
+  // Stable key so FrameAdjuster recomputes when the loaded parts set changes
+  const partsKey = JSON.stringify(parts ?? {});
 
   return (
     <Canvas shadows camera={{ position: camPos as any, fov }} dpr={[1, 1.75]}>
@@ -175,47 +189,35 @@ export function AvatarScene({ parts, colors, debugTint, animPaused, animSpeed, r
       <ambientLight intensity={0.4} />
       <directionalLight position={[5,5,5]} intensity={1.1} castShadow shadow-mapSize-width={1024} shadow-mapSize-height={1024} />
       <Suspense fallback={null}>
-        {autoFrame && (
-          <AutoFrameHelper
-            rootRef={rootRef}
-            enabled={!!autoFrame}
-            margin={margin}
-            manualOffset={offset as any}
-            deps={[parts]}
-          />
-        )}
         <IdlePivot speed={rotateSpeed ?? 0.15}>
-          <group
-            ref={rootRef}
-            // Dynamically apply auto frame data if available; fallback to manual
-            position={(autoFrame && autoDataRef.current?.ready ? autoDataRef.current.offset : offset) as any}
-            scale={((autoFrame && autoDataRef.current?.ready ? autoDataRef.current.scale : scale) as number) || 1}
-            onUpdate={grp => {
-              // pull latest auto frame data from hidden helper (stored in userData of its group)
-              if (!autoFrame) return;
-              const helper = (grp.parent as any)?.children?.find((c: any) => c.userData && c.userData.ready !== undefined);
-              if (helper && helper.userData.ready) {
-                autoDataRef.current = helper.userData;
-                // force update transform
-                grp.scale.setScalar(helper.userData.scale);
-                const off = helper.userData.offset as [number,number,number];
-                grp.position.set(off[0], off[1], off[2]);
-              }
-            }}
-          >
-            <AvatarAnimator paused={animPaused} speed={animSpeed}>
-              <group>
-                <BaseBody />
-                <AvatarPartsLoader parts={parts} />
-              </group>
-            </AvatarAnimator>
+          {/* outerRef: manual offset + autoFrame scale applied here */}
+          <group ref={rootRef} position={offset as any} scale={scale}>
+            {/* contentRef: Y is shifted by FrameAdjuster to foot-anchor the model */}
+            <group ref={contentRef}>
+              <AvatarAnimator paused={animPaused} speed={animSpeed}>
+                <group>
+                  <BaseBody />
+                  <AvatarPartsLoader parts={parts} />
+                </group>
+              </AvatarAnimator>
+            </group>
           </group>
         </IdlePivot>
-        <Environment preset="city" />
+        {/* Environment removed to prevent HDR loading errors - using basic lights instead */}
       </Suspense>
+      {/* FrameAdjuster lives outside Suspense so it's always mounted;
+          it retries every frame until geometry is loaded, then runs once. */}
+      <FrameAdjuster
+        outerRef={rootRef}
+        innerRef={contentRef}
+        autoFrame={!!autoFrame}
+        margin={margin}
+        baseScale={scale}
+        partsKey={partsKey}
+      />
       {!disableControls && <OrbitControls enablePan={false} minDistance={2} maxDistance={4} target={tgt as any} />}
     </Canvas>
   );
 }
 
-export default AvatarScene;
+export default React.memo(AvatarScene);

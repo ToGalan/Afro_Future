@@ -1,10 +1,10 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useState, Suspense, lazy } from 'react';
 import { usePlayerProfile } from './hooks/usePlayerProfile';
 import { useSkillStore, availablePoints } from './store/skillStore';
+import { makeTree } from './store/skillData';
 import { GROUP_ORDER, getVariantsByGroup } from './assets/threeParts';
 import { buildAvatarConfig } from './services/avatarConfig';
 import AvatarScene from './components/AvatarScene';
-import SnowflakeSkillTree from './components/SnowflakeSkillTree';
 import { fetchProducts, type ShopifyProduct } from './services/shopify';
 import VariantPreview from './components/VariantPreview';
 import { Archetype, CharacterLoadout, Faction, PetType, uid, now } from './types/loadout';
@@ -22,6 +22,10 @@ import type { MinimapData } from './components/gameHUD';
 import PetPanel from './components/PetPanel';
 import { useAutoSyncSkills } from './hooks/useAutoSyncSkills';
 import { collectAndRegisterPush } from './services/messaging';
+
+// Lazy-load heavy view components (only loaded when accessed)
+const SnowflakeSkillTree = lazy(() => import('./components/SnowflakeSkillTree'));
+
 // Runtime config shape
 interface RuntimeConfig { storeDomain: string | null; apiVersion: string; debug: boolean; buildHash?: string | null; }
 const APP_VERSION_FALLBACK = 'v0.2.3';
@@ -176,10 +180,18 @@ export default function App() {
   async function fetchServerProfile(idToken: string){
     try {
       const res = await fetch('/profile', { headers: { 'Authorization': 'Bearer '+idToken } });
-      if(!res.ok) return null;
+      if(!res.ok) {
+        if (res.status === 404) {
+          console.log('[profile] Server not running - using local-only mode');
+        }
+        return null;
+      }
       const json = await res.json();
       return json.profile || null;
-    } catch { return null; }
+    } catch { 
+      console.log('[profile] Server unavailable - using local-only mode');
+      return null; 
+    }
   }
 
   async function persistServerProfile(idToken: string, profilePatch: any){
@@ -408,6 +420,7 @@ export default function App() {
           pet: {
             type: merged.pet?.type,
             level: merged.pet?.level ?? 1,
+            xp: 0,
           },
         });
       } catch {}
@@ -440,6 +453,7 @@ export default function App() {
           pet: {
             type: normalized.pet?.type,
             level: normalized.pet?.level ?? 1,
+            xp: 0,
           },
         });
       } catch {}
@@ -545,7 +559,10 @@ export default function App() {
 
   return (
     mainView === 'mission' ? (
-      <MissionScreen onExit={() => setMainView('dashboard')} />
+      <MissionScreen 
+        onExit={() => setMainView('dashboard')} 
+        onOpenSkillTree={() => setMainView('skills')}
+      />
     ) : (
       <GameViewport mode="fit">
         <MainMenu
@@ -567,7 +584,217 @@ export default function App() {
   );
 }
 
-function MissionScreen({ onExit }: { onExit: () => void }){
+// Module-level skill icon helper (used by MissionScreen and SkillsModal)
+function skillIconFn(id: string): string {
+  if(id.includes('combat')) return '⚔️';
+  if(id.includes('support')) return '✚';
+  if(id.includes('pet') || id.includes('bond')) return '🐾';
+  if(id.includes('weapon')) return '🔫';
+  if(id.includes('spell') || id.includes('spellcraft')) return '✨';
+  if(id.includes('defense') || id.includes('shield')) return '🛡️';
+  if(id.includes('mobility')) return '🦶';
+  if(id.includes('leadership')) return '🗣️';
+  if(id.includes('terraform')) return '🌍';
+  if(id.includes('technologist') || id.includes('techno')) return '🧪';
+  if(id.includes('merchant') || id.includes('trade')) return '💱';
+  if(id.includes('looting')) return '📦';
+  return '⬢';
+}
+
+// Full-screen skills modal with SnowflakeSkillTree + ability assignment loadout
+function SkillsModal({ loadout, onClose }: { loadout: CharacterLoadout; onClose: () => void }) {
+  const unlocked = useSkillStore(s => s.unlocked);
+  const abilityLoadout = useSkillStore(s => s.abilityLoadout);
+  const setAbilitySlot = useSkillStore(s => s.setAbilitySlot);
+  const [selectedSkill, setSelectedSkill] = React.useState<string | null>(null);
+
+  const tree = React.useMemo(() => makeTree(), []);
+
+  const assignableSkills = React.useMemo(() => {
+    return unlocked
+      .filter(id => id !== 'root')
+      .map(id => {
+        const node = tree.find(n => n.id === id);
+        return node ? { ...node, icon: skillIconFn(id) } : null;
+      })
+      .filter(Boolean) as { id: string; label: string; description: string; icon: string; type: string }[];
+  }, [unlocked, tree]);
+
+  function findSlotFor(skillId: string): { category: 'offensive' | 'defensive'; slot: number } | null {
+    const offIdx = abilityLoadout.offensive.indexOf(skillId);
+    if (offIdx >= 0) return { category: 'offensive', slot: offIdx };
+    const defIdx = abilityLoadout.defensive.indexOf(skillId);
+    if (defIdx >= 0) return { category: 'defensive', slot: defIdx };
+    return null;
+  }
+
+  function handleSlotClick(category: 'offensive' | 'defensive', slot: number) {
+    if (selectedSkill) {
+      const prev = findSlotFor(selectedSkill);
+      if (prev) setAbilitySlot(prev.category, prev.slot, null);
+      setAbilitySlot(category, slot, selectedSkill);
+      setSelectedSkill(null);
+    } else {
+      const current = abilityLoadout[category][slot];
+      if (current) setAbilitySlot(category, slot, null);
+    }
+  }
+
+  // Close on Escape
+  React.useEffect(() => {
+    function onKey(e: KeyboardEvent) { if (e.key === 'Escape') onClose(); }
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [onClose]);
+
+  const OFFENSIVE_KEYS = ['Q', 'W', 'E', 'R'];
+  const DEFENSIVE_KEYS = ['Z', 'X', 'C', 'V'];
+
+  function SlotGrid({ category, keys, accent }: { category: 'offensive' | 'defensive'; keys: string[]; accent: string }) {
+    return (
+      <div className="grid grid-cols-4 gap-2">
+        {Array.from({ length: 4 }, (_, i) => {
+          const assignedId = abilityLoadout[category][i];
+          const skill = assignedId ? assignableSkills.find(s => s.id === assignedId) : null;
+          return (
+            <button
+              key={i}
+              onClick={() => handleSlotClick(category, i)}
+              title={skill ? skill.label : (selectedSkill ? 'Assign here' : 'Empty slot')}
+              className={`aspect-square w-full rounded-xl border-2 flex flex-col items-center justify-center gap-1 transition-all ${
+                selectedSkill
+                  ? `border-${accent}-400/70 bg-${accent}-900/30 hover:bg-${accent}-900/50 cursor-pointer ring-1 ring-${accent}-400/30`
+                  : assignedId
+                  ? `border-${accent}-500/50 bg-[#1c2535] hover:border-${accent}-400/70 cursor-pointer`
+                  : 'border-white/10 bg-[#1c2535]/40 opacity-60'
+              }`}
+            >
+              {skill ? (
+                <>
+                  <span className="text-2xl leading-none">{skill.icon}</span>
+                  <span className="text-[8px] opacity-60 leading-none px-0.5 truncate w-full text-center">{skill.label.split(' ').slice(-1)[0]}</span>
+                </>
+              ) : (
+                <span className="text-sm opacity-20">{selectedSkill ? '＋' : '·'}</span>
+              )}
+              <span className={`text-[9px] font-bold leading-none ${category === 'offensive' ? 'text-rose-300/80' : 'text-sky-300/80'}`}>{keys[i]}</span>
+            </button>
+          );
+        })}
+      </div>
+    );
+  }
+
+  return (
+    <div className="fixed inset-0 z-[99] flex items-center justify-center">
+      <div className="absolute inset-0 bg-black/75 backdrop-blur-sm" onClick={onClose} />
+      <div className="relative w-[97vw] h-[95vh] bg-[#0f1218] rounded-2xl border border-white/10 shadow-2xl overflow-hidden flex text-gray-100">
+        <button
+          onClick={onClose}
+          className="absolute top-3 right-3 z-50 w-8 h-8 rounded-lg bg-white/5 hover:bg-white/15 border border-white/10 flex items-center justify-center text-sm leading-none transition"
+          title="Close (Esc)"
+        >✕</button>
+
+        {/* Left: Skill Tree */}
+        <div className="flex-1 min-w-0 overflow-hidden">
+          <Suspense fallback={<div className="w-full h-full flex items-center justify-center text-gray-400 text-sm">Loading skill tree…</div>}>
+            <SnowflakeSkillTree initialLevel={loadout.level} />
+          </Suspense>
+        </div>
+
+        {/* Right: Ability Assignment Panel */}
+        <div className="w-72 shrink-0 border-l border-white/10 bg-[#0b0f16] flex flex-col overflow-hidden">
+          <header className="px-4 pt-4 pb-3 border-b border-white/10 shrink-0">
+            <h2 className="text-sm font-semibold tracking-wide">Ability Loadout</h2>
+            <p className="text-[10px] opacity-50 mt-0.5">Select a skill below, then click a slot to assign it</p>
+          </header>
+
+          <div className="flex-1 overflow-y-auto p-4 space-y-5 overscroll-contain">
+            {/* Offensive Slots */}
+            <section>
+              <div className="flex items-center gap-2 mb-2.5">
+                <span>⚔️</span>
+                <span className="text-[11px] font-semibold tracking-wide text-rose-300 uppercase">Offensive  Q / W / E / R</span>
+              </div>
+              <SlotGrid category="offensive" keys={OFFENSIVE_KEYS} accent="rose" />
+            </section>
+
+            {/* Defensive Slots */}
+            <section>
+              <div className="flex items-center gap-2 mb-2.5">
+                <span>🛡️</span>
+                <span className="text-[11px] font-semibold tracking-wide text-sky-300 uppercase">Defensive  Z / X / C / V</span>
+              </div>
+              <SlotGrid category="defensive" keys={DEFENSIVE_KEYS} accent="sky" />
+            </section>
+
+            {/* Unlocked Skills List */}
+            <section>
+              <div className="text-[10px] font-semibold tracking-widest opacity-50 uppercase mb-2">
+                Unlocked Skills ({assignableSkills.length})
+              </div>
+              {assignableSkills.length === 0 ? (
+                <p className="text-[11px] opacity-40 text-center py-6">Unlock skills in the tree<br />to assign them here</p>
+              ) : (
+                <div className="space-y-1.5">
+                  {assignableSkills.map(skill => {
+                    const isSelected = selectedSkill === skill.id;
+                    const assignment = findSlotFor(skill.id);
+                    return (
+                      <button
+                        key={skill.id}
+                        onClick={() => setSelectedSkill(s => s === skill.id ? null : skill.id)}
+                        className={`w-full flex items-center gap-2.5 px-2.5 py-2 rounded-lg border text-left transition-all ${
+                          isSelected
+                            ? 'border-emerald-400/70 bg-emerald-900/25 ring-1 ring-emerald-400/30'
+                            : assignment
+                            ? 'border-white/15 bg-white/[0.04] opacity-75'
+                            : 'border-white/8 bg-white/[0.02] hover:bg-white/[0.06] hover:border-white/15'
+                        }`}
+                      >
+                        <span className="text-lg shrink-0">{skill.icon}</span>
+                        <div className="flex-1 min-w-0">
+                          <div className="text-xs font-medium truncate">{skill.label}</div>
+                          <div className="text-[10px] opacity-45 truncate">{skill.description}</div>
+                        </div>
+                        {assignment && (
+                          <span className={`shrink-0 text-[9px] font-bold px-1.5 py-0.5 rounded-md ${
+                            assignment.category === 'offensive'
+                              ? 'bg-rose-900/60 text-rose-300'
+                              : 'bg-sky-900/60 text-sky-300'
+                          }`}>
+                            {assignment.category === 'offensive' ? OFFENSIVE_KEYS[assignment.slot] : DEFENSIVE_KEYS[assignment.slot]}
+                          </span>
+                        )}
+                      </button>
+                    );
+                  })}
+                </div>
+              )}
+            </section>
+          </div>
+
+          {/* Status bar */}
+          {selectedSkill ? (
+            <div className="px-4 py-2.5 border-t border-emerald-500/20 bg-emerald-900/15 text-[11px] text-emerald-300 flex items-center gap-2 shrink-0">
+              <span className="opacity-70">✦</span>
+              <span className="flex-1 truncate">
+                {(() => { const sk = assignableSkills.find(s => s.id === selectedSkill); return sk ? `"${sk.label}" — click a slot` : 'Skill selected'; })()}
+              </span>
+              <button onClick={() => setSelectedSkill(null)} className="shrink-0 opacity-50 hover:opacity-90 text-xs">✕</button>
+            </div>
+          ) : (
+            <div className="px-4 py-2.5 border-t border-white/5 text-[10px] opacity-40 text-center shrink-0">
+              Click a skill to select it, then a slot to assign
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function MissionScreen({ onExit, onOpenSkillTree }: { onExit: () => void; onOpenSkillTree?: () => void }){
   // Access active loadout & skill state for HUD
   const activeLoadoutRaw = React.useMemo(() => {
     try { const raw = localStorage.getItem('afrofuture.activeLoadout'); if(raw) return JSON.parse(raw); } catch {}
@@ -586,40 +813,30 @@ function MissionScreen({ onExit }: { onExit: () => void }){
   const XP_MAX = 100 + (level-1)*40;
   const XP_CUR = Math.min(XP_MAX-1, (level-1)*40 + 10);
   // Map unlocked skills (excluding root) into ability slots
-  // Skill ID -> emoji icon heuristic mapping
-  const skillIcon = React.useCallback((id:string)=>{
-    if(id.includes('combat')) return '⚔️';
-    if(id.includes('support')) return '✚';
-    if(id.includes('pet') || id.includes('bond')) return '🐾';
-    if(id.includes('weapon')) return '🔫';
-    if(id.includes('spell')) return '✨';
-    if(id.includes('defense') || id.includes('shield')) return '🛡️';
-    if(id.includes('mobility')) return '🦶';
-    if(id.includes('leadership')) return '🗣️';
-    if(id.includes('terraform')) return '🌍';
-    if(id.includes('technologist') || id.includes('techno')) return '🧪';
-    if(id.includes('merchant') || id.includes('trade')) return '💱';
-    if(id.includes('looting')) return '📦';
-    return '⬢';
-  },[]);
   // Local runtime ability state (cooldowns & disabled flags)
   const [runtimeAbilities, setRuntimeAbilities] = React.useState<{[id:string]: { cooldown: number; max: number } }>({});
   const BASE_COOLDOWN = 8; // seconds placeholder
-  const abilities = React.useMemo(()=>{
-    return skillState.unlocked.filter(id=>id!=='root').slice(0,8).map((id,i)=>{
+  const AB_KEYS = ['q', 'w', 'e', 'r'] as const;
+
+  // --- Derive ability arrays from the loadout slots ---
+  // Offensive abilities (Q/W/E/R) from abilityLoadout.offensive
+  const abilities = React.useMemo(() => {
+    return skillState.abilityLoadout.offensive.map((id, i) => {
+      if (!id) return null;
       const rt = runtimeAbilities[id];
-      return {
-        id,
-        icon: skillIcon(id),
-        cooldown: rt?.cooldown || 0,
-        maxCooldown: rt?.max || BASE_COOLDOWN,
-        disabled: !!rt?.cooldown,
-        key: String(i+1),
-      };
-    });
-  },[skillState.unlocked, runtimeAbilities, skillIcon]);
-  // Placeholder inventory items
-  const items = React.useMemo(()=> Array.from({length:4}).map((_,i)=>({ id: 'item'+i, icon: '📦', qty: 1, key: ['Q','W','E','R'][i] })),[]);
+      return { id, icon: skillIconFn(id), cooldown: rt?.cooldown || 0, maxCooldown: rt?.max || BASE_COOLDOWN, disabled: !!rt?.cooldown, key: AB_KEYS[i] };
+    }).filter(Boolean) as { id: string; icon: string; cooldown: number; maxCooldown: number; disabled: boolean; key: string }[];
+  }, [skillState.abilityLoadout.offensive, runtimeAbilities]);
+
+  // Defensive abilities (Z/X/C/V) from abilityLoadout.defensive
+  const defensiveAbilities = React.useMemo(() => {
+    return skillState.abilityLoadout.defensive.map((id, i) => {
+      if (!id) return null;
+      const rt = runtimeAbilities[id];
+      const defKeys = ['z', 'x', 'c', 'v'] as const;
+      return { id, icon: skillIconFn(id), cooldown: rt?.cooldown || 0, maxCooldown: rt?.max || BASE_COOLDOWN, disabled: !!rt?.cooldown, key: defKeys[i] };
+    }).filter(Boolean) as { id: string; icon: string; cooldown: number; maxCooldown: number; disabled: boolean; key: string }[];
+  }, [skillState.abilityLoadout.defensive, runtimeAbilities]);
   // Resources: shards (if present in profile) + skill tokens remaining
   const [shards, setShards] = React.useState<number>(0);
   React.useEffect(()=>{
@@ -628,8 +845,15 @@ function MissionScreen({ onExit }: { onExit: () => void }){
         const idToken = localStorage.getItem('afrofuture.idToken');
         if(!idToken) return;
         const r = await fetch('/profile', { headers: { 'Authorization':'Bearer '+idToken } });
-        if(r.ok){ const j = await r.json(); setShards(j?.profile?.shards || 0); }
-      } catch {}
+        if(r.ok){ 
+          const j = await r.json(); 
+          setShards(j?.profile?.shards || 0); 
+        } else if (r.status === 404) {
+          console.log('[shards] Server not running');
+        }
+      } catch {
+        console.log('[shards] Server unavailable');
+      }
     })();
   },[]);
   const available = availablePoints(skillState);
@@ -640,6 +864,49 @@ function MissionScreen({ onExit }: { onExit: () => void }){
   const heroBuffs = skillState.traitTags;
   const loadout = activeLoadoutRaw || { name:'Hero', faction:'PAA', level, portraitUrl: undefined, pet:{ type:'CYBER_DOG', level:1, role:'SCOUT' } } as any;
   const pet = loadout.pet ? { name: loadout.pet.type === 'CYBER_DOG' ? 'Cyber-Dog' : 'Cyber-Cat', level: loadout.pet.level || 1, hp: { current: 50, max: 50 }, ep: { current: 30, max: 30 }, icon: '🐾', portraitUrl: PetIcon[loadout.pet.type] } : undefined;
+  
+  // Playtime tracking
+  const { profile, saveProgress } = usePlayerProfile();
+  const [sessionStartTime] = React.useState(() => Date.now());
+  const [elapsedSeconds, setElapsedSeconds] = React.useState(0);
+  
+  // Update elapsed time every second
+  React.useEffect(() => {
+    const interval = setInterval(() => {
+      setElapsedSeconds(Math.floor((Date.now() - sessionStartTime) / 1000));
+    }, 1000);
+    return () => clearInterval(interval);
+  }, [sessionStartTime]);
+  
+  // Save playtime to profile every 30 seconds
+  React.useEffect(() => {
+    const interval = setInterval(() => {
+      if (profile && elapsedSeconds > 0) {
+        const currentTotal = profile.progress.totalPlayTime || 0;
+        saveProgress({ totalPlayTime: currentTotal + elapsedSeconds });
+      }
+    }, 30000); // 30 seconds
+    return () => clearInterval(interval);
+  }, [profile, elapsedSeconds, saveProgress]);
+  
+  // Save playtime on exit
+  React.useEffect(() => {
+    return () => {
+      if (profile && elapsedSeconds > 0) {
+        const currentTotal = profile.progress.totalPlayTime || 0;
+        saveProgress({ totalPlayTime: currentTotal + elapsedSeconds });
+      }
+    };
+  }, [profile, elapsedSeconds, saveProgress]);
+  
+  // Format elapsed time as HH:MM:SS
+  const formatElapsedTime = (seconds: number): string => {
+    const h = Math.floor(seconds / 3600);
+    const m = Math.floor((seconds % 3600) / 60);
+    const s = seconds % 60;
+    return `${h.toString().padStart(2, '0')}:${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}`;
+  };
+  
   // Runtime HP/EP regeneration & cooldown ticking loop
   const [heroVitals, setHeroVitals] = React.useState({ hp: HP_MAX, ep: EP_MAX });
   // Clamp vitals when skill-derived max changes (e.g. level up). Bails out when unchanged
@@ -703,46 +970,50 @@ function MissionScreen({ onExit }: { onExit: () => void }){
   const [minimapData, setMinimapData] = React.useState<MinimapData | undefined>(undefined);
   const onMapUpdate = React.useCallback((data: MinimapData) => setMinimapData(data), []);
 
+  // Faction name mapping for HUD display
+  const factionNames: Record<string, string> = {
+    PAA: 'PAA – Pan-African Alliance',
+    ASF: 'ASF – African Sovereignty Front',
+    WC: 'WC – World Confederates'
+  };
+  const factionName = factionNames[loadout.faction] || loadout.faction;
+
   return (
-    <div className="fixed inset-0 bg-white text-gray-100">
+    <div className="fixed inset-0 bg-[#0b0e13] text-gray-100">
       <div className="absolute inset-0">
-        <SoloMissionMap3D onExit={onExit} onMapUpdate={onMapUpdate} />
+        <SoloMissionMap3D 
+          onExit={onExit} 
+          onMapUpdate={onMapUpdate} 
+          abilitySlots={abilities} 
+          defenseSlots={defensiveAbilities}
+          heroVitals={{
+            hp: { current: Math.floor(heroVitals.hp), max: HP_MAX },
+            ep: { current: Math.floor(heroVitals.ep), max: EP_MAX },
+            xp: { current: XP_CUR, max: XP_MAX },
+            level,
+            name: loadout.name,
+            portraitUrl: loadout.portraitUrl,
+            buffs: heroBuffs,
+          }}
+          petData={pet}
+          resources={resources}
+          skillTokens={available}
+          factionName={factionName}
+          elapsedTime={formatElapsedTime(elapsedSeconds)}
+          skillPoints={available}
+          totalPlayTime={profile?.progress?.totalPlayTime}
+          heroInventory={profile?.progress?.heroInventory}
+          petInventory={profile?.progress?.petInventory}
+          playerProfile={profile ? { 
+            uid: profile.uid, 
+            displayName: profile.displayName, 
+            email: profile.email, 
+            faction: loadout.faction 
+          } : undefined}
+          onOpenSkillTree={onOpenSkillTree}
+        />
         <PetPanel />
       </div>
-      <GameHUD
-        team={loadout.faction}
-        clock={'00:00'}
-        score={{ radiant: 0, dire: 0 }}
-        hero={{
-          name: loadout.name || 'Hero',
-          level: level,
-          hp: { current: Math.round(heroVitals.hp), max: HP_MAX },
-            ep: { current: Math.round(heroVitals.ep), max: EP_MAX },
-          xp: { current: XP_CUR, max: XP_MAX },
-          portraitUrl: loadout.portraitUrl,
-          buffs: heroBuffs,
-          debuffs: [],
-        }}
-        pet={pet}
-        abilities={abilities}
-        items={items}
-        resources={resources}
-        skillTokens={available}
-        petTokens={0}
-        onMenu={onExit}
-        onSettings={()=>{ /* TODO open settings overlay */ }}
-        onScoreboard={()=>{/* TODO scoreboard */}}
-        onScan={()=>{/* TODO scan action */}}
-        onStats={()=>{/* TODO stats modal */}}
-        onTalents={()=>{/* TODO talents panel */}}
-        onGlyph={()=>{/* TODO glyph ability */}}
-        onShop={()=>{/* TODO open shop */}}
-        onAbility={(id)=>{ onActivateAbility(id); console.log('[ability]', id); }}
-        onItem={(id)=>{ console.log('[item]', id); }}
-        onMinimapClick={(x,y)=>{ console.log('[minimap]', x,y); }}
-        minimapData={minimapData}
-      />
-  {/* Standalone Exit button removed; Back to Menu now lives inside GameHUD popup */}
     </div>
   );
 }
@@ -1226,15 +1497,18 @@ function MainMenu({ playerName, accountLevel, loadout, onCustomize, heroLocked, 
   const setSkillLevel = useSkillStore(s=>s.setLevel);
   useEffect(()=>{ setSkillLevel(loadout.level); }, [loadout.level, setSkillLevel]);
   return (
-    <div className="h-full w-full bg-[#0f1218] text-gray-100">
+    <div className="h-full w-full bg-[#0f1218] text-gray-100 relative">
   <TopNav view={view} onChangeView={onChangeView} profile={profile} onSignOut={onSignOut} />
       <div className="h-[calc(100%-64px)]">
         <div className="h-full grid grid-rows-[1fr]" style={{gridTemplateColumns:'minmax(260px,20%) 1fr minmax(260px,20%)'}}>
           <LeftPlayerPanel className="row-start-1" playerName={playerName} accountLevel={accountLevel} loadout={loadout} heroLocked={heroLocked} />
-          <CenterHub className="row-start-1" loadout={loadout} view={view} />
+          <CenterHub className="row-start-1" loadout={loadout} view={view === 'skills' ? 'dashboard' : view} />
           <RightPlayerPanel className="row-start-1" loadout={loadout} onCustomize={onCustomize} onPlay={()=>onChangeView('mission')} />
         </div>
       </div>
+      {view === 'skills' && (
+        <SkillsModal loadout={loadout} onClose={() => onChangeView('dashboard')} />
+      )}
     </div>
   );
 }
@@ -1622,7 +1896,9 @@ function CenterHub({ className = '', loadout, view }: { className?: string; load
     return (
       <main className={`col-start-2 px-6 py-5 min-h-0 flex flex-col ${className}`}>
         <div className="flex-1 rounded-3xl border border-white/10 bg-[#12171f] overflow-hidden">
-          <SnowflakeSkillTree initialLevel={loadout.level} />
+          <Suspense fallback={<div className="w-full h-full flex items-center justify-center text-gray-400">Loading skills...</div>}>
+            <SnowflakeSkillTree initialLevel={loadout.level} />
+          </Suspense>
         </div>
       </main>
     );

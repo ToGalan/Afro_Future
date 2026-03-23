@@ -20,6 +20,7 @@ export function useAutoSyncSkills(enabled: boolean = true) {
       const payload = {
         hero: {
           level: state.level,
+          xp: 0, // XP is managed separately by movement/collection systems
           traits: state.traitTags,
           unlockedSkillIds: state.unlocked,
           unlockOrder: state.unlockOrder,
@@ -28,6 +29,10 @@ export function useAutoSyncSkills(enabled: boolean = true) {
           earned: state.basePoints + Math.floor((state.level-1)/5)*state.bonusPer5,
           spent: state.spent,
           remaining: (state.basePoints + Math.floor((state.level-1)/5)*state.bonusPer5) - state.spent,
+        },
+        abilityLoadout: {
+          offensive: state.abilityLoadout.offensive,
+          defensive: state.abilityLoadout.defensive,
         }
       };
       const ser = JSON.stringify(payload);

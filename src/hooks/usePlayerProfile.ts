@@ -16,6 +16,7 @@ function mergeProgress(base: PlayerProgress, partial: Partial<PlayerProgress>): 
     pet: partial.pet ? { ...base.pet, ...partial.pet } : base.pet,
     skillTokens: partial.skillTokens ? { ...base.skillTokens, ...partial.skillTokens } : base.skillTokens,
     avatar: partial.avatar ? { ...base.avatar, ...partial.avatar, parts: { ...(base.avatar?.parts||{}), ...(partial.avatar?.parts||{}) }, colors: { ...(base.avatar?.colors||{}), ...(partial.avatar?.colors||{}) } } : base.avatar,
+    abilityLoadout: partial.abilityLoadout ? { ...base.abilityLoadout, ...partial.abilityLoadout } : base.abilityLoadout,
   };
 }
 
@@ -40,8 +41,8 @@ export function usePlayerProfile(opts: UsePlayerProfileOptions = {}) {
           const progress: PlayerProgress = {
             heroPosition: { q: 0, r: 0 },
             lastLogin: Date.now(),
-            hero: { level: 1, traits: [], unlockedSkillIds: [], unlockOrder: [] },
-            pet: { level: 1 },
+            hero: { level: 1, xp: 0, traits: [], unlockedSkillIds: [], unlockOrder: [] },
+            pet: { level: 1, xp: 0 },
             skillTokens: { earned: 0, spent: 0, remaining: 0 },
             avatar: { parts: {}, colors: { primary:'#00A37A', secondary:'#F5F5F5', skin:'#c58b66' }, updatedAt: Date.now() },
             ...data.progress,
@@ -64,8 +65,8 @@ export function usePlayerProfile(opts: UsePlayerProfileOptions = {}) {
             progress: {
               heroPosition: { q: 0, r: 0 },
               lastLogin: Date.now(),
-              hero: { level:1, traits:[], unlockedSkillIds:[], unlockOrder:[] },
-              pet: { level:1 },
+              hero: { level:1, traits:[], unlockedSkillIds:[], unlockOrder:[], xp: 0 },
+              pet: { level:1, xp: 0 },
               skillTokens: { earned:0, spent:0, remaining:0 },
               avatar: { parts:{}, colors:{ primary:'#00A37A', secondary:'#F5F5F5', skin:'#c58b66' }, updatedAt: Date.now() }
             }
@@ -135,13 +136,16 @@ export function usePlayerProfile(opts: UsePlayerProfileOptions = {}) {
   useEffect(() => {
     if (!profile || hydratedRef.current) return;
     const hero = profile.progress.hero;
-    if (hero && (hero.unlockedSkillIds?.length || hero.unlockOrder?.length || hero.level > 1)) {
+    const hasSkillData = hero && (hero.unlockedSkillIds?.length || hero.unlockOrder?.length || hero.level > 1);
+    const hasAbilityLoadout = profile.progress.abilityLoadout;
+    if (hasSkillData || hasAbilityLoadout) {
       try {
         const { hydrate } = useSkillStore.getState() as any;
         hydrate?.({
-          level: hero.level,
-          unlocked: hero.unlockedSkillIds,
-          unlockOrder: hero.unlockOrder,
+          level: hero?.level,
+          unlocked: hero?.unlockedSkillIds,
+          unlockOrder: hero?.unlockOrder,
+          abilityLoadout: hasAbilityLoadout ? profile.progress.abilityLoadout : undefined,
         });
         hydratedRef.current = true;
       } catch {

@@ -4,11 +4,10 @@ import { usePlayerSession } from '../hooks/usePlayerSession';
 import type { Mesh } from 'three';
 import * as THREE from 'three';
 import { Canvas, useThree, useFrame } from '@react-three/fiber';
-import { OrbitControls, Text, Sky, ContactShadows, useGLTF } from '@react-three/drei';
-import { BaseBody, AvatarPartsLoader } from './AvatarPartsLoader';
-import { AvatarAnimator } from './AvatarAnimator';
-import { getCharacterPortrait } from '../assets/assetPaths';
-import type { MinimapData } from './gameHUD';
+import { OrbitControls, Text, Sky, ContactShadows } from '@react-three/drei';
+import { GameAvatar, type AvatarColors } from './GameAvatarMesh';
+import { GameHUD, type MinimapData, type Ability, type Item } from './gameHUD';
+import { SceneSetupVerifier, AvatarRenderingVerifier, PerformanceChecker } from './SceneSetupVerifier';
 // Side-effect imports: reference systems attach to window.* and expect global THREE
 import '../assets/ref_3d_map/mountain-system.js';
 import '../assets/ref_3d_map/integration-helper.js';
@@ -18,6 +17,7 @@ import '../assets/ref_3d_map/hills-system.js';
 import '../assets/ref_3d_map/desert-system.js';
 import { useVisibleChunks } from '../hooks/useVisibleChunks';
 import { getCachedChunk } from '../services/mapChunks';
+import { updateAvatarCollision, createFloorCollider } from '../services/collisionDetection';
 
 // Types
 type TileType = 'water' | 'desert' | 'plains' | 'forest' | 'jungle' | 'hills' | 'mountain';
@@ -25,7 +25,7 @@ type ResourceType = 'ore' | 'energy' | 'bio' | null;
 interface Axial { q: number; r: number; }
 type TerrainChar = 'P' | 'F' | 'J' | 'H' | 'D' | 'O' | 'R' | 'M' | 'L' | 'N' | 'V';
 interface Tile extends Axial { type: TileType; resource: ResourceType; char: TerrainChar; }
-interface Actor { id: string; pos: Axial; vision: number; kind: 'actor' | 'pet'; }
+interface Actor { id: string; pos: Axial; vision: number; kind: 'actor' | 'pet'; xp?: number; }
 interface WorldPos { x: number; z: number; }
 
 // Hex helpers & orientation
@@ -395,13 +395,14 @@ function TreeCluster({ size, seed = 1 }: { size: number; seed?: number }) {
     <group>
       {trees.map((t, i) => (
         <group key={i} position={[t.x, 0, t.z]}>
-          {/* Trunk — 2x radius, 1.5x taller */}
-          <mesh position={[0, 0.375 * t.s, 0]} castShadow>
-            <cylinderGeometry args={[size * 0.16 * t.s, size * 0.20 * t.s, 0.75 * t.s, 6]} />
+          {/* Trunk — 2x radius, reduced by 15% from 1.5 to 1.275, width reduced by 0.5x */}
+          <mesh position={[0, 0.6375 * t.s, 0]} castShadow>
+            <cylinderGeometry args={[size * 0.08 * t.s, size * 0.10 * t.s, 1.275 * t.s, 6]} />
             <meshStandardMaterial color="#8b5a3c" roughness={0.9} metalness={0.0} />
           </mesh>
           {/* Canopy — SwayingCanopy owns its own stable ref + useFrame */}
-          <group position={[0, 0.7 * t.h, 0]}>
+          {/* Position at trunk top + half canopy height to align properly */}
+          <group position={[0, 1.275 * t.s + 0.7 * t.h, 0]}>
             <SwayingCanopy
               sizeArg={[size * 0.35 * t.s, t.h, 7]}
               phase={phaseOffsets[i]}
@@ -612,6 +613,90 @@ function GrassCluster({ size, seed = 1 }: { size: number; seed?: number }) {
           )}
         </group>
       ))}
+    </group>
+  );
+}
+
+// Collectible healing flower for pet - renders with glow effect
+function CollectibleFlower({ size }: { size: number }) {
+  const S = size * 0.7; // 0.7x size for visibility
+  // Shimmer animation for glow effect
+  const glowRef = React.useRef<THREE.Mesh>(null);
+  useFrame(({ clock }) => {
+    if (!glowRef.current) return;
+    const t = clock.getElapsedTime();
+    const glow = 0.6 + 0.4 * Math.sin(t * 3);
+    (glowRef.current.material as any).emissiveIntensity = glow;
+  });
+  
+  const petalColor = '#ff6b9d';
+  const stemColor = '#2d8659';
+  
+  return (
+    <group>
+      {/* Glowing aura behind flower */}
+      <mesh ref={glowRef} position={[0, S * 0.25, 0]} renderOrder={19}>
+        <sphereGeometry args={[S * 0.35, 8, 8]} />
+        <meshStandardMaterial 
+          color="#ff6b9d" 
+          emissive="#ff6b9d"
+          emissiveIntensity={0.7}
+          transparent 
+          opacity={0.3}
+          depthWrite={false}
+          roughness={0.8}
+          metalness={0}
+        />
+      </mesh>
+      {/* Stem */}
+      <mesh position={[0, S * 0.18, 0]} castShadow>
+        <cylinderGeometry args={[S * 0.035, S * 0.04, S * 0.4, 4]} />
+        <meshStandardMaterial color={stemColor} roughness={0.8} metalness={0} />
+      </mesh>
+      {/* Two leaf blades */}
+      <mesh position={[-S * 0.08, S * 0.16, 0]} rotation={[0, 0, -0.6]} castShadow>
+        <boxGeometry args={[S * 0.25, S * 0.08, S * 0.04]} />
+        <meshStandardMaterial color="#3da85a" roughness={0.8} metalness={0} />
+      </mesh>
+      <mesh position={[S * 0.08, S * 0.18, 0]} rotation={[0, 0, 0.6]} castShadow>
+        <boxGeometry args={[S * 0.25, S * 0.08, S * 0.04]} />
+        <meshStandardMaterial color="#3da85a" roughness={0.8} metalness={0} />
+      </mesh>
+      {/* Flower petals (6-petal ring for more visual impact) */}
+      {Array.from({ length: 6 }).map((_, i) => {
+        const rot = (i / 6) * Math.PI * 2;
+        return (
+          <mesh
+            key={i}
+            position={[
+              Math.cos(rot) * S * 0.12,
+              S * 0.42,
+              Math.sin(rot) * S * 0.12,
+            ]}
+            castShadow
+          >
+            <sphereGeometry args={[S * 0.08, 5, 4]} />
+            <meshStandardMaterial 
+              color={petalColor} 
+              roughness={0.6} 
+              metalness={0}
+              emissive="#ff4d85"
+              emissiveIntensity={0.4}
+            />
+          </mesh>
+        );
+      })}
+      {/* Golden center with extra glow */}
+      <mesh position={[0, S * 0.48, 0]} castShadow>
+        <sphereGeometry args={[S * 0.07, 6, 5]} />
+        <meshStandardMaterial 
+          color="#ffe066" 
+          roughness={0.4} 
+          metalness={0.2}
+          emissive="#ffcc00"
+          emissiveIntensity={0.8}
+        />
+      </mesh>
     </group>
   );
 }
@@ -943,6 +1028,67 @@ function RefDesert({
   return <group ref={groupRef} />;
 }
 
+/**
+ * Avatar Collision Detector Component
+ * Runs each frame to enforce floor collision for player and pet avatars
+ * Prevents them from falling through terrain
+ */
+function AvatarCollisionDetector({ 
+  heroAvatarRef, 
+  heroWorldPos, 
+  culledTiles, 
+  hexSize 
+}: { 
+  heroAvatarRef: React.MutableRefObject<THREE.Group | null>;
+  heroWorldPos: { x: number; z: number };
+  culledTiles: Tile[];
+  hexSize: number;
+}) {
+  const { scene } = useThree();
+  const floorColliderRef = React.useRef<THREE.Group | null>(null);
+  
+  // Build floor collider on first mount from culled tiles
+  React.useEffect(() => {
+    if (!floorColliderRef.current && culledTiles.length > 0) {
+      const group = new THREE.Group();
+      group.userData.type = 'floor-colliders';
+      
+      for (const tile of culledTiles) {
+        const { x, z } = axialToWorld(tile, hexSize);
+        const floorMesh = createFloorCollider(hexSize * 1.2, new THREE.Vector3(x, 0.01, z));
+        group.add(floorMesh);
+      }
+      
+      scene.add(group);
+      floorColliderRef.current = group;
+      console.log('[collision] Created floor collider with', culledTiles.length, 'tiles');
+    }
+  }, [culledTiles.length, hexSize, scene]);
+  
+  // Update collider position and hero avatar collision each frame
+  useFrame(() => {
+    if (!heroAvatarRef.current || !floorColliderRef.current) return;
+    
+    // Hero avatar is positioned at world coordinates
+    const heroPos = new THREE.Vector3(heroWorldPos.x, heroAvatarRef.current.position.y, heroWorldPos.z);
+    
+    // Update collision and clamp avatar to floor
+    try {
+      updateAvatarCollision(heroPos, heroAvatarRef, floorColliderRef.current, {
+        rayDirection: new THREE.Vector3(0, -1, 0),
+        rayLength: 5,
+        floorOffset: 0.1,
+        debugVisualize: false,
+      });
+    } catch (e) {
+      // Silently ignore collision errors to prevent frame drops
+      if (Math.random() < 0.0001) console.warn('[collision] Error:', e);
+    }
+  });
+  
+  return null; // No rendering, just collision updates
+}
+
 function HexTile({ t, size, onClick, onHover }: { t: Tile; size: number; onClick: (t: Tile) => void; onHover?: (t: Tile | null) => void }) {
   const h = heightFor(t);
   const color = tileColor(t);
@@ -964,118 +1110,97 @@ function HexTile({ t, size, onClick, onHover }: { t: Tile; size: number; onClick
   );
 }
 
-// ─── Avatar colours type (shared by AssembledAvatarMesh & GLBAvatarMesh) ────────
-interface AvatarColors { primary: string; secondary: string; skin: string; }
-
-/**
- * Assembled avatar from individual GLB part files — game-map version.
- * MUST be module-level (not nested inside SoloMissionMap3D) so React never treats
- * it as a different component type between renders, which would cause hook resets.
- *
- * NOTE: AvatarAnimator (which calls useFBX internally) is intentionally NOT used here.
- * useFBX can throw an actual Error (not a Promise) if the FBX fails to parse/load.
- * <Suspense> only catches thrown Promises — an Error propagates silently upward through
- * the Canvas, killing the entire avatar subtree. Static bind-pose is correct for game mode.
- */
-function AssembledAvatarMesh({ parts, colors }: { parts: Record<string, string | undefined>; colors: AvatarColors }) {
-  const rootRef = React.useRef<THREE.Group>(null);
-  // Apply color tinting to materials after parts mount — mirrors applyStoreTint in AvatarScene.
-  useEffect(() => {
-    const root = rootRef.current;
-    if (!root) return;
-    root.traverse((obj: any) => {
-      const mats: any = (obj as any).material;
-      if (!mats) return;
-      const tint = (mat: any) => {
-        if (!mat?.color) return;
-        const n = (mat.name || '').toLowerCase();
-        if (n.includes('skin')) mat.color.set(colors.skin);
-        else if (n.includes('primary') || n.includes('armor') || n.includes('fabric')) mat.color.set(colors.primary);
-        else if (n.includes('secondary') || n.includes('trim') || n.includes('detail') || n.includes('accent')) mat.color.set(colors.secondary);
-      };
-      if (Array.isArray(mats)) mats.forEach(tint); else tint(mats);
-    });
-  });
-  return (
-    <group ref={rootRef} position={[0, 0, 0]} scale={0.9} rotation={[0, Math.PI, 0]}>
-      <BaseBody />
-      <AvatarPartsLoader parts={parts} />
-    </group>
-  );
-}
-
-/**
- * Error boundary that catches errors thrown by useGLTF (e.g. bad URL / 404).
- * React Suspense only catches thrown Promises — actual Errors need a boundary.
- */
-class GLBErrorBoundary extends React.Component<
-  { fallback: React.ReactNode; children: React.ReactNode },
-  { errored: boolean }
-> {
-  constructor(props: any) { super(props); this.state = { errored: false }; }
-  static getDerivedStateFromError() { return { errored: true }; }
-  render() { return this.state.errored ? this.props.fallback : this.props.children; }
-}
-
-/**
- * Inner component: useGLTF MUST be called here unconditionally (no try/catch).
- * Wrapping useGLTF in try/catch intercepts the Suspense Promise throw, so the
- * Suspense boundary never receives it and the model never loads.
- * GLBErrorBoundary above handles actual JS errors (bad URL, decode failure).
- */
-function GLBAvatarInner({ url, parts, colors }: { url: string; parts: Record<string, string | undefined>; colors: AvatarColors }) {
-  const { scene } = useGLTF(url); // unconditional — do NOT wrap in try/catch
-  const inst = useMemo(() => {
-    if (!scene) return null;
-    try { return scene.clone() as THREE.Object3D; } catch { return null; }
-  }, [scene, url]);
-  useEffect(() => {
-    if (!inst) return;
-    const { primary, secondary, skin } = colors;
-    inst.traverse((obj: any) => {
-      const mats: any = obj.material;
-      if (!mats) return;
-      const apply = (mat: any) => {
-        const name = (mat.name || '').toLowerCase();
-        if (!mat?.color) return;
-        if (name.includes('skin'))                                              mat.color.set(skin);
-        else if (name.includes('primary') || name.includes('armor') || name.includes('fabric')) mat.color.set(primary);
-        else if (name.includes('secondary') || name.includes('trim') || name.includes('detail') || name.includes('accent')) mat.color.set(secondary);
-      };
-      if (Array.isArray(mats)) mats.forEach(apply); else apply(mats);
-    });
-  }, [inst, colors, url]);
-  if (!inst) return <AssembledAvatarMesh parts={parts} colors={colors} />;
-  return <primitive object={inst} position={[0, 0, 0]} rotation={[0, Math.PI, 0]} scale={0.9} frustumCulled={false} />;
-}
-
-/**
- * Full-GLB avatar with per-material colour tinting.
- * MUST be module-level for the same hook-stability reason as AssembledAvatarMesh.
- */
-function GLBAvatarMesh({ url, parts, colors }: { url: string; parts: Record<string, string | undefined>; colors: AvatarColors }) {
-  return (
-    <GLBErrorBoundary fallback={<AssembledAvatarMesh parts={parts} colors={colors} />}>
-      <GLBAvatarInner url={url} parts={parts} colors={colors} />
-    </GLBErrorBoundary>
-  );
-}
-
-export default function SoloMissionMap3D({ onExit, onMapUpdate }: { onExit?: () => void; onMapUpdate?: (data: MinimapData) => void } = {}) {
+export default function SoloMissionMap3D({ 
+  onExit, 
+  onMapUpdate, 
+  abilitySlots: externalAbilities, 
+  defenseSlots: externalDefense,
+  heroVitals,
+  petData,
+  resources,
+  skillTokens,
+  factionName,
+  elapsedTime,
+  skillPoints,
+  totalPlayTime,
+  heroInventory,
+  petInventory,
+  playerProfile,
+  onOpenSkillTree,
+}: { 
+  onExit?: () => void; 
+  onMapUpdate?: (data: MinimapData) => void; 
+  abilitySlots?: Ability[]; 
+  defenseSlots?: Ability[];
+  heroVitals?: { hp: { current: number; max: number }; ep: { current: number; max: number }; xp: { current: number; max: number }; level: number; name: string; portraitUrl?: string; buffs?: string[] };
+  petData?: { name: string; level: number; hp: { current: number; max: number }; ep: { current: number; max: number }; icon?: string; portraitUrl?: string };
+  resources?: { id: string; label: string; value: number; icon?: string }[];
+  skillTokens?: number;
+  factionName?: string;
+  elapsedTime?: string;
+  skillPoints?: number;
+  totalPlayTime?: number;
+  heroInventory?: Array<{ id: string; type: string; quantity: number; value?: number }>;
+  petInventory?: Array<{ id: string; type: string; quantity: number; value?: number }>;
+  playerProfile?: { uid: string; displayName?: string; email?: string; faction?: string };
+  onOpenSkillTree?: () => void;
+} = {}) {
   const useChunks = import.meta.env.VITE_USE_CHUNKS === 'true';
   // Adjusted map size to requested 240 x 240 tiles (square) (legacy full-map path only)
   const GRID_W = 240;
   const GRID_H = 240;
   const MAP_SCALE = 3; // new scale factor
   const hexSize = 1.0 * MAP_SCALE;
-  // Only generate full tiles array if not using chunk streaming
-  const tiles = useMemo(() => {
-    if (useChunks) return [] as Tile[]; // defer to chunk system
-    const t = generateTerrainMapRect(GRID_W, GRID_H, 1337);
-    assignResources(t);
-    console.log('[map:init:full]', { width: GRID_W, height: GRID_H, tileCount: t.length });
-    return t;
-  }, [useChunks]);
+  
+  // Use Web Worker for terrain generation to avoid blocking main thread
+  const [tiles, setTiles] = useState<Tile[]>([]);
+  const [generatingTerrain, setGeneratingTerrain] = useState(!useChunks);
+  
+  useEffect(() => {
+    if (useChunks) {
+      setTiles([]);
+      setGeneratingTerrain(false);
+      return;
+    }
+    
+    setGeneratingTerrain(true);
+    
+    // Create worker if available
+    const worker = new Worker(new URL('../workers/terrainGenerator.ts', import.meta.url), { type: 'module' });
+    
+    const messageId = 'terrain-' + Date.now();
+    
+    const handleMessage = (event: MessageEvent) => {
+      if (event.data.id === messageId && event.data.type === 'complete') {
+        try {
+          const generatedTiles: Tile[] = JSON.parse(event.data.tileData);
+          assignResources(generatedTiles);
+          setTiles(generatedTiles);
+          console.log('[map:init:worker]', { width: GRID_W, height: GRID_H, tileCount: generatedTiles.length });
+        } catch (e) {
+          console.error('[map:worker] parse failed', e);
+        }
+        setGeneratingTerrain(false);
+        worker.terminate();
+      }
+    };
+    
+    const handleError = (error: ErrorEvent) => {
+      console.error('[map:worker] error', error);
+      setGeneratingTerrain(false);
+      worker.terminate();
+    };
+    
+    worker.onmessage = handleMessage;
+    worker.onerror = handleError;
+    
+    // Send generation request
+    worker.postMessage({ type: 'generate', width: GRID_W, height: GRID_H, seed: 1337, id: messageId });
+    
+    return () => {
+      worker.terminate();
+    };
+  }, [useChunks, GRID_W, GRID_H]);
   // If chunk mode enabled, center using world midpoint assumptions
   const chunkCenterAxial = useMemo(() => ({ q: Math.floor(GRID_W/2), r: Math.floor(GRID_H/2) }), []);
   // Player profile (anonymous auth + progress)
@@ -1114,6 +1239,98 @@ export default function SoloMissionMap3D({ onExit, onMapUpdate }: { onExit?: () 
   }, [tiles, centerAxial]);
   // Demo actors (player + pet) with different vision ranges
   const [hero, setHero] = useState<Actor>({ id: 'hero', pos: useChunks ? chunkCenterAxial : spawnPos, vision: 8, kind: 'actor' });
+  const [collisionMessage, setCollisionMessage] = useState<{ type: 'water' | 'mountain'; show: boolean }>({ type: 'water', show: false });
+  const [pet, setPet] = useState<Actor>({ id: 'pet', pos: { q: (useChunks?chunkCenterAxial.q:centerAxial.q) + 4, r: (useChunks?chunkCenterAxial.r:centerAxial.r) - 1 }, vision: 3, kind: 'pet', xp: 0 });
+  
+  // Collectible flowers on the map (for pet to collect and restore HP)
+  const [collectibleFlowers, setCollectibleFlowers] = useState<Set<string>>(new Set());
+  const heroAvatarRef = React.useRef<THREE.Group>(null); // For collision detection
+  const [localPetInventory, setLocalPetInventory] = useState<Array<{ id: string; type: string; quantity: number; value?: number }>>(
+    petInventory || profile?.progress?.petInventory || []
+  );
+  const [localHeroInventory, setLocalHeroInventory] = useState<Array<{ id: string; type: string; quantity: number; value?: number }>>(
+    heroInventory || profile?.progress?.heroInventory || []
+  );
+  
+  // Ability and item slots (QWER, 1-8)
+  // Use abilities from skilltree if provided, otherwise use defaults
+  const [abilitySlots, setAbilitySlots] = useState<Ability[]>(externalAbilities || [
+    { id: 'slash', icon: '⚔️', key: 'Q', cooldown: 0, maxCooldown: 3 },
+    { id: 'fireball', icon: '🔥', key: 'W', cooldown: 0, maxCooldown: 5 },
+    { id: 'shield', icon: '🛡️', key: 'E', cooldown: 0, maxCooldown: 8 },
+    { id: 'heal', icon: '💚', key: 'R', cooldown: 0, maxCooldown: 10 },
+  ]);
+  
+  // Update abilities when external ones change (from skilltree)
+  React.useEffect(() => {
+    if (externalAbilities && externalAbilities.length > 0) {
+      setAbilitySlots(externalAbilities);
+    }
+  }, [externalAbilities]);
+  
+  // Ability cooldown countdown (1 second intervals)
+  React.useEffect(() => {
+    const interval = setInterval(() => {
+      setAbilitySlots(prev => prev.map(ability => 
+        (ability.cooldown ?? 0) > 0 ? { ...ability, cooldown: (ability.cooldown ?? 0) - 1 } : ability
+      ));
+    }, 1000);
+    return () => clearInterval(interval);
+  }, []);
+  
+  const [itemSlots, setItemSlots] = useState<Item[]>([
+    { id: 'item-empty-1', icon: '', qty: 0, key: '1' },
+    { id: 'item-empty-2', icon: '', qty: 0, key: '2' },
+    { id: 'item-empty-3', icon: '', qty: 0, key: '3' },
+    { id: 'item-empty-4', icon: '', qty: 0, key: '4' },
+    { id: 'item-empty-5', icon: '', qty: 0, key: '5' },
+    { id: 'item-empty-6', icon: '', qty: 0, key: '6' },
+    { id: 'item-empty-7', icon: '', qty: 0, key: '7' },
+    { id: 'item-empty-8', icon: '', qty: 0, key: '8' },
+  ]);
+  
+  // Collision detection: hero nearby flower
+  const [nearbyFlower, setNearbyFlower] = useState<string | null>(null);
+  const [collectingFlower, setCollectingFlower] = useState<string | null>(null); // For animation
+  const [collectingProgress, setCollectingProgress] = useState(0); // 0-1 progress
+  const nearbyFlowerRef = React.useRef<string | null>(null);
+  const collectingFlowerRef = React.useRef<string | null>(null);
+  const collectTimerRef = React.useRef<number | null>(null);
+  
+  // Keep refs in sync with state
+  useEffect(() => {
+    nearbyFlowerRef.current = nearbyFlower;
+    collectingFlowerRef.current = collectingFlower;
+  }, [nearbyFlower, collectingFlower]);
+  
+  // Generate collectible flowers when tiles are ready
+  useEffect(() => {
+    if (tiles.length === 0) return;
+    const flowers = new Set<string>();
+    for (const t of tiles) {
+      // 8% chance for each non-mountain, non-water tile to have a collectible flower
+      // Increased from 2% to ensure flowers are always visible in the map
+      if (t.type !== 'mountain' && t.type !== 'water' && Math.random() < 0.08) {
+        flowers.add(`${t.q},${t.r}`);
+      }
+    }
+    setCollectibleFlowers(flowers);
+    console.log('[map] Generated', flowers.size, 'collectible flowers out of', tiles.filter(t => t.type !== 'mountain' && t.type !== 'water').length, 'walkable tiles');
+  }, [tiles]);
+  
+  // Collision detection: check if hero is overlapping a flower (same tile)
+  useEffect(() => {
+    if (collectibleFlowers.size === 0) {
+      setNearbyFlower(null);
+      return;
+    }
+    // Check if hero is on the same tile as any collectible flower (distance = 0)
+    const heroKey = `${hero.pos.q},${hero.pos.r}`;
+    const flowerOnHeroTile = collectibleFlowers.has(heroKey) ? heroKey : null;
+    setNearbyFlower(flowerOnHeroTile);
+  }, [collectibleFlowers, hero.pos.q, hero.pos.r]);
+  
+  const tilesMoveRef = React.useRef(0); // Track tiles moved for pet XP reward
   // When profile loads, adopt stored hero position if present
   useEffect(() => {
     if (profile && profile.progress?.heroPosition) {
@@ -1123,8 +1340,7 @@ export default function SoloMissionMap3D({ onExit, onMapUpdate }: { onExit?: () 
       setRecenterSignal(s => s + 1);
     }
   }, [profile]);
-  // Place pet offset from hero (one ring out) but inside bounds
-  const [pet, setPet] = useState<Actor>({ id: 'pet', pos: { q: (useChunks?chunkCenterAxial.q:centerAxial.q) + 4, r: (useChunks?chunkCenterAxial.r:centerAxial.r) - 1 }, vision: 3, kind: 'pet' });
+
   // FOV always on now; removed toggle state
 
   // Hero will be moved via keyboard commands now (auto path removed)
@@ -1193,6 +1409,7 @@ export default function SoloMissionMap3D({ onExit, onMapUpdate }: { onExit?: () 
     () => new Set([...heroVisible, ...petVisible]),
     [heroVisible, petVisible],
   );
+  
   // Push minimap data to parent whenever explored / visibility / positions change
   useEffect(() => {
     if (!onMapUpdate) return;
@@ -1229,6 +1446,35 @@ export default function SoloMissionMap3D({ onExit, onMapUpdate }: { onExit?: () 
     return () => clearTimeout(to);
   }, [heroVisible, petVisible, saveProgress]);
 
+  // Sync hero inventory with item slots - ONLY show collectibles
+  useEffect(() => {
+    const flowers = localPetInventory.find((i: any) => i.type === 'flower');
+    const herbs = localPetInventory.find((i: any) => i.type === 'herb');
+    
+    setItemSlots(prev => [
+      // Slot 1: flowers (show icon only if we have them)
+      {
+        id: 'flower-slot',
+        qty: flowers?.quantity ?? 0,
+        icon: (flowers?.quantity ?? 0) > 0 ? '🌸' : '',
+        key: '1',
+      },
+      // Slot 2: herbs (show icon only if we have them)
+      {
+        id: 'herb-slot',
+        qty: herbs?.quantity ?? 0,
+        icon: (herbs?.quantity ?? 0) > 0 ? '🍃' : '',
+        key: '2',
+      },
+      // Slots 3-8: always empty
+      { id: 'item-empty-3', icon: '', qty: 0, key: '3' },
+      { id: 'item-empty-4', icon: '', qty: 0, key: '4' },
+      { id: 'item-empty-5', icon: '', qty: 0, key: '5' },
+      { id: 'item-empty-6', icon: '', qty: 0, key: '6' },
+      { id: 'item-empty-7', icon: '', qty: 0, key: '7' },
+      { id: 'item-empty-8', icon: '', qty: 0, key: '8' },
+    ]);
+  }, [petInventory]);
   // Explored tiles outside RENDER_RADIUS — rendered as cheap "memory" layer so explored
   // tiles don't disappear as the hero walks away. Capped at MEMORY_RADIUS to bound count.
   const MEMORY_RADIUS = 55;
@@ -1242,32 +1488,62 @@ export default function SoloMissionMap3D({ onExit, onMapUpdate }: { onExit?: () 
   }, [tiles, hero.pos.q, hero.pos.r, exploredCount]);
 
   // World position of hero (for camera recentering)
-  const heroWorld = useMemo(() => axialToWorld(hero.pos, hexSize), [hero.pos, hexSize]);
+  const heroWorld = useMemo(() => axialToWorld(hero.pos, hexSize), [hero.pos.q, hero.pos.r, hexSize]);
+
+  // Log actor positions for debugging
+  useEffect(() => {
+    const petWorld = axialToWorld(pet.pos, hexSize);
+    const petVisualHeight = 0.4 + hexSize * 0.45;
+    const heroVisualHeight = 0.4 + hexSize * 0.45; // Outer group + GameAvatar container offset
+    console.log('[SoloMissionMap3D] Actor Heights - SHOULD MATCH:', {
+      hero: { group: '0.4', container: `hexSize*0.45=${(hexSize * 0.45).toFixed(3)}`, total: heroVisualHeight.toFixed(3) },
+      pet: { group: '0.4', sphere: `hexSize*0.45=${(hexSize * 0.45).toFixed(3)}`, total: petVisualHeight.toFixed(3) }
+    });
+    if (Math.abs(heroVisualHeight - petVisualHeight) > 0.01) {
+      console.error(`❌ HEIGHT MISMATCH: Hero ${heroVisualHeight.toFixed(2)} vs Pet ${petVisualHeight.toFixed(2)}`);
+    } else {
+      console.log(`✅ Heights match perfectly: both at Y = ${heroVisualHeight.toFixed(3)}`);
+    }
+  }, [hero.pos.q, hero.pos.r, pet.pos.q, pet.pos.r, heroWorld, hexSize]);
 
   // ─── Avatar data ────────────────────────────────────────────────────────────
   // Priority: localStorage activeLoadout.threeConfig (set by the avatar creator)
   //        →  Firestore profile.progress.avatar (saved after creator confirmation)
-  //        →  empty defaults
+  //        →  empty defaults (shows base body only)
   const avatarData = useMemo(() => {
     try {
       const raw = localStorage.getItem('afrofuture.activeLoadout');
       if (raw) {
         const loadout = JSON.parse(raw);
-        if (loadout?.threeConfig) return { parts: loadout.threeConfig.parts || {}, colors: loadout.threeConfig.colors || {} };
+        if (loadout?.threeConfig) {
+          const data = { parts: loadout.threeConfig.parts || {}, colors: loadout.threeConfig.colors || {} };
+          console.log('[avatar:load] From localStorage - Parts:', Object.keys(data.parts), 'Colors:', data.colors);
+          return data;
+        }
       }
-    } catch {}
+    } catch (err) {
+      console.warn('[avatar:load] localStorage parse failed:', err);
+    }
     // Firestore fallback
-    return (profile as any)?.progress?.avatar || {};
+    const fallback = (profile as any)?.progress?.avatar || { parts: {}, colors: { primary: '#00A37A', secondary: '#F5F5F5', skin: '#c58b66' } };
+    console.log('[avatar:load] Using fallback - Parts:', Object.keys(fallback.parts), 'Colors:', fallback.colors);
+    return fallback;
   // profile changes trigger re-evaluation; localStorage is synchronous so no dep needed
   }, [profile]);
   const heroModelUrl = (avatarData as any)?.modelUrl as string | undefined;
   // Memoize parts & colors so their object references are stable across component re-renders.
   // Without this, `(avatarData as any)?.parts || {}` creates a new {} every render when parts
   // is undefined, causing avatarReady to flip false→true every frame and the avatar never appears.
-  const heroParts = useMemo(() => (avatarData as any)?.parts || {}, [avatarData]);
-  const heroColors: AvatarColors = useMemo(() => (
-    (avatarData as any)?.colors || { primary: '#00A37A', secondary: '#F5F5F5', skin: '#c58b66' }
-  ), [avatarData]);
+  const heroParts = useMemo(() => {
+    const parts = (avatarData as any)?.parts || {};
+    console.log('[avatar:heroParts] Assembled from avatarData:', { count: Object.keys(parts).length, keys: Object.keys(parts) });
+    return parts;
+  }, [avatarData]);
+  const heroColors: AvatarColors = useMemo(() => {
+    const colors = (avatarData as any)?.colors || { primary: '#00A37A', secondary: '#F5F5F5', skin: '#c58b66' };
+    console.log('[avatar:heroColors] Colors set to:', colors);
+    return colors;
+  }, [avatarData]);
 
   // Gating flag: delay one animation frame after avatar source changes so Suspense can begin
   // resolving before we render (prevents a "base body only" flash before custom parts load).
@@ -1291,7 +1567,10 @@ export default function SoloMissionMap3D({ onExit, onMapUpdate }: { onExit?: () 
     }
     // Add small margin
     const m = hexSize * 2;
-    return { minX: minX - m, maxX: maxX + m, minZ: minZ - m, maxZ: maxZ + m };
+    // Y bounds for camera vertical panning: keep camera from showing white canvas
+    // Initial camera Y is 22, so limit panning to prevent going below ground
+    const yBound = 12;
+    return { minX: minX - m, maxX: maxX + m, minZ: minZ - m, maxZ: maxZ + m, minY: -yBound, maxY: yBound };
   }, [tiles, hexSize]);
   // Precompute indices for quick adjacency/zones
   const tilesByKey = useMemo(() => {
@@ -1305,6 +1584,21 @@ export default function SoloMissionMap3D({ onExit, onMapUpdate }: { onExit?: () 
     for (const t of tiles) m.set(`${t.q},${t.r}`, t.type);
     return m;
   }, [tiles]);
+  
+  // Build minimap data for HUD display
+  const minimapData = useMemo(
+    () => ({
+      exploredKeys: exploredRef.current,
+      exploredRevision: exploredCount,
+      visibleKeys: minimapVisibleKeys,
+      tileTypes: tileTypesMap,
+      heroPos: hero.pos,
+      petPos: pet.pos,
+      hexSize,
+      mapBounds,
+    }),
+    [exploredCount, minimapVisibleKeys, hero.pos.q, hero.pos.r, pet.pos.q, pet.pos.r, tileTypesMap]
+  );
   // Patrol candidates: walkable tiles within hero leash radius
   const patrolCandidates = useMemo(() => {
     const leash = Math.max(0, hero.vision - 1);
@@ -1347,6 +1641,7 @@ export default function SoloMissionMap3D({ onExit, onMapUpdate }: { onExit?: () 
           if (d < bestDist) { bestDist = d; best = n; }
         }
         if (best.q === curr.pos.q && best.r === curr.pos.r) { setPetTarget(null); return curr; }
+        // Pet moves but does NOT collect flowers — only player can collect
         return { ...curr, pos: best };
       });
     }, 400);
@@ -1405,11 +1700,11 @@ export default function SoloMissionMap3D({ onExit, onMapUpdate }: { onExit?: () 
   function tileKey(t: Axial) { return `${t.q},${t.r}`; }
   // Char-based rules closer to legacy
   function passable(t: Tile | undefined) {
-    if (!t) return false;
+    if (!t) return { passable: false, reason: null };
     // Mountains are impassable for everyone; water is impassable for the player (pet can traverse it)
-    if (t.type === 'mountain') return false;
-    if (t.type === 'water') return false;
-    return true;
+    if (t.type === 'mountain') return { passable: false, reason: 'mountain' };
+    if (t.type === 'water') return { passable: false, reason: 'water' };
+    return { passable: true, reason: null };
   }
   function clampAxial(a: Axial): Axial {
     // Clamp to nearest existing tile inside bounds. If clamped coordinate missing (edge shape differences) search nearby.
@@ -1436,33 +1731,99 @@ export default function SoloMissionMap3D({ onExit, onMapUpdate }: { onExit?: () 
     const downSet = new Set<string>();
     function onKey(e: KeyboardEvent) {
       const k = e.key.toLowerCase();
+      
+      // ─── MOVEMENT (WASD ONLY) ─────────────────────────────────────
+      // Arrow keys reserved for camera control
       const dirMap: Record<string, Axial> = {
-        // Using common WASD+QE for 6 hex directions (flat-top axial q,r)
-        w: { q: 0, r: -1 },
-        s: { q: 0, r: 1 },
-        q: { q: -1, r: 0 },
-        e: { q: 1, r: 0 },
-        a: { q: -1, r: 1 },
-        d: { q: 1, r: -1 },
+        w: { q: 0, r: -1 },       // North
+        s: { q: 0, r: 1 },        // South
+        a: { q: -1, r: 1 },       // Southwest
+        d: { q: 1, r: -1 },       // Northeast
       };
+      
       const delta = dirMap[k];
-      if (!delta) return;
-      // Single press only: ignore auto-repeat and held key until released
-      if (e.repeat || downSet.has(k)) return;
-      downSet.add(k);
-      e.preventDefault();
-      setHero(h => {
-        const targetRaw = { q: h.pos.q + delta.q, r: h.pos.r + delta.r };
-        const clamped = clampAxial(targetRaw);
-        const tile = tilesByKey.get(`${clamped.q},${clamped.r}`);
-        if (!passable(tile)) return h;
-        const next = { ...h, pos: clamped };
-        // Persist hero position (Firestore progress)
-        saveProgress({ heroPosition: clamped });
-        // Realtime session update (throttled inside usePlayerSession)
-        updateHeroPosition(clamped);
-        return next;
-      });
+      if (delta) {
+        if (e.repeat || downSet.has(k)) return;
+        downSet.add(k);
+        e.preventDefault();
+        
+        setHero(h => {
+          const targetRaw = { q: h.pos.q + delta.q, r: h.pos.r + delta.r };
+          const clamped = clampAxial(targetRaw);
+          const tile = tilesByKey.get(`${clamped.q},${clamped.r}`);
+          const check = passable(tile);
+          if (!check.passable) {
+            if (check.reason === 'water' || check.reason === 'mountain') {
+              setCollisionMessage({ type: check.reason, show: true });
+            }
+            return h;
+          }
+          const next = { ...h, pos: clamped };
+          saveProgress({ heroPosition: clamped });
+          updateHeroPosition(clamped);
+          tilesMoveRef.current++;
+          if (tilesMoveRef.current >= 40) {
+            const newPetXp = (pet.xp || 0) + 1;
+            const newHeroXp = (profile?.progress?.hero?.xp ?? 0) + 0.5;
+            setPet(p => ({ ...p, xp: newPetXp }));
+            tilesMoveRef.current = 0;
+            saveProgress({
+              pet: { xp: newPetXp, type: undefined, level: 1 },
+              hero: { xp: newHeroXp, level: profile?.progress?.hero?.level || 1, traits: [], unlockedSkillIds: [], unlockOrder: [] }
+            });
+            console.log('[XP] Hero +0.5 XP, Pet +1 XP!');
+          }
+          return next;
+        });
+        return;
+      }
+      
+      // ─── ABILITY ACTIVATION (QWER) ────────────────────────────────────
+      const abilityMap: Record<string, string> = {
+        q: 'q',
+        w: 'w',
+        e: 'e',
+        r: 'r',
+      };
+      
+      if (abilityMap[k]) {
+        if (e.repeat) return;
+        const slotKey = abilityMap[k].toUpperCase();
+        const ability = abilitySlots.find(a => a.key === slotKey);
+        if (ability && ability.cooldown === 0) {
+          console.log(`[Ability] Activated ${ability.id} (${ability.icon})`);
+          // Trigger cooldown
+          setAbilitySlots(prev => prev.map(a => 
+            a.key === slotKey ? { ...a, cooldown: a.maxCooldown } : a
+          ));
+          // TODO: Apply ability effect (damage, heal, buff, etc.)
+        } else if (ability) {
+          console.log(`[Ability] ${ability.id} on cooldown: ${ability.cooldown}s remaining`);
+        }
+        return;
+      }
+      
+      // ─── ITEM ACTIVATION (12345678) ─────────────────────────────────
+      const itemMap: Record<string, string> = {
+        '1': '1', '2': '2', '3': '3', '4': '4', '5': '5', '6': '6', '7': '7', '8': '8',
+      };
+      
+      if (itemMap[k]) {
+        if (e.repeat) return;
+        const slotIndex = parseInt(itemMap[k]) - 1;
+        const item = itemSlots[slotIndex];
+        if (item && (item.qty ?? 0) > 0) {
+          console.log(`[Item] Used ${item.id} (${item.icon})`);
+          // Decrease quantity
+          setItemSlots(prev => prev.map((itm, idx) => 
+            idx === slotIndex ? { ...itm, qty: Math.max(0, (itm.qty ?? 0) - 1) } : itm
+          ));
+          // TODO: Apply item effect from inventory
+        } else {
+          console.log(`[Item] Slot ${itemMap[k]} is empty`);
+        }
+        return;
+      }
     }
     function onKeyUp(e: KeyboardEvent){
       const k = e.key.toLowerCase();
@@ -1471,7 +1832,7 @@ export default function SoloMissionMap3D({ onExit, onMapUpdate }: { onExit?: () 
     window.addEventListener('keydown', onKey);
     window.addEventListener('keyup', onKeyUp);
     return () => { window.removeEventListener('keydown', onKey); window.removeEventListener('keyup', onKeyUp); };
-  }, [tilesByKey, saveProgress]);
+  }, [tilesByKey, saveProgress, pet.xp, profile?.progress?.hero?.xp, profile?.progress?.hero?.level]);
   // endTurn logic removed (turn system disabled)
 
   // Keyboard hex movement (pointy axial layout with q,r; adapt to 6 neighbors)
@@ -1482,7 +1843,34 @@ export default function SoloMissionMap3D({ onExit, onMapUpdate }: { onExit?: () 
       {/* Helper overlay removed for production */}
       <div className="absolute inset-0 select-none">
     <Canvas shadows camera={{ position: [0, 22, 22], fov: 45 }}>
-  <MapCameraController bounds={mapBounds} gameMode={true} heroWorld={heroWorld} recenterSignal={recenterSignal} />
+  <MapCameraController
+    bounds={mapBounds}
+    gameMode={true}
+    heroWorld={heroWorld}
+    recenterSignal={recenterSignal}
+    petInventory={localPetInventory}
+    setPetInventory={setLocalPetInventory}
+    heroInventory={localHeroInventory}
+    setHeroInventory={setLocalHeroInventory}
+    nearbyFlowerRef={nearbyFlowerRef}
+    collectibleFlowers={collectibleFlowers}
+    collectingFlowerRef={collectingFlowerRef}
+    collectTimerRef={collectTimerRef}
+    setCollectingFlower={setCollectingFlower}
+    setCollectingProgress={setCollectingProgress}
+    setCollectibleFlowers={setCollectibleFlowers}
+    setNearbyFlower={setNearbyFlower}
+    saveProgress={saveProgress}
+    profile={profile}
+    abilitySlots={abilitySlots}
+    setAbilitySlots={setAbilitySlots}
+    itemSlots={itemSlots}
+    setItemSlots={setItemSlots}
+  />
+              <SceneSetupVerifier />
+              <AvatarRenderingVerifier />
+              <PerformanceChecker />
+              <AvatarCollisionDetector heroAvatarRef={heroAvatarRef} heroWorldPos={heroWorld} culledTiles={culledTiles} hexSize={hexSize} />
               <SceneBridge outerRadius={hexSize} onReady={(caps) => { setRefMountains(!!caps.mountain); setRefTrees(!!caps.tree); setRefWater(!!caps.water); setRefHills(!!caps.hills); setRefDesert(!!caps.desert); }} />
               <Sky inclination={0.6} azimuth={0.25} sunPosition={[50, 50, 10]} turbidity={2} rayleigh={0.7} mieCoefficient={0.005} mieDirectionalG={0.8} />
               <hemisphereLight args={["#bde0fe", "#e6f3ff", 0.8]} />
@@ -1544,6 +1932,12 @@ export default function SoloMissionMap3D({ onExit, onMapUpdate }: { onExit?: () 
                       {(inVision || explored) && t.type === 'desert' && (
                         <group position={[0, tileTop, 0]} renderOrder={5}><DesertDunes size={hexSize} seed={t.q * 41 + t.r * 19} /></group>
                       )}
+                      {/* Collectible healing flowers */}
+                      {inVision && collectibleFlowers.has(key) && (
+                        <group position={[0, tileTop, 0]} renderOrder={23}>
+                          <CollectibleFlower size={hexSize} />
+                        </group>
+                      )}
                       {/* FoW: solid black over completely unexplored+invisible tiles */}
                       {!inVision && !explored && (
                         <mesh rotation={[0, Math.PI / 6, 0]} position={[0, tileTop + 0.02, 0]} renderOrder={15}>
@@ -1564,33 +1958,35 @@ export default function SoloMissionMap3D({ onExit, onMapUpdate }: { onExit?: () 
                 {/* Actor markers */}
                 {/* Hero avatar replaced with billboard; pet retains simple sphere marker */}
                 {/* Hero avatar — inlined JSX (not a sub-component) so React never
-                    unmounts/remounts this group on parent re-renders */}
-                <group position={[heroWorld.x, 0.4, heroWorld.z]} name="HeroAvatar" frustumCulled={false}>
-                  {/* Drop shadow — renderOrder 20 ensures it draws above water wave rings */}
+                    unmounts/remounts this group on parent re-renders.
+                    Positioned at tile surface (y = 0.4), with avatar mesh foot-anchored
+                    so feet sit exactly at the surface. */}
+                <group ref={heroAvatarRef} position={[heroWorld.x, 0.48, heroWorld.z]} name="HeroAvatar" frustumCulled={false}>
+                  {/* Drop shadow — renderOrder 20 */}
                   <mesh rotation={[-Math.PI/2, 0, 0]} position={[0, 0.01, 0]} receiveShadow renderOrder={20}>
                     <circleGeometry args={[hexSize * 0.42, 24]} />
                     <meshStandardMaterial color="#000" transparent opacity={0.22} depthWrite={false} />
                   </mesh>
-                  {/* Avatar body — lifted 0.15 units above tile top so model feet (y=0
-                      in model space) clear the tile surface (tile top = y=0.4 = group y).
-                      renderOrder=22 forces draw after tile geometry (0) and FoW (14/15)
-                      to win depth-buffer ties on the first frame before depth precision
-                      has fully settled. */}
-                  {avatarReady && (
-                    <Suspense fallback={null}>
-                      <group position={[0, 0.15, 0]} renderOrder={22}>
-                        {heroModelUrl
-                          ? <GLBAvatarMesh url={heroModelUrl} parts={heroParts} colors={heroColors} />
-                          : <AssembledAvatarMesh parts={heroParts} colors={heroColors} />
-                        }
-                      </group>
-                    </Suspense>
-                  )}
-                  {/* Yellow selection ring — renderOrder 21 ensures it draws above water wave rings */}
+                  {/* Floor collider — invisible plane at tile surface */}
+                  <mesh position={[0, -0.01, 0]} userData={{ type: 'avatar-floor' }} visible={false}>
+                    <planeGeometry args={[hexSize * 0.8, hexSize * 0.8]} />
+                    <meshBasicMaterial />
+                  </mesh>
+                  {/* Yellow selection ring — renderOrder 21 */}
                   <mesh rotation={[-Math.PI/2, 0, 0]} position={[0, 0.015, 0]} renderOrder={21}>
                     <ringGeometry args={[hexSize * 0.62, hexSize * 0.78, 40]} />
                     <meshBasicMaterial color="#facc15" transparent opacity={0.85} depthWrite={false} />
                   </mesh>
+                  {/* Avatar mesh is a direct child of HeroAvatar. React updates this group's
+                      position via JSX prop each time hero moves, which triggers R3F to call
+                      group.position.set() + updateMatrix(), setting matrixWorldNeedsUpdate=true.
+                      During gl.render → scene.updateMatrixWorld(), force=true cascades through
+                      all descendants including GLB primitive nodes. */}
+                  {avatarReady && (
+                    <Suspense fallback={null}>
+                      <GameAvatar heroModelUrl={heroModelUrl} heroParts={heroParts} heroColors={heroColors} hexSize={hexSize} />
+                    </Suspense>
+                  )}
                 </group>
                 {(() => { const world = axialToWorld(pet.pos, hexSize); return (
                   <group key={pet.id} position={[world.x, 0.4, world.z]}>
@@ -1611,19 +2007,100 @@ export default function SoloMissionMap3D({ onExit, onMapUpdate }: { onExit?: () 
               <ContactShadows position={[0, 0, 0]} opacity={0.15} blur={1.5} far={15} />
               {/* OrbitControls removed in favor of custom edge + drag panning controller */}
             </Canvas>
-              {/* Menu button — top left */}
-              {onExit && (
-                <button
-                  onClick={onExit}
-                  className="absolute top-2 left-2 z-10 flex items-center gap-1 px-3 py-1.5 rounded-lg bg-black/60 hover:bg-black/80 active:scale-95 text-xs text-white border border-white/10 font-medium tracking-wide transition-colors select-none"
-                >
-                  ‹ Menu
-                </button>
+              {/* Collision message box */}
+              {collisionMessage.show && (
+                <div className="absolute inset-0 flex items-center justify-center z-50">
+                  <div className="bg-black/80 border-2 border-white/30 rounded-lg p-6 max-w-sm text-center">
+                    <h2 className="text-white font-bold text-lg mb-4">
+                      {collisionMessage.type === 'water' ? '🌊 Water Ahead!' : '⛰️ Mountain Ahead!'}
+                    </h2>
+                    <p className="text-white/80 mb-6 text-sm">
+                      {collisionMessage.type === 'water' 
+                        ? 'You cannot cross water. Choose another path.'
+                        : 'The mountain blocks your way. Find another route.'}
+                    </p>
+                    <div className="flex gap-3 justify-center">
+                      <button
+                        onClick={() => setCollisionMessage({ ...collisionMessage, show: false })}
+                        className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded font-medium transition-colors"
+                      >
+                        Yes
+                      </button>
+                      <button
+                        onClick={() => setCollisionMessage({ ...collisionMessage, show: false })}
+                        className="px-4 py-2 bg-gray-600 hover:bg-gray-700 text-white rounded font-medium transition-colors"
+                      >
+                        No
+                      </button>
+                    </div>
+                  </div>
+                </div>
               )}
               {/* Exploration objective tracker */}
               <div className="absolute top-10 left-2 px-3 py-2 rounded-lg bg-black/60 text-xs text-white border border-white/10 font-medium tracking-wide">
                 Explore: {exploredCount}/{explorationGoal} {explorationComplete ? '✓' : ''}
               </div>
+              
+              {/* Nearby flower collection prompt */}
+              {nearbyFlower && (
+                <div className="fixed bottom-56 left-1/2 -translate-x-1/2 animate-bounce">
+                  <div className="relative px-6 py-3 rounded-xl bg-emerald-900/80 border border-emerald-400/60 text-sm font-semibold text-emerald-100 backdrop-blur-sm shadow-lg overflow-hidden">
+                    {collectingFlower && (
+                      <div className="absolute inset-0 rounded-xl pointer-events-none" style={{
+                        background: `conic-gradient(#10b981 ${collectingProgress * 360}deg, transparent 0)`,
+                      }} />
+                    )}
+                    <div className="relative z-10 flex items-center gap-2">
+                      🌸 Press <span className="px-1.5 py-0.5 rounded bg-emerald-700 font-bold">C</span> to Collect
+                      {collectingFlower && <span className="ml-1 text-xs text-emerald-300">{Math.round(collectingProgress * 100)}%</span>}
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {/* Game HUD with XP, abilities, and inventory */}
+              <GameHUD
+                team={factionName || "radiant"}
+                clock={elapsedTime || new Date().toLocaleTimeString()}
+                score={{ radiant: 0, dire: 0 }}
+                hero={heroVitals ? {
+                  name: heroVitals.name,
+                  level: heroVitals.level,
+                  hp: heroVitals.hp,
+                  ep: heroVitals.ep,
+                  xp: heroVitals.xp,
+                  portraitUrl: heroVitals.portraitUrl,
+                  buffs: heroVitals.buffs,
+                } : {
+                  name: 'Hero',
+                  level: profile?.progress?.hero?.level || 1,
+                  hp: { current: 100, max: 100 },
+                  ep: { current: 50, max: 50 },
+                  xp: { current: profile?.progress?.hero?.xp || 0, max: 500 },
+                }}
+                pet={petData || {
+                  name: 'Pet',
+                  level: profile?.progress?.pet?.level || 1,
+                  hp: { current: 50, max: 50 },
+                  ep: { current: 25, max: 25 },
+                  xp: { current: profile?.progress?.pet?.xp || 0, max: 250 },
+                  icon: '🐾',
+                }}
+                abilities={abilitySlots}
+                defensiveAbilities={externalDefense || []}
+                items={itemSlots}
+                resources={resources || []}
+                skillTokens={skillTokens || 0}
+                petTokens={0}
+                minimapData={minimapData}
+                onMenu={onExit}
+                skillPoints={skillPoints}
+                totalPlayTime={totalPlayTime}
+                heroInventory={localHeroInventory}
+                petInventory={localPetInventory}
+                playerProfile={playerProfile}
+                onTalents={onOpenSkillTree}
+              />
       </div>
     </div>
   );
@@ -1677,7 +2154,39 @@ function ChunkDebugTiles({ heroPos, hexSize }: { heroPos: Axial; hexSize: number
 }
 
 // Custom camera controller: edge pan & drag (game mode) with optional follow axial coord
-function MapCameraController({ bounds, gameMode, heroWorld, recenterSignal }: { bounds: { minX: number; maxX: number; minZ: number; maxZ: number }; gameMode: boolean; heroWorld?: { x: number; z: number }; recenterSignal?: number }) {
+function MapCameraController({
+  bounds, gameMode, heroWorld, recenterSignal,
+  petInventory, setPetInventory, 
+  heroInventory, setHeroInventory,
+  nearbyFlowerRef, collectibleFlowers, collectingFlowerRef, collectTimerRef,
+  setCollectingFlower, setCollectingProgress, setCollectibleFlowers, setNearbyFlower,
+  saveProgress, profile,
+  abilitySlots, setAbilitySlots,
+  itemSlots, setItemSlots
+}: {
+  bounds: { minX: number; maxX: number; minZ: number; maxZ: number; minY?: number; maxY?: number };
+  gameMode: boolean;
+  heroWorld?: { x: number; z: number };
+  recenterSignal?: number;
+  petInventory: Array<{ id: string; type: string; quantity: number; value?: number }>;
+  setPetInventory: (inv: Array<{ id: string; type: string; quantity: number; value?: number }>) => void;
+  heroInventory: Array<{ id: string; type: string; quantity: number; value?: number }>;
+  setHeroInventory: (inv: Array<{ id: string; type: string; quantity: number; value?: number }>) => void;
+  nearbyFlowerRef: React.MutableRefObject<string | null>;
+  collectibleFlowers: Set<string>;
+  collectingFlowerRef: React.MutableRefObject<string | null>;
+  collectTimerRef: React.MutableRefObject<number | null>;
+  setCollectingFlower: (flower: string | null) => void;
+  setCollectingProgress: (progress: number) => void;
+  setCollectibleFlowers: (flowers: Set<string>) => void;
+  setNearbyFlower: (flower: string | null) => void;
+  saveProgress: (progress: any) => void;
+  profile: any;
+  abilitySlots: Ability[];
+  setAbilitySlots: React.Dispatch<React.SetStateAction<Ability[]>>;
+  itemSlots: Item[];
+  setItemSlots: React.Dispatch<React.SetStateAction<Item[]>>;
+}) {
   const { camera, gl } = useThree();
   const targetRef = React.useRef(new THREE.Vector3(0, 0, 0));
   const offsetRef = React.useRef<THREE.Vector3 | null>(null); // camera.position - target
@@ -1688,6 +2197,7 @@ function MapCameraController({ bounds, gameMode, heroWorld, recenterSignal }: { 
   const dragStartMouse = React.useRef({ x: 0, y: 0 });
   const dragActivated = React.useRef(false); // true once mouse/touch moved ≥4px from start
   const lastTouchDist = React.useRef(0);
+  const keysPressed = React.useRef({ ArrowUp: false, ArrowDown: false, PageUp: false, PageDown: false });
   const threshold = 24; // px edge region
   const baseSpeed = 17.5; // halved for slower edge pan
   // Keyboard panning disabled (camera fixed except mouse drag / edge)
@@ -1713,13 +2223,11 @@ function MapCameraController({ bounds, gameMode, heroWorld, recenterSignal }: { 
     if (!offsetRef.current) {
       offsetRef.current = camera.position.clone().sub(targetRef.current);
     }
-    if (heroWorld) {
+    if (heroWorld && offsetRef.current) {
       // Center target on hero and keep same vertical distance
       targetRef.current.set(heroWorld.x, 0, heroWorld.z);
-      if (offsetRef.current) {
-        camera.position.copy(targetRef.current).add(offsetRef.current);
-        camera.lookAt(targetRef.current);
-      }
+      camera.position.copy(targetRef.current).add(offsetRef.current);
+      camera.lookAt(targetRef.current);
     }
   // run when heroWorld first stable
   }, [camera, heroWorld]);
@@ -1785,6 +2293,91 @@ function MapCameraController({ bounds, gameMode, heroWorld, recenterSignal }: { 
         gl.domElement.style.cursor = 'grab';
       }
     }
+    function onLeave() { if (!dragging.current && !altDragging.current) { edgeRef.current.dx = 0; edgeRef.current.dy = 0; } }
+    function onKeyDown(e: KeyboardEvent) {
+      try {
+        if (!gameMode) return;
+        if (e.key === 'ArrowUp' || e.key === 'PageUp') {
+          keysPressed.current.ArrowUp = true;
+          keysPressed.current.PageUp = true;
+        }
+        if (e.key === 'ArrowDown' || e.key === 'PageDown') {
+          keysPressed.current.ArrowDown = true;
+          keysPressed.current.PageDown = true;
+        }
+        // 'C' key to collect nearby flower
+        if (e.key.toLowerCase() === 'c' && nearbyFlowerRef.current && !collectingFlowerRef.current) {
+          const flowerKey = nearbyFlowerRef.current;
+          if (!flowerKey) return;
+          
+          setCollectingFlower(flowerKey);
+          setCollectingProgress(0);
+          
+          // Animate collection over 1.2 seconds
+          const startTime = performance.now();
+          const collectDuration = 1200; // ms
+          
+          const animateCollection = (currentTime: number) => {
+            const elapsed = currentTime - startTime;
+            const progress = Math.min(1, elapsed / collectDuration);
+            setCollectingProgress(progress);
+            
+            if (progress < 1) {
+              collectTimerRef.current = requestAnimationFrame(animateCollection);
+            } else {
+              // Collection complete!
+              const updatedFlowers = new Set<string>(collectibleFlowers);
+              updatedFlowers.delete(flowerKey);
+              setCollectibleFlowers(updatedFlowers);
+              
+              // Add to HERO inventory (player decides what to collect)
+              const existing = heroInventory.find((i: any) => i.type === 'flower');
+              const newHeroInventory = existing
+                ? heroInventory.map((i: any) => i.type === 'flower' ? { ...i, quantity: i.quantity + 1 } : i)
+                : [...heroInventory, { id: 'flower-' + flowerKey, type: 'flower', quantity: 1, effect: 'heal', value: 20, icon: '🌸' }];
+              setHeroInventory(newHeroInventory);
+              
+              // Award XP to player for collection (safely access profile)
+              if (profile?.progress?.hero) {
+                const newHeroXp = (profile.progress.hero.xp ?? 0) + 5; // 5 XP per flower
+                const heroLevel = profile.progress.hero.level ?? 1;
+                
+                // Persist to database: hero inventory + XP, pet XP
+                const inventoryToSave = newHeroInventory.filter((i: any) => i.type === 'flower' || i.type === 'herb') as Array<{ id: string; type: 'herb' | 'flower'; quantity: number; effect?: 'heal'; value?: number }>;
+                saveProgress({
+                  heroInventory: inventoryToSave,
+                  hero: { xp: newHeroXp, level: heroLevel, traits: [], unlockedSkillIds: [], unlockOrder: [] },
+                });
+                
+                console.log('[Hero] Collected flower! XP:', newHeroXp, 'Total in inventory:', newHeroInventory.find((i: any) => i.type === 'flower')?.quantity || 0);
+              }
+              
+              // Clear collection state
+              setCollectingFlower(null);
+              setCollectingProgress(0);
+            }
+          };
+          
+          collectTimerRef.current = requestAnimationFrame(animateCollection);
+          
+          setNearbyFlower(null);
+          // Clear collecting animation after 0.5s
+          setTimeout(() => setCollectingFlower(null), 500);
+        }
+      } catch (err) {
+        console.error('[KeybindError]', err);
+      }
+    }
+    function onKeyUp(e: KeyboardEvent) {
+      if (e.key === 'ArrowUp' || e.key === 'PageUp') {
+        keysPressed.current.ArrowUp = false;
+        keysPressed.current.PageUp = false;
+      }
+      if (e.key === 'ArrowDown' || e.key === 'PageDown') {
+        keysPressed.current.ArrowDown = false;
+        keysPressed.current.PageDown = false;
+      }
+    }
     // ── Touch support (single-finger pan, two-finger pinch-zoom) ─────────────
     function onTouchStart(e: TouchEvent) {
       if (!gameMode) return;
@@ -1837,42 +2430,45 @@ function MapCameraController({ bounds, gameMode, heroWorld, recenterSignal }: { 
       dragActivated.current = false;
       lastTouchDist.current = 0;
     }
-    function onLeave() { if (!dragging.current && !altDragging.current) { edgeRef.current.dx = 0; edgeRef.current.dy = 0; } }
     function onWheel(e: WheelEvent) {
-      if (!gameMode) return;
-      if (!offsetRef.current) return;
-      e.preventDefault();
-      const off = offsetRef.current;
-      const len = off.length();
-    const delta = e.deltaY * zoomConfig.zoomSpeed * (len/60);
-    const maxZoom = currentMaxZoom();
-    const next = THREE.MathUtils.clamp(len + delta, zoomConfig.min, maxZoom);
-      // Ray cast from cursor to ground plane (y=0) to find world point under mouse BEFORE zoom
-      const rect = gl.domElement.getBoundingClientRect();
-      const ndc = new THREE.Vector2(
-        ((e.clientX - rect.left) / rect.width) * 2 - 1,
-        -(((e.clientY - rect.top) / rect.height) * 2 - 1)
-      );
-      const raycaster = new THREE.Raycaster();
-      raycaster.setFromCamera(ndc, camera);
-      const planeY0 = new THREE.Plane(new THREE.Vector3(0,1,0), 0); // y=0
-      const hit = new THREE.Vector3();
-      raycaster.ray.intersectPlane(planeY0, hit);
-      // Scale offset to new distance preserving direction
-      const ratio = next / len;
-      off.multiplyScalar(ratio);
-      // After zoom, compute new ray to same screen point to preserve focus
-      camera.position.copy(targetRef.current).add(off);
-      camera.updateMatrixWorld();
-      raycaster.setFromCamera(ndc, camera);
-      const newHit = new THREE.Vector3();
-      raycaster.ray.intersectPlane(planeY0, newHit);
-      if (hit.lengthSq() > 0 && newHit.lengthSq() > 0) {
-        // Adjust target by the delta so the point under cursor remains stable
-        const adjust = hit.clone().sub(newHit);
-        targetRef.current.add(adjust);
-        clampTarget();
+      try {
+        if (!gameMode) return;
+        if (!offsetRef.current) return;
+        e.preventDefault();
+        const off = offsetRef.current;
+        const len = off.length();
+        const delta = e.deltaY * zoomConfig.zoomSpeed * (len/60);
+        const maxZoom = currentMaxZoom();
+        const next = THREE.MathUtils.clamp(len + delta, zoomConfig.min, maxZoom);
+        // Ray cast from cursor to ground plane (y=0) to find world point under mouse BEFORE zoom
+        const rect = gl.domElement.getBoundingClientRect();
+        const ndc = new THREE.Vector2(
+          ((e.clientX - rect.left) / rect.width) * 2 - 1,
+          -(((e.clientY - rect.top) / rect.height) * 2 - 1)
+        );
+        const raycaster = new THREE.Raycaster();
+        raycaster.setFromCamera(ndc, camera);
+        const planeY0 = new THREE.Plane(new THREE.Vector3(0,1,0), 0); // y=0
+        const hit = new THREE.Vector3();
+        raycaster.ray.intersectPlane(planeY0, hit);
+        // Scale offset to new distance preserving direction
+        const ratio = next / len;
+        off.multiplyScalar(ratio);
+        // After zoom, compute new ray to same screen point to preserve focus
         camera.position.copy(targetRef.current).add(off);
+        camera.updateMatrixWorld();
+        raycaster.setFromCamera(ndc, camera);
+        const newHit = new THREE.Vector3();
+        raycaster.ray.intersectPlane(planeY0, newHit);
+        if (hit.lengthSq() > 0 && newHit.lengthSq() > 0) {
+          // Adjust target by the delta so the point under cursor remains stable
+          const adjust = hit.clone().sub(newHit);
+          targetRef.current.add(adjust);
+          clampTarget();
+          camera.position.copy(targetRef.current).add(off);
+        }
+      } catch (err) {
+        console.error('[ZoomError]', err);
       }
     }
     window.addEventListener('mousemove', onMouseMove);
@@ -1880,6 +2476,8 @@ function MapCameraController({ bounds, gameMode, heroWorld, recenterSignal }: { 
     window.addEventListener('mouseup', onMouseUp);
     window.addEventListener('mouseleave', onLeave);
     window.addEventListener('wheel', onWheel, { passive: false });
+    window.addEventListener('keydown', onKeyDown);
+    window.addEventListener('keyup', onKeyUp);
     // Touch events on canvas element (needs { passive: false } so touchmove can preventDefault)
     gl.domElement.addEventListener('touchstart', onTouchStart, { passive: true });
     gl.domElement.addEventListener('touchmove', onTouchMove, { passive: false });
@@ -1892,17 +2490,23 @@ function MapCameraController({ bounds, gameMode, heroWorld, recenterSignal }: { 
       window.removeEventListener('mouseup', onMouseUp);
       window.removeEventListener('mouseleave', onLeave);
       window.removeEventListener('wheel', onWheel as any);
+      window.removeEventListener('keydown', onKeyDown);
+      window.removeEventListener('keyup', onKeyUp);
       gl.domElement.removeEventListener('touchstart', onTouchStart);
       gl.domElement.removeEventListener('touchmove', onTouchMove);
       gl.domElement.removeEventListener('touchend', onTouchEnd);
       gl.domElement.style.cursor = '';
     };
-  }, [gameMode]);
+  }, [gameMode, saveProgress, profile, setCollectingProgress, setCollectingFlower, setHeroInventory, heroInventory, collectibleFlowers, abilitySlots, setAbilitySlots, itemSlots, setItemSlots]);
 
   function clampTarget() {
     const t = targetRef.current;
     t.x = Math.min(bounds.maxX, Math.max(bounds.minX, t.x));
     t.z = Math.min(bounds.maxZ, Math.max(bounds.minZ, t.z));
+    // Clamp Y (vertical camera movement) if bounds provided
+    if (bounds.minY !== undefined && bounds.maxY !== undefined) {
+      t.y = Math.min(bounds.maxY, Math.max(bounds.minY, t.y));
+    }
     // Also keep the camera body (position = target + offset) within map bounds
     if (offsetRef.current) {
       const ox = offsetRef.current.x;
@@ -1918,14 +2522,43 @@ function MapCameraController({ bounds, gameMode, heroWorld, recenterSignal }: { 
 
   useFrame((_, delta) => {
     if (!gameMode) return;
-    if (!offsetRef.current) return;
+    if (!offsetRef.current) {
+      // Initialize offset if missing (prevents white screen)
+      offsetRef.current = new THREE.Vector3(0, 22, 22);
+      camera.position.copy(targetRef.current).add(offsetRef.current);
+      camera.lookAt(targetRef.current);
+      return;
+    }
     const off = offsetRef.current;
+    // Validate offset is not NaN (prevents white screen)
+    if (!Number.isFinite(off.length())) {
+      offsetRef.current.set(0, 22, 22);
+      camera.position.copy(targetRef.current).add(offsetRef.current);
+      camera.lookAt(targetRef.current);
+      return;
+    }
     // Follow mode removed; camera target only changes via edge/drag inertia
     let appliedAny = false;
+    
+    // Keyboard vertical panning (Y-axis movement)
+    const verticalSpeed = 20; // units per second
+    if (keysPressed.current.ArrowUp || keysPressed.current.PageUp) {
+      targetRef.current.y += verticalSpeed * delta;
+      appliedAny = true;
+    }
+    if (keysPressed.current.ArrowDown || keysPressed.current.PageDown) {
+      targetRef.current.y -= verticalSpeed * delta;
+      appliedAny = true;
+    }
+    // Clamp vertical movement to bounds
+    if (appliedAny && (bounds.minY !== undefined && bounds.maxY !== undefined)) {
+      targetRef.current.y = Math.min(bounds.maxY, Math.max(bounds.minY, targetRef.current.y));
+    }
+    
     // Camera moves only via drag / scroll — no edge panning
     // Keyboard panning removed
     // Inertia: if no inputs & velocity remains, apply damping
-  if (!appliedAny && !dragging.current && velocity.current.lengthSq() > 0.0001) {
+    if (!appliedAny && !dragging.current && velocity.current.lengthSq() > 0.0001) {
       const damping = Math.pow(0.92, (delta * 60)); // frame-rate independent damping (~8% loss per 1/60s)
       velocity.current.multiplyScalar(damping);
       const move = velocity.current.clone().multiplyScalar(delta);
