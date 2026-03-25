@@ -1,0 +1,75 @@
+{
+	"version": "2.0.0",
+	"tasks": [
+		{
+			"label": "serve-dist-1002",
+			"type": "shell",
+			"command": "npx -y http-server dist -p 1002 -c-1 --silent",
+			"args": [],
+			"isBackground": true,
+			"problemMatcher": [],
+			"group": "build"
+		},
+		{
+			"label": "build-app",
+			"type": "shell",
+			"command": "npm run build",
+			"args": [],
+			"isBackground": false,
+			"problemMatcher": [
+				"$tsc",
+				"$eslint-stylish"
+			],
+			"group": "build"
+		},
+		{
+			"label": "build-and-serve-1002",
+			"type": "shell",
+			"command": "npm run build && node server.js",
+			"args": [],
+			"isBackground": true,
+			"problemMatcher": [],
+			"group": "build"
+		},
+		{
+			"label": "build-app-1002",
+			"type": "shell",
+			"command": "npm run build",
+			"args": [],
+			"isBackground": false,
+			"problemMatcher": [
+				"$tsc"
+			],
+			"group": "build"
+		},
+		{
+			"label": "build-app",
+			"type": "shell",
+			"command": "npm run build",
+			"args": [],
+			"isBackground": false,
+			"problemMatcher": [
+				"$tsc",
+				"$eslint - stylish"
+			],
+			"group": "build"
+		},
+		{
+			"label": "build-app",
+			"type": "shell",
+			"command": "npm run build",
+			"args": [],
+			"isBackground": false,
+			"problemMatcher": [],
+			"group": "build"
+		},
+		{
+			"label": "vite-dev-1002",
+			"type": "shell",
+			"command": "npm run dev",
+			"args": [],
+			"isBackground": true,
+			"group": "build"
+		}
+	]
+}
