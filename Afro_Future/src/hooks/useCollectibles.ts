@@ -183,20 +183,18 @@ export function useCollectibles({
   const localPetInventoryRef = useRef(localPetInventory);
   localPetInventoryRef.current = localPetInventory;
 
-  const profileSyncedRef = useRef<string | null>(null);
+  // Always rehydrate inventory from profile on every profile change (not just when local is empty)
   useEffect(() => {
-    if (!profile?.uid || profileSyncedRef.current === profile.uid) return;
-    profileSyncedRef.current = profile.uid;
-    if (localHeroInventoryRef.current.length === 0 && profile.progress?.heroInventory?.length) {
-      const saved = profile.progress.heroInventory as InventoryItem[];
-      localHeroInventoryRef.current = saved;
-      setLocalHeroInventory(saved);
+    if (!profile?.uid) return;
+    if (profile.progress?.heroInventory) {
+      localHeroInventoryRef.current = profile.progress.heroInventory as InventoryItem[];
+      setLocalHeroInventory(profile.progress.heroInventory as InventoryItem[]);
     }
-    if (localPetInventoryRef.current.length === 0 && profile.progress?.petInventory?.length) {
+    if (profile.progress?.petInventory) {
+      localPetInventoryRef.current = profile.progress.petInventory as InventoryItem[];
       setLocalPetInventory(profile.progress.petInventory as InventoryItem[]);
     }
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [profile?.uid]);
+  }, [profile?.uid, profile?.progress?.heroInventory, profile?.progress?.petInventory]);
 
   // ── Sync "nearby" refs whenever state changes ─────────────────────────────
   useEffect(() => {

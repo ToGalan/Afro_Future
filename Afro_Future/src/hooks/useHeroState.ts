@@ -51,14 +51,12 @@ export function useHeroState({
   const lastSpaceRef = useRef(0);
   const heroMovedToSpawn = useRef(false);
 
-  // Restore hero position from Firestore when profile first loads
+  // Always rehydrate hero position from profile on every profile change
   useEffect(() => {
     if (!profile?.progress?.heroPosition) return;
     setHero(h => ({ ...h, pos: profile.progress.heroPosition }));
     setRecenterSignal(s => s + 1);
-  // Only re-run when the uid changes (new auth session), not on every profile update
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [profile?.uid]);
+  }, [profile?.progress?.heroPosition]);
 
   // Once tiles are ready, move hero to the real map spawn position.
   // Skip if profile already has a saved position (restored above).

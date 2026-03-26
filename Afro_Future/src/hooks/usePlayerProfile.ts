@@ -147,10 +147,9 @@ export function usePlayerProfile(opts: UsePlayerProfileOptions = {}) {
     }
   }, [profile]);
 
-  // One-time skill store hydration from profile hero progress
-  const hydratedRef = useRef(false);
+  // Always rehydrate skill store from profile on every profile change
   useEffect(() => {
-    if (!profile || hydratedRef.current) return;
+    if (!profile) return;
     const hero = profile.progress.hero;
     const hasSkillData = hero && (hero.unlockedSkillIds?.length || hero.unlockOrder?.length || hero.level > 1);
     const hasAbilityLoadout = profile.progress.abilityLoadout;
@@ -163,12 +162,11 @@ export function usePlayerProfile(opts: UsePlayerProfileOptions = {}) {
           unlockOrder: hero?.unlockOrder,
           abilityLoadout: hasAbilityLoadout ? profile.progress.abilityLoadout : undefined,
         });
-        hydratedRef.current = true;
       } catch {
         // ignore hydration errors
       }
     }
-  }, [profile]);
+  }, [profile?.progress?.hero?.level, profile?.progress?.hero?.unlockedSkillIds, profile?.progress?.hero?.unlockOrder, profile?.progress?.abilityLoadout]);
 
   const saveProgress = useCallback((partial: Partial<PlayerProfile['progress']>) => {
     if (!profile) return;
