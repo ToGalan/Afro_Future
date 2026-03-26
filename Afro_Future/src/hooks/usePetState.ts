@@ -61,6 +61,7 @@ export function usePetState({
       let best = p.pos;
       let bestDist = axialDistance(p.pos, hero.pos);
       for (const n of axialNeighbors(p.pos)) {
+        if (n.q === hero.pos.q && n.r === hero.pos.r) continue; // never share hero's tile
         const d = axialDistance(n, hero.pos);
         if (d < bestDist) { bestDist = d; best = n; }
       }
@@ -121,6 +122,7 @@ export function usePetState({
           const tile = byKey.get(`${n.q},${n.r}`);
           if (!tile) continue;
           if (tile.type === 'mountain') continue; // pet blocked by mountains only
+          if (n.q === h.pos.q && n.r === h.pos.r) continue; // never share hero's tile
           if (axialDistance(n, h.pos) > leash) continue;
           const d = axialDistance(n, target);
           if (d < bestDist) { bestDist = d; best = n; }

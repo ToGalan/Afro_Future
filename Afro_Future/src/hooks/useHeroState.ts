@@ -38,12 +38,13 @@ export function useHeroState({
 }: UseHeroStateOptions): UseHeroStateReturn {
   const initialPos: Axial = useChunks ? chunkCenterAxial : { q: 0, r: 0 };
 
-  const [hero, setHero] = useState<Actor>({
+  const [hero, setHero] = useState<Actor>(() => ({
     id: 'hero',
-    pos: initialPos,
+    // Use Firestore saved position immediately if available, to avoid a first-frame flash
+    pos: profile?.progress?.heroPosition ?? initialPos,
     vision: 8,
     kind: 'actor',
-  });
+  }));
 
   const heroAvatarRef = useRef<THREE.Group | null>(null);
   const [recenterSignal, setRecenterSignal] = useState(0);

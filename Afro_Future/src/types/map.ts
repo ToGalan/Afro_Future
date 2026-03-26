@@ -4,7 +4,7 @@
  */
 
 export type TileType = 'water' | 'desert' | 'plains' | 'forest' | 'jungle' | 'hills' | 'mountain';
-export type ResourceType = 'ore' | 'energy' | 'bio' | null;
+export type ResourceType = 'ore' | 'energy' | 'bio' | 'wood' | 'iron' | 'glass' | null;
 
 /** Axial hex coordinate */
 export interface Axial { q: number; r: number; }

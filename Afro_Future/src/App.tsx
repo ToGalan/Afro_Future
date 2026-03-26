@@ -1634,6 +1634,8 @@ function LeftPlayerPanel({ className = '', playerName, accountLevel, loadout, he
   const baseEP = 60; const epPerLevel = 6; const epPerUtility = 6;
   const HP = baseHP + (skillLevel-1)*hpPerLevel + defense*hpPerDefense;
   const EP = baseEP + (skillLevel-1)*epPerLevel + utility*epPerUtility;
+  const petHP = 50 + (petLevel - 1) * 5;
+  const petEP = 30 + (petLevel - 1) * 3;
   const [shareOpen, setShareOpen] = React.useState(false);
   const shareRef = React.useRef<HTMLDivElement|null>(null);
   React.useEffect(()=>{
@@ -1767,9 +1769,11 @@ function LeftPlayerPanel({ className = '', playerName, accountLevel, loadout, he
         {/* HP / EP & Skill Tokens */}
         <div className="mt-4 w-full grid grid-cols-2 gap-3">
           <div className="rounded-2xl border border-white/10 bg-gradient-to-br from-emerald-500/10 to-sky-500/10 p-3 flex flex-col text-[10px]">
-            <div className="flex justify-between"><span className="opacity-70">HP</span><span className="font-semibold">{HP}</span></div>
-            <div className="flex justify-between mt-1"><span className="opacity-70">EP</span><span className="font-semibold">{EP}</span></div>
-            <div className="flex justify-between mt-1"><span className="opacity-70">Skill Lv</span><span className="font-semibold">{skillLevel}</span></div>
+            <div className="flex justify-between"><span className="opacity-70">HP</span><span className="font-semibold text-rose-300">{HP}</span></div>
+            <div className="h-1.5 rounded-full bg-white/10 overflow-hidden mt-0.5 mb-1.5"><div className="h-full rounded-full bg-rose-500 w-full" /></div>
+            <div className="flex justify-between"><span className="opacity-70">EP</span><span className="font-semibold text-sky-300">{EP}</span></div>
+            <div className="h-1.5 rounded-full bg-white/10 overflow-hidden mt-0.5 mb-1.5"><div className="h-full rounded-full bg-sky-500 w-full" /></div>
+            <div className="flex justify-between"><span className="opacity-70">Skill Lv</span><span className="font-semibold">{skillLevel}</span></div>
             <div className="flex justify-between mt-1"><span className="opacity-70">Hero Lv</span><span className="font-semibold text-amber-300">{playerLevel}</span></div>
           </div>
           <div className="rounded-2xl border border-white/10 bg-white/5 p-3 flex flex-col text-[10px]">
@@ -1818,6 +1822,17 @@ function LeftPlayerPanel({ className = '', playerName, accountLevel, loadout, he
                   className="h-full rounded-full bg-emerald-400 transition-all duration-300"
                   style={{ width: `${xpToNext > 0 ? Math.min(100, (petXp / xpToNext) * 100) : 100}%` }}
                 />
+              </div>
+            </div>
+            {/* Pet HP / EP bars */}
+            <div className="mt-2 w-[80%] flex flex-col gap-1">
+              <div className="flex flex-col gap-0.5">
+                <div className="flex justify-between text-[9px] opacity-60"><span>HP</span><span className="text-rose-300">{petHP}</span></div>
+                <div className="h-1.5 rounded-full bg-white/10 overflow-hidden"><div className="h-full rounded-full bg-rose-500 w-full" /></div>
+              </div>
+              <div className="flex flex-col gap-0.5">
+                <div className="flex justify-between text-[9px] opacity-60"><span>EP</span><span className="text-sky-300">{petEP}</span></div>
+                <div className="h-1.5 rounded-full bg-white/10 overflow-hidden"><div className="h-full rounded-full bg-sky-500 w-full" /></div>
               </div>
             </div>
           </div>

@@ -19,11 +19,11 @@ export type MinimapData = {
 
 const TERRAIN_DIM: Record<string, string> = {
   water: '#1a5a9a', desert: '#8a6a28', plains: '#2d5b1e',
-  forest: '#0e3a14', jungle: '#065020', hills: '#5a4218', mountain: '#4a4a58',
+  forest: '#0e3a14', jungle: '#043d18', hills: '#5a4218', mountain: '#4a4a58',
 };
 const TERRAIN_LIT: Record<string, string> = {
   water: '#3aa0d8', desert: '#d8a840', plains: '#60a040',
-  forest: '#267830', jungle: '#10904a', hills: '#907030', mountain: '#8888a0',
+  forest: '#267830', jungle: '#0f7a36', hills: '#907030', mountain: '#8888a0',
 };
 
 const MinimapCanvas = React.memo(
@@ -225,16 +225,23 @@ const IT_KEYS = ['1', '2', '3', '4', '5', '6', '7', '8'];
 // Consolidated icon mapping for all inventory displays
 const ITEM_ICONS: Record<string, string> = {
   'flower': '🌸',
-  'herb': '🍃',
+  'herb': '🍄',
+  'mushroom': '🍄',
+  'wood': '🪵',
+  'iron': '⚙️',
+  'glass': '💎',
   'potion': '🧪',
-  'consumable': '📦'
+  'consumable': '📦',
 };
 
 const ITEM_TOOLTIPS: Record<string, string> = {
   '🌸': 'Flower - Heal 20 HP',
-  '🍃': 'Mushroom - Restore 5 EP',
+  '🍄': 'Mushroom - Restore 5 EP',
+  '🪵': 'Wood - Crafting material',
+  '⚙️': 'Iron Ore - Forge weapons & tools',
+  '💎': 'Desert Glass - Rare crafting gem',
   '🧪': 'Potion - Restore 50 HP',
-  '📦': 'Consumable Item'
+  '📦': 'Consumable Item',
 };
 
 export const GameHUD: React.FC<GameHUDProps> = ({

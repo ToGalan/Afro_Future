@@ -32,6 +32,10 @@ interface IsometricCharacterProps {
   hexSize: number;
   /** When true, plays an idle bobbing animation. Default true. */
   animated?: boolean;
+  /** Y-axis rotation (radians) for the direction the character faces. Smoothly interpolated. */
+  facingAngle?: number;
+  /** When true plays a walk cycle; when false returns to idle bob. */
+  isMoving?: boolean;
 }
 
 // ── Shared material cache — avoids creating new materials every render ─────
@@ -42,49 +46,47 @@ function useMat(color: string, roughness = 0.6, metalness = 0.1) {
   );
 }
 
-// ── Male hair: three spiky wedges on top of the head ──────────────────────
+// ── Male hair: short natural — cap base + volume dome + side pieces ───────
 function MaleHair({ r, primaryColor }: { r: number; primaryColor: string }) {
-  const mat = useMat(primaryColor, 0.8, 0.0);
-  const spikeH = r * 0.55;
-  const spikeR = r * 0.22;
-  const offsets: [number, number, number][] = [
-    [0, r * 0.92, 0],
-    [-r * 0.42, r * 0.74, 0],
-    [r * 0.42, r * 0.74, 0],
-  ];
-  const rotations: [number, number, number][] = [
-    [0, 0, 0],
-    [0, 0, 0.45],
-    [0, 0, -0.45],
-  ];
+  const mat = useMat(primaryColor, 0.75, 0.0);
   return (
     <>
-      {offsets.map((pos, i) => (
-        <mesh key={i} position={pos} rotation={rotations[i]} material={mat}>
-          <coneGeometry args={[spikeR, spikeH, 5]} />
-        </mesh>
-      ))}
+      {/* Hair cap: top & back of head — raised + shifted back so eyes are clear */}
+      <mesh position={[0, r * 0.26, -r * 0.18]} scale={[1.1, 0.92, 0.9]} material={mat}>
+        <sphereGeometry args={[r, 14, 10]} />
+      </mesh>
+      {/* Top volume dome — raised mass on crown */}
+      <mesh position={[0, r * 0.88, -r * 0.06]} scale={[0.86, 0.68, 0.76]} material={mat}>
+        <sphereGeometry args={[r * 0.76, 10, 8]} />
+      </mesh>
+      {/* Left side piece */}
+      <mesh position={[-r * 0.92, r * 0.1, r * 0.14]} scale={[0.44, 0.86, 0.62]} material={mat}>
+        <sphereGeometry args={[r * 0.38, 8, 6]} />
+      </mesh>
+      {/* Right side piece */}
+      <mesh position={[r * 0.92, r * 0.1, r * 0.14]} scale={[0.44, 0.86, 0.62]} material={mat}>
+        <sphereGeometry args={[r * 0.38, 8, 6]} />
+      </mesh>
     </>
   );
 }
 
-// ── Female hair: rounded buns on either side + larger top sphere ──────────
+// ── Female hair: twin afro-puffs (Afro Future style) ─────────────────────
 function FemaleHair({ r, primaryColor }: { r: number; primaryColor: string }) {
   const mat = useMat(primaryColor, 0.7, 0.0);
-  const bunR = r * 0.38;
   return (
     <>
-      {/* Top bun */}
-      <mesh position={[0, r * 0.9, 0]} material={mat}>
-        <sphereGeometry args={[bunR, 10, 8]} />
+      {/* Hair cap: top & back only — shifted up and back so eyes stay clear */}
+      <mesh position={[0, r * 0.26, -r * 0.18]} scale={[1.1, 0.92, 0.9]} material={mat}>
+        <sphereGeometry args={[r, 14, 10]} />
       </mesh>
-      {/* Left bun */}
-      <mesh position={[-r * 0.82, r * 0.45, 0]} material={mat}>
-        <sphereGeometry args={[bunR * 0.78, 10, 8]} />
+      {/* Left afro puff */}
+      <mesh position={[-r * 0.82, r * 0.7, -r * 0.08]} material={mat}>
+        <sphereGeometry args={[r * 0.44, 10, 8]} />
       </mesh>
-      {/* Right bun */}
-      <mesh position={[r * 0.82, r * 0.45, 0]} material={mat}>
-        <sphereGeometry args={[bunR * 0.78, 10, 8]} />
+      {/* Right afro puff */}
+      <mesh position={[r * 0.82, r * 0.7, -r * 0.08]} material={mat}>
+        <sphereGeometry args={[r * 0.44, 10, 8]} />
       </mesh>
     </>
   );
@@ -117,8 +119,26 @@ function Eyes({ headR, skinColor }: { headR: number; skinColor: string }) {
   const ex = headR * 0.38;
   const ey = headR * 0.08;
   const ez = headR * 0.87;
+  // Eyebrow dimensions
+  const ebW = er * 1.7;  // width
+  const ebH = er * 0.28; // height
+  const ebD = er * 0.18; // depth
+  const ebY = ey + er * 1.6; // just above the eye
+  const ebZ = ez * 0.97;
+  const browMat = React.useMemo(
+    () => new THREE.MeshStandardMaterial({ color: '#150a00', roughness: 0.9, metalness: 0.0 }),
+    [],
+  );
   return (
     <>
+      {/* Left eyebrow */}
+      <mesh position={[-ex, ebY, ebZ]} rotation={[0, 0, 0.18]} material={browMat}>
+        <boxGeometry args={[ebW, ebH, ebD]} />
+      </mesh>
+      {/* Right eyebrow */}
+      <mesh position={[ex, ebY, ebZ]} rotation={[0, 0, -0.18]} material={browMat}>
+        <boxGeometry args={[ebW, ebH, ebD]} />
+      </mesh>
       {/* Left eye */}
       <mesh position={[-ex, ey, ez]} material={eyeMat}>
         <sphereGeometry args={[er, 8, 6]} />
@@ -151,8 +171,15 @@ export function IsometricCharacter({
   colors,
   hexSize,
   animated = true,
+  facingAngle = 0,
+  isMoving = false,
 }: IsometricCharacterProps) {
   const groupRef = useRef<THREE.Group>(null);
+  // Animated limb refs
+  const leftArmRef  = useRef<THREE.Group>(null);
+  const rightArmRef = useRef<THREE.Group>(null);
+  const leftLegRef  = useRef<THREE.Group>(null);
+  const rightLegRef = useRef<THREE.Group>(null);
 
   // Scale everything relative to hexSize so the character fits different tile sizes
   const s = hexSize * SCALE_FACTOR;
@@ -169,14 +196,17 @@ export function IsometricCharacter({
   const footR    = s * PROPORTIONS.footR;
 
   // Vertical stacking: footY = footR so that the BOTTOM of each foot sphere is exactly at y=0.
-  // This means no negative-Y geometry → GameAvatarFootAnchor never needs to compensate,
-  // and the character stands cleanly on the tile surface.
   const footY = footR;
   const legY = footY + footR * 0.4 + legH / 2;
   const bodyY = legY + legH / 2 + bodyH / 2 - s * 0.05;
   const headY = bodyY + bodyH / 2 + headR * 0.72;
 
-  // Color-reactive materials — new instances when colors change; old ones are disposed to free GPU memory.
+  // Shoulder pivot sits at the body-top outer edge; the arm HANGS DOWN from that pivot.
+  // Placing the pivot at bodyTopR means the arm overlaps the body edge slightly — no gap.
+  const shoulderY = bodyY + bodyH * 0.42;
+  const armX = bodyTopR;
+
+  // Color-reactive materials
   const { skinMat, primaryMat, secondaryMat } = React.useMemo(() => ({
     skinMat:      new THREE.MeshStandardMaterial({ color: colors?.skin      || '#c58b66', ...MATERIAL_PROPS.skin }),
     primaryMat:   new THREE.MeshStandardMaterial({ color: colors?.primary   || '#00A37A', ...MATERIAL_PROPS.primary }),
@@ -184,41 +214,81 @@ export function IsometricCharacter({
   }), [colors?.skin, colors?.primary, colors?.secondary]);
   React.useEffect(() => () => { skinMat.dispose(); primaryMat.dispose(); secondaryMat.dispose(); }, [skinMat, primaryMat, secondaryMat]);
 
-  // Dark accent material never changes color — created once for the lifetime of the component.
   const darkMat = React.useMemo(() => new THREE.MeshStandardMaterial({ ...MATERIAL_PROPS.dark }), []);
   React.useEffect(() => () => darkMat.dispose(), [darkMat]);
 
-  // Idle animation: gentle vertical bob + subtle sway
-  const timeRef = useRef(0);
+  // Refs so useFrame always sees the latest prop values without needing re-subscription
+  const facingAngleRef = useRef(facingAngle);
+  facingAngleRef.current = facingAngle;
+  const isMovingRef = useRef(isMoving);
+  isMovingRef.current = isMoving;
+
+  const timeRef     = useRef(0);
+  const walkTimeRef = useRef(0);
+  const currentAngleRef = useRef(facingAngle);
+
   useFrame((_, delta) => {
-    if (!animated || !groupRef.current) return;
-    timeRef.current += delta;
-    const bob  = Math.sin(timeRef.current * PROPORTIONS.bobSpeed)  * s * PROPORTIONS.bobAmp;
-    const sway = Math.sin(timeRef.current * PROPORTIONS.swaySpeed) * PROPORTIONS.swayAmp;
-    groupRef.current.position.y = bob;
-    groupRef.current.rotation.z = sway;
+    if (!groupRef.current) return;
+
+    // 1. Smooth facing rotation (shortest-path interpolation on Y axis)
+    const target = facingAngleRef.current;
+    let diff = target - currentAngleRef.current;
+    while (diff >  Math.PI) diff -= Math.PI * 2;
+    while (diff < -Math.PI) diff += Math.PI * 2;
+    currentAngleRef.current += diff * Math.min(1, delta * 10);
+    groupRef.current.rotation.y = currentAngleRef.current;
+
+    if (!animated) return;
+
+    if (isMovingRef.current) {
+      // Walk cycle: arms and legs swing in opposition
+      walkTimeRef.current += delta * 7;
+      const swing = Math.sin(walkTimeRef.current) * 0.6;
+      if (leftArmRef.current)  { leftArmRef.current.rotation.x  =  swing; leftArmRef.current.rotation.z  = -0.15; }
+      if (rightArmRef.current) { rightArmRef.current.rotation.x = -swing; rightArmRef.current.rotation.z =  0.15; }
+      if (leftLegRef.current)  leftLegRef.current.rotation.x  = -swing * 0.7;
+      if (rightLegRef.current) rightLegRef.current.rotation.x =  swing * 0.7;
+      // Subtle vertical bounce while walking
+      groupRef.current.position.y = Math.abs(Math.sin(walkTimeRef.current * 2)) * s * 0.05;
+      groupRef.current.rotation.z = 0;
+    } else {
+      // Exponential decay back to rest pose
+      if (leftArmRef.current)  { leftArmRef.current.rotation.x  *= 0.82; leftArmRef.current.rotation.z  = -0.22; }
+      if (rightArmRef.current) { rightArmRef.current.rotation.x *= 0.82; rightArmRef.current.rotation.z =  0.22; }
+      if (leftLegRef.current)  leftLegRef.current.rotation.x  *= 0.82;
+      if (rightLegRef.current) rightLegRef.current.rotation.x *= 0.82;
+      // Idle bob + sway
+      timeRef.current += delta;
+      const bob  = Math.sin(timeRef.current * PROPORTIONS.bobSpeed)  * s * PROPORTIONS.bobAmp;
+      const sway = Math.sin(timeRef.current * PROPORTIONS.swaySpeed) * PROPORTIONS.swayAmp;
+      groupRef.current.position.y = bob;
+      groupRef.current.rotation.z = sway;
+    }
   });
 
   return (
-    // frustumCulled={false} on the root group AND on each mesh guarantees the character
-    // is always rendered even before the camera has centered on the hero (first frame).
     <group ref={groupRef} frustumCulled={false}>
 
-      {/* ── Feet / Boots ── */}
-      <mesh frustumCulled={false} position={[-legR * 1.05, footY, 0]} material={darkMat}>
-        <sphereGeometry args={[footR, 8, 6]} />
-      </mesh>
-      <mesh frustumCulled={false} position={[legR * 1.05, footY, 0]} material={darkMat}>
-        <sphereGeometry args={[footR, 8, 6]} />
-      </mesh>
+      {/* ── Left Leg + Foot (animated as one group) ── */}
+      <group ref={leftLegRef} frustumCulled={false} position={[-legR * 1.05, legY, 0]}>
+        <mesh frustumCulled={false} material={secondaryMat}>
+          <cylinderGeometry args={[legR, legR * 1.1, legH, 8]} />
+        </mesh>
+        {/* Foot — offset below leg center */}
+        <mesh frustumCulled={false} position={[0, -(legH / 2 + footR * 0.4), 0]} material={darkMat}>
+          <sphereGeometry args={[footR, 8, 6]} />
+        </mesh>
+      </group>
 
-      {/* ── Legs ── */}
-      <mesh frustumCulled={false} position={[-legR * 1.05, legY, 0]} material={secondaryMat}>
-        <cylinderGeometry args={[legR, legR * 1.1, legH, 8]} />
-      </mesh>
-      <mesh frustumCulled={false} position={[legR * 1.05, legY, 0]} material={secondaryMat}>
-        <cylinderGeometry args={[legR, legR * 1.1, legH, 8]} />
-      </mesh>
+      {/* ── Right Leg + Foot ── */}
+      <group ref={rightLegRef} frustumCulled={false} position={[legR * 1.05, legY, 0]}>
+        <mesh frustumCulled={false} material={secondaryMat}>
+          <cylinderGeometry args={[legR, legR * 1.1, legH, 8]} />
+        </mesh>
+        <mesh frustumCulled={false} position={[0, -(legH / 2 + footR * 0.4), 0]} material={darkMat}>
+          <sphereGeometry args={[footR, 8, 6]} />
+        </mesh>
+      </group>
 
       {/* ── Torso / Body ── */}
       <mesh frustumCulled={false} position={[0, bodyY, 0]} material={primaryMat}>
@@ -230,21 +300,32 @@ export function IsometricCharacter({
         <cylinderGeometry args={[bodyBotR + s * 0.02, bodyBotR + s * 0.02, s * 0.18, 10]} />
       </mesh>
 
-      {/* ── Arms ── */}
-      <group frustumCulled={false} position={[-bodyTopR * 1.1, bodyY + bodyH * 0.2, 0]} rotation={[0, 0, 0.3]}>
-        <mesh frustumCulled={false} material={primaryMat}>
+      {/* ── Left Arm — pivot IS the shoulder joint; arm hangs down from it ── */}
+      <group ref={leftArmRef} frustumCulled={false} position={[-armX, shoulderY, 0]}>
+        {/* Shoulder cap — skin-coloured sphere fills junction with body */}
+        <mesh frustumCulled={false} material={skinMat}>
+          <sphereGeometry args={[armR * 1.35, 8, 6]} />
+        </mesh>
+        {/* Sleeve — hangs down from shoulder pivot */}
+        <mesh frustumCulled={false} position={[0, -armH / 2, 0]} material={primaryMat}>
           <cylinderGeometry args={[armR, armR * 0.9, armH, 8]} />
         </mesh>
-        <mesh frustumCulled={false} position={[0, -armH / 2 - armR * 0.6, 0]} material={skinMat}>
-          <sphereGeometry args={[armR * 1.1, 8, 6]} />
+        {/* Hand */}
+        <mesh frustumCulled={false} position={[0, -armH - armR * 0.55, 0]} material={skinMat}>
+          <sphereGeometry args={[armR * 1.15, 8, 6]} />
         </mesh>
       </group>
-      <group frustumCulled={false} position={[bodyTopR * 1.1, bodyY + bodyH * 0.2, 0]} rotation={[0, 0, -0.3]}>
-        <mesh frustumCulled={false} material={primaryMat}>
+
+      {/* ── Right Arm ── */}
+      <group ref={rightArmRef} frustumCulled={false} position={[armX, shoulderY, 0]}>
+        <mesh frustumCulled={false} material={skinMat}>
+          <sphereGeometry args={[armR * 1.35, 8, 6]} />
+        </mesh>
+        <mesh frustumCulled={false} position={[0, -armH / 2, 0]} material={primaryMat}>
           <cylinderGeometry args={[armR, armR * 0.9, armH, 8]} />
         </mesh>
-        <mesh frustumCulled={false} position={[0, -armH / 2 - armR * 0.6, 0]} material={skinMat}>
-          <sphereGeometry args={[armR * 1.1, 8, 6]} />
+        <mesh frustumCulled={false} position={[0, -armH - armR * 0.55, 0]} material={skinMat}>
+          <sphereGeometry args={[armR * 1.15, 8, 6]} />
         </mesh>
       </group>
 
@@ -267,9 +348,9 @@ export function IsometricCharacter({
 
         <Eyes headR={headR} skinColor={colors?.skin || '#c58b66'} />
 
-        {/* Mouth */}
-        <mesh frustumCulled={false} position={[0, -headR * 0.18, headR * 0.91]} rotation={[0.2, 0, 0]} material={darkMat}>
-          <torusGeometry args={[headR * 0.18, headR * 0.045, 6, 10, Math.PI]} />
+        {/* Smile — upward-facing arc (torus rotated so open end faces down) */}
+        <mesh frustumCulled={false} position={[0, -headR * 0.2, headR * 0.92]} rotation={[0.2, 0, Math.PI]} material={darkMat}>
+          <torusGeometry args={[headR * 0.14, headR * 0.038, 6, 10, Math.PI]} />
         </mesh>
       </group>
 
