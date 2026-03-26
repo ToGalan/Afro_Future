@@ -10,6 +10,8 @@
  */
 
 import { useState, useCallback, useRef, useEffect } from 'react';
+import { doc, updateDoc, serverTimestamp } from 'firebase/firestore';
+import { db } from '../services/firebase';
 import {
   getLevelFromXp,
   getTotalXpForLevel,
@@ -40,7 +42,7 @@ export interface UsePlayerXPReturn {
 }
 
 export function usePlayerXP({
-  uid: _uid,
+  uid,
   profile,
   saveProgress,
 }: {
@@ -54,6 +56,10 @@ export function usePlayerXP({
 
   // Stable ref so gainXP never closes over a stale level value.
   const playerLevelRef = useRef(playerLevel);
+  // Ref so the unmount flush always has the latest XP without a stale closure.
+  const totalXpRef = useRef(totalXp);
+  const uidRef = useRef(uid);
+  uidRef.current = uid;
 
   // ── Sync from Firestore on first load / uid change ──────────────────────
   const syncedUidRef = useRef<string | null>(null);
@@ -69,30 +75,39 @@ export function usePlayerXP({
 
   // Keep ref in sync when state changes externally (e.g. direct Firestore writes).
   useEffect(() => { playerLevelRef.current = playerLevel; }, [playerLevel]);
+  useEffect(() => { totalXpRef.current = totalXp; }, [totalXp]);
+
+  // ── Force-flush XP on unmount (bypasses saveProgress throttle) ───────────
+  useEffect(() => {
+    return () => {
+      const id = uidRef.current;
+      if (!id || totalXpRef.current === 0) return;
+      const xp = totalXpRef.current;
+      const level = getLevelFromXp(xp);
+      updateDoc(doc(db, 'players', id), {
+        'progress.hero.xp': xp,
+        'progress.hero.level': level,
+        updatedAt: serverTimestamp(),
+      }).catch(() => {});
+    };
+  }, []);
 
   // ── XP award ─────────────────────────────────────────────────────────────
   const gainXP = useCallback(
     (amount: number) => {
-      setTotalXp(prev => {
-        const newTotal = prev + amount;
-        const newLevel = getLevelFromXp(newTotal);
-        if (newLevel !== playerLevelRef.current) {
-          playerLevelRef.current = newLevel;
-          setPlayerLevel(newLevel);
-          console.log(`[PlayerXP] Level up → ${newLevel}`);
-        }
-        // Persist hero XP + level to players/{uid} in Firestore.
-        saveProgress({
-          hero: {
-            xp: newTotal,
-            level: newLevel,
-            traits: [],
-            unlockedSkillIds: [],
-            unlockOrder: [],
-          },
-        });
-        return newTotal;
-      });
+      // Compute new total from ref (always current) to avoid closures staling in batched calls.
+      const newTotal = totalXpRef.current + amount;
+      const newLevel = getLevelFromXp(newTotal);
+      totalXpRef.current = newTotal;
+      if (newLevel !== playerLevelRef.current) {
+        playerLevelRef.current = newLevel;
+        setPlayerLevel(newLevel);
+        console.log(`[PlayerXP] Level up → ${newLevel}`);
+      }
+      setTotalXp(newTotal);
+      // Persist only xp + level — never pass traits/unlockedSkillIds/unlockOrder here
+      // because mergeProgress would overwrite them with empty arrays.
+      saveProgress({ hero: { xp: newTotal, level: newLevel } });
     },
     [saveProgress],
   );

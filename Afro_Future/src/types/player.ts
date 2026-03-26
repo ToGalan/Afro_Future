@@ -9,9 +9,9 @@ export interface PlayerProgress {
   hero?: {
     level: number;
     xp: number;               // accumulated XP for leveling (starts at 0)
-    traits: string[];         // derived trait tags
-    unlockedSkillIds: string[]; // skill node ids
-    unlockOrder: string[];    // chronological order
+    traits?: string[];         // derived trait tags (set by skill tree only)
+    unlockedSkillIds?: string[]; // skill node ids (set by skill tree only)
+    unlockOrder?: string[];    // chronological order (set by skill tree only)
   };
   pet?: {
     type?: string;            // pet archetype key
@@ -25,7 +25,7 @@ export interface PlayerProgress {
   };
   heroInventory?: Array<{
     id: string;
-    type: 'herb' | 'flower' | 'potion' | 'consumable';
+    type: 'herb' | 'flower' | 'wood' | 'iron' | 'glass' | 'potion' | 'consumable';
     quantity: number;
     effect?: 'heal' | 'damage' | 'buff';
     value?: number;

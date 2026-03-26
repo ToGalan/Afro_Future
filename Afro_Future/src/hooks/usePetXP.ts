@@ -9,6 +9,8 @@
  */
 
 import { useState, useCallback, useRef, useEffect } from 'react';
+import { doc, updateDoc, serverTimestamp } from 'firebase/firestore';
+import { db } from '../services/firebase';
 import { getXpForNextPetLevel } from '../services/petExpEconomy';
 import type { PlayerProfile } from '../types/player';
 
@@ -42,7 +44,10 @@ export function usePetXP({
 
   // Stable refs so callbacks never go stale
   const petLevelRef = useRef(petLevel);
+  const petXpRef = useRef(petXp);
   const petTypeRef = useRef<string | undefined>(profile?.progress?.pet?.type);
+  const uidRef = useRef(uid);
+  uidRef.current = uid;
 
   // Sync once per uid when profile first loads
   const syncedUidRef = useRef<string | null>(null);
@@ -59,6 +64,20 @@ export function usePetXP({
 
   // Keep petLevelRef in sync when state changes externally
   useEffect(() => { petLevelRef.current = petLevel; }, [petLevel]);
+  useEffect(() => { petXpRef.current = petXp; }, [petXp]);
+
+  // ── Force-flush pet XP on unmount (bypasses saveProgress throttle) ───────
+  useEffect(() => {
+    return () => {
+      const id = uidRef.current;
+      if (!id || petXpRef.current === 0) return;
+      updateDoc(doc(db, 'players', id), {
+        'progress.pet.xp': petXpRef.current,
+        'progress.pet.level': petLevelRef.current,
+        updatedAt: serverTimestamp(),
+      }).catch(() => {});
+    };
+  }, []);
 
   /** Compute level-ups from raw XP total and current level. */
   const applyLevelUps = (rawXp: number, level: number): { xp: number; level: number } => {
@@ -76,18 +95,16 @@ export function usePetXP({
   const gainXPOnMove = useCallback(
     () => {
       // Award +1 XP to the pet on every 40th hero tile move.
-      // Player XP from movement is intentionally omitted — the player earns XP
-      // only through gathering (usePlayerXP.gainXP called via useCollectibles).
-      setPetXp(prev => {
-        const { xp, level } = applyLevelUps(prev + 1, petLevelRef.current);
-        if (level !== petLevelRef.current) {
-          petLevelRef.current = level;
-          setPetLevel(level);
-          console.log(`[PetXP] Level up → ${level}`);
-        }
-        saveProgress({ pet: { xp, level, type: petTypeRef.current } });
-        return xp;
-      });
+      // Compute from ref to avoid stale closures in batched React calls.
+      const { xp, level } = applyLevelUps(petXpRef.current + 1, petLevelRef.current);
+      petXpRef.current = xp;
+      if (level !== petLevelRef.current) {
+        petLevelRef.current = level;
+        setPetLevel(level);
+        console.log(`[PetXP] Level up → ${level}`);
+      }
+      setPetXp(xp);
+      saveProgress({ pet: { xp, level, type: petTypeRef.current } });
     },
     // saveProgress is stable (useCallback in usePlayerProfile); applyLevelUps is a closure
     // eslint-disable-next-line react-hooks/exhaustive-deps

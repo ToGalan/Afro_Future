@@ -1,4 +1,4 @@
-import React, { useMemo, useState, useEffect, Suspense, useRef } from 'react';
+﻿import React, { useMemo, useState, useEffect, Suspense, useRef } from 'react';
 import { doc, updateDoc, serverTimestamp } from 'firebase/firestore';
 import { db } from '../services/firebase';
 import { usePlayerProfile } from '../hooks/usePlayerProfile';
@@ -341,7 +341,7 @@ function tileColor(t: Tile) {
   if (t.type === 'desert') return '#f7d08a';
   if (t.type === 'plains') return '#a7e39b';
   if (t.type === 'forest') return '#59b96b';
-  if (t.type === 'jungle') return '#2a7f49';
+  if (t.type === 'jungle') return '#1a6b32';
   if (t.type === 'hills') return '#c9c6c0';
   if (t.type === 'mountain') return '#9aa3a7';
   return '#c9c6c0';
@@ -412,6 +412,63 @@ function TreeCluster({ size, seed = 1 }: { size: number; seed?: number }) {
               sizeArg={[size * 0.35 * t.s, t.h, 7]}
               phase={phaseOffsets[i]}
             />
+          </group>
+        </group>
+      ))}
+    </group>
+  );
+}
+
+// Palm frond disc that sways — jungle canopy layer
+function SwayingFrond({ radius, phase }: { radius: number; phase: number }) {
+  const ref = React.useRef<THREE.Mesh>(null);
+  useFrame(({ clock }) => {
+    if (!ref.current) return;
+    const t = clock.getElapsedTime();
+    ref.current.rotation.z = Math.sin(t * 1.1 + phase) * 0.14;
+    ref.current.rotation.x = Math.cos(t * 0.8 + phase) * 0.10;
+  });
+  return (
+    <mesh ref={ref} castShadow>
+      <sphereGeometry args={[radius, 8, 6, 0, Math.PI * 2, 0, Math.PI * 0.55]} />
+      <meshStandardMaterial color="#1a7a3a" roughness={0.6} metalness={0.0} side={2} />
+    </mesh>
+  );
+}
+
+// Jungle palm-tree cluster — tall curved trunks + round canopy, darker tropical tones
+function JungleCluster({ size, seed = 1 }: { size: number; seed?: number }) {
+  const rng = useMemo(() => seededRand(seed), [seed]);
+  const trees = useMemo(() => {
+    const count = 2 + Math.floor(rng() * 4); // 2-5 palms
+    const arr: Array<{ x: number; z: number; s: number; lean: number; leanDir: number }> = [];
+    for (let i = 0; i < count; i++) {
+      const ang = rng() * Math.PI * 2;
+      const rad = (0.15 + rng() * 0.55) * size * 0.9;
+      arr.push({
+        x: Math.cos(ang) * rad,
+        z: Math.sin(ang) * rad,
+        s: 0.75 + rng() * 0.5,
+        lean: 0.08 + rng() * 0.14,      // trunk tilt angle
+        leanDir: rng() * Math.PI * 2,   // direction of lean
+      });
+    }
+    return arr;
+  }, [rng, size]);
+  const phaseOffsets = useMemo(() => trees.map((_, i) => i * 2.1 + seed * 0.01), [trees, seed]);
+  const trunkH = (s: number) => size * 2.2 * s;
+  return (
+    <group>
+      {trees.map((t, i) => (
+        <group key={i} position={[t.x, 0, t.z]} rotation={[t.lean * Math.cos(t.leanDir), 0, t.lean * Math.sin(t.leanDir)]}>
+          {/* Tall slender palm trunk */}
+          <mesh position={[0, trunkH(t.s) / 2, 0]} castShadow>
+            <cylinderGeometry args={[size * 0.055 * t.s, size * 0.08 * t.s, trunkH(t.s), 6]} />
+            <meshStandardMaterial color="#6b4226" roughness={0.95} metalness={0.0} />
+          </mesh>
+          {/* Upper frond cluster */}
+          <group position={[0, trunkH(t.s), 0]}>
+            <SwayingFrond radius={size * 0.38 * t.s} phase={phaseOffsets[i]} />
           </group>
         </group>
       ))}
@@ -766,6 +823,120 @@ function CollectibleMushroom({ size }: { size: number }) {
           </mesh>
         );
       })}
+    </group>
+  );
+}
+
+// Collectible log for forest tiles — chop for wood (+3 XP)
+function CollectibleLog({ size }: { size: number }) {
+  const S = size * 0.65;
+  const glowRef = React.useRef<THREE.Mesh>(null);
+  useFrame(({ clock }) => {
+    if (!glowRef.current) return;
+    const t = clock.getElapsedTime();
+    (glowRef.current.material as any).emissiveIntensity = 0.4 + 0.25 * Math.sin(t * 1.8);
+  });
+  return (
+    <group>
+      {/* Warm amber glow halo */}
+      <mesh ref={glowRef} position={[0, S * 0.14, 0]} renderOrder={24}>
+        <sphereGeometry args={[S * 0.5, 10, 10]} />
+        <meshStandardMaterial color="#c87941" emissive="#c87941" emissiveIntensity={0.4}
+          transparent opacity={0.22} depthWrite={false} roughness={1} metalness={0} />
+      </mesh>
+      {/* Main log body — horizontal cylinder */}
+      <mesh position={[0, S * 0.12, 0]} rotation={[0, 0.4, Math.PI / 2]} castShadow renderOrder={25}>
+        <cylinderGeometry args={[S * 0.16, S * 0.16, S * 0.7, 8]} />
+        <meshStandardMaterial color="#8b5e3c" roughness={0.95} metalness={0} />
+      </mesh>
+      {/* Log end face (rings) */}
+      <mesh position={[S * 0.35, S * 0.12, 0]} rotation={[0, 0.4, Math.PI / 2]} renderOrder={25}>
+        <cylinderGeometry args={[S * 0.16, S * 0.16, S * 0.04, 8]} />
+        <meshStandardMaterial color="#c49a6c" roughness={0.9} metalness={0} />
+      </mesh>
+      {/* Small wood chip on ground */}
+      <mesh position={[-S * 0.2, S * 0.04, S * 0.18]} rotation={[0.3, 0.7, 0]} castShadow renderOrder={25}>
+        <boxGeometry args={[S * 0.18, S * 0.06, S * 0.1]} />
+        <meshStandardMaterial color="#a5703a" roughness={0.95} metalness={0} />
+      </mesh>
+      {/* Axe-chop mark — dark slash */}
+      <mesh position={[0, S * 0.28, S * 0.15]} rotation={[0.4, 0, 0.2]} renderOrder={26}>
+        <boxGeometry args={[S * 0.08, S * 0.22, S * 0.04]} />
+        <meshStandardMaterial color="#3d1f0a" roughness={1} metalness={0} />
+      </mesh>
+    </group>
+  );
+}
+
+// Collectible iron ore cluster for hills tiles
+function CollectibleIron({ size }: { size: number }) {
+  const S = size * 0.6;
+  const glowRef = React.useRef<THREE.Mesh>(null);
+  useFrame(({ clock }) => {
+    if (!glowRef.current) return;
+    (glowRef.current.material as any).emissiveIntensity = 0.3 + 0.2 * Math.sin(clock.getElapsedTime() * 2.1);
+  });
+  return (
+    <group>
+      {/* Orange-rust glow */}
+      <mesh ref={glowRef} position={[0, S * 0.1, 0]} renderOrder={24}>
+        <sphereGeometry args={[S * 0.45, 10, 10]} />
+        <meshStandardMaterial color="#b85c1a" emissive="#b85c1a" emissiveIntensity={0.3}
+          transparent opacity={0.2} depthWrite={false} roughness={1} metalness={0} />
+      </mesh>
+      {/* Main ore rock */}
+      <mesh position={[0, S * 0.14, 0]} rotation={[0.3, 0.5, 0.2]} castShadow renderOrder={25}>
+        <dodecahedronGeometry args={[S * 0.22, 0]} />
+        <meshStandardMaterial color="#4a4a4a" roughness={0.7} metalness={0.6} />
+      </mesh>
+      {/* Iron vein streak (rust orange) */}
+      <mesh position={[S * 0.08, S * 0.2, S * 0.06]} rotation={[0.5, 0.3, 0.8]} renderOrder={26}>
+        <boxGeometry args={[S * 0.28, S * 0.06, S * 0.05]} />
+        <meshStandardMaterial color="#c47a35" roughness={0.6} metalness={0.5} />
+      </mesh>
+      {/* Small satellite chunk */}
+      <mesh position={[-S * 0.22, S * 0.07, S * 0.14]} rotation={[0.7, 0.2, 0.4]} castShadow renderOrder={25}>
+        <dodecahedronGeometry args={[S * 0.12, 0]} />
+        <meshStandardMaterial color="#3a3a3a" roughness={0.75} metalness={0.55} />
+      </mesh>
+    </group>
+  );
+}
+
+// Collectible desert glass crystal for desert tiles
+function CollectibleGlass({ size }: { size: number }) {
+  const S = size * 0.6;
+  const glowRef = React.useRef<THREE.Mesh>(null);
+  useFrame(({ clock }) => {
+    if (!glowRef.current) return;
+    (glowRef.current.material as any).emissiveIntensity = 0.5 + 0.35 * Math.sin(clock.getElapsedTime() * 2.8);
+  });
+  return (
+    <group>
+      {/* Cyan shimmer glow */}
+      <mesh ref={glowRef} position={[0, S * 0.15, 0]} renderOrder={24}>
+        <sphereGeometry args={[S * 0.48, 10, 10]} />
+        <meshStandardMaterial color="#7ecfea" emissive="#7ecfea" emissiveIntensity={0.5}
+          transparent opacity={0.22} depthWrite={false} roughness={1} metalness={0} />
+      </mesh>
+      {/* Main crystal shard — tall prism */}
+      <mesh position={[0, S * 0.28, 0]} rotation={[0, 0.4, 0.08]} castShadow renderOrder={25}>
+        <coneGeometry args={[S * 0.12, S * 0.56, 5]} />
+        <meshStandardMaterial color="#b8e8f5" emissive="#50b8d8" emissiveIntensity={0.25}
+          transparent opacity={0.82} roughness={0.05} metalness={0.1} />
+      </mesh>
+      {/* Secondary smaller shard */}
+      <mesh position={[S * 0.18, S * 0.16, -S * 0.06]} rotation={[0, 0.9, 0.25]} castShadow renderOrder={25}>
+        <coneGeometry args={[S * 0.07, S * 0.35, 5]} />
+        <meshStandardMaterial color="#d0f0ff" emissive="#70d0ee" emissiveIntensity={0.2}
+          transparent opacity={0.75} roughness={0.05} metalness={0.1} />
+      </mesh>
+      {/* Ground base — half-buried fragment */}
+      <mesh position={[0, S * 0.04, 0]} rotation={[0.1, 0.3, 0]} renderOrder={25}>
+        <boxGeometry args={[S * 0.22, S * 0.08, S * 0.18]} />
+        <meshStandardMaterial color="#a0d8ef" emissive="#30a0c8" emissiveIntensity={0.15}
+          transparent opacity={0.7} roughness={0.1} metalness={0.1} />
+      </mesh>
     </group>
   );
 }
@@ -1179,6 +1350,169 @@ function HexTile({ t, size, onClick, onHover }: { t: Tile; size: number; onClick
   );
 }
 
+// ── Animated pet character (cat) — extracted from inline JSX so useFrame works ──
+function PetCharacter({ ps, facingAngle, isMoving, isPetting }: { ps: number; facingAngle: number; isMoving: boolean; isPetting?: boolean }) {
+  const groupRef       = React.useRef<THREE.Group>(null);
+  const frontLeftRef   = React.useRef<THREE.Mesh>(null);
+  const frontRightRef  = React.useRef<THREE.Mesh>(null);
+  const backLeftRef    = React.useRef<THREE.Mesh>(null);
+  const backRightRef   = React.useRef<THREE.Mesh>(null);
+  const tailRef        = React.useRef<THREE.Group>(null);
+
+  const currentAngleRef = React.useRef(facingAngle);
+  const walkTimeRef     = React.useRef(0);
+  const idleTimeRef     = React.useRef(0);
+  const pettingTimeRef  = React.useRef(0);
+  const facingRef       = React.useRef(facingAngle);
+  facingRef.current     = facingAngle;
+  const movingRef       = React.useRef(isMoving);
+  movingRef.current     = isMoving;
+  const pettingRef      = React.useRef(isPetting ?? false);
+  pettingRef.current    = isPetting ?? false;
+
+  useFrame((_, delta) => {
+    if (!groupRef.current) return;
+    // Smooth facing rotation
+    let diff = facingRef.current - currentAngleRef.current;
+    while (diff >  Math.PI) diff -= Math.PI * 2;
+    while (diff < -Math.PI) diff += Math.PI * 2;
+    currentAngleRef.current += diff * Math.min(1, delta * 10);
+    groupRef.current.rotation.y = currentAngleRef.current;
+
+    if (pettingRef.current) {
+      // Happy petting animation: rapid bounce + fast tail wag
+      pettingTimeRef.current += delta;
+      groupRef.current.position.y = Math.abs(Math.sin(pettingTimeRef.current * 10)) * ps * 0.18;
+      if (tailRef.current) tailRef.current.rotation.z = Math.sin(pettingTimeRef.current * 12) * 0.9;
+    } else if (movingRef.current) {
+      pettingTimeRef.current = 0;
+      walkTimeRef.current += delta * 8;
+      const swing = Math.sin(walkTimeRef.current) * 0.5;
+      // Diagonal gait: front-left + back-right move together
+      if (frontLeftRef.current)  frontLeftRef.current.rotation.x  =  swing;
+      if (frontRightRef.current) frontRightRef.current.rotation.x = -swing;
+      if (backLeftRef.current)   backLeftRef.current.rotation.x   = -swing;
+      if (backRightRef.current)  backRightRef.current.rotation.x  =  swing;
+      // Tail wags while moving
+      if (tailRef.current) tailRef.current.rotation.z = Math.sin(walkTimeRef.current * 1.5) * 0.4;
+      groupRef.current.position.y = Math.abs(Math.sin(walkTimeRef.current * 2)) * ps * 0.08;
+    } else {
+      pettingTimeRef.current = 0;
+      // Decay legs to rest
+      if (frontLeftRef.current)  frontLeftRef.current.rotation.x  *= 0.85;
+      if (frontRightRef.current) frontRightRef.current.rotation.x *= 0.85;
+      if (backLeftRef.current)   backLeftRef.current.rotation.x   *= 0.85;
+      if (backRightRef.current)  backRightRef.current.rotation.x  *= 0.85;
+      // Gentle idle tail sway
+      idleTimeRef.current += delta;
+      if (tailRef.current) tailRef.current.rotation.z = Math.sin(idleTimeRef.current * 1.2) * 0.15;
+      groupRef.current.position.y = 0;
+    }
+  });
+
+  return (
+    <group ref={groupRef} frustumCulled={false}>
+      {/* Drop shadow */}
+      <mesh rotation={[-Math.PI/2, 0, 0]} position={[0, 0.01, 0]} frustumCulled={false}>
+        <circleGeometry args={[ps * 0.85, 20]} />
+        <meshBasicMaterial color="#000" transparent opacity={0.18} depthWrite={false} />
+      </mesh>
+      {/* Body */}
+      <mesh position={[0, ps * 0.72, 0]} castShadow frustumCulled={false}>
+        <sphereGeometry args={[ps * 0.62, 14, 10]} />
+        <meshStandardMaterial color="#f5c97a" roughness={0.6} />
+      </mesh>
+      {/* Belly patch */}
+      <mesh position={[0, ps * 0.68, ps * 0.48]} frustumCulled={false}>
+        <sphereGeometry args={[ps * 0.36, 10, 8]} />
+        <meshStandardMaterial color="#fdecc8" roughness={0.7} />
+      </mesh>
+      {/* Head */}
+      <mesh position={[0, ps * 1.5, 0]} castShadow frustumCulled={false}>
+        <sphereGeometry args={[ps * 0.72, 16, 12]} />
+        <meshStandardMaterial color="#f5c97a" roughness={0.6} />
+      </mesh>
+      {/* Muzzle */}
+      <mesh position={[0, ps * 1.42, ps * 0.56]} frustumCulled={false}>
+        <sphereGeometry args={[ps * 0.28, 10, 8]} />
+        <meshStandardMaterial color="#fdecc8" roughness={0.7} />
+      </mesh>
+      {/* Nose */}
+      <mesh position={[0, ps * 1.52, ps * 0.8]} frustumCulled={false}>
+        <sphereGeometry args={[ps * 0.08, 8, 6]} />
+        <meshStandardMaterial color="#e07090" roughness={0.4} />
+      </mesh>
+      {/* Left eye */}
+      <mesh position={[-ps * 0.28, ps * 1.64, ps * 0.56]} frustumCulled={false}>
+        <sphereGeometry args={[ps * 0.14, 10, 8]} />
+        <meshStandardMaterial color="#1a1a2e" roughness={0.3} />
+      </mesh>
+      <mesh position={[-ps * 0.24, ps * 1.68, ps * 0.67]} frustumCulled={false}>
+        <sphereGeometry args={[ps * 0.05, 6, 6]} />
+        <meshBasicMaterial color="white" />
+      </mesh>
+      {/* Right eye */}
+      <mesh position={[ps * 0.28, ps * 1.64, ps * 0.56]} frustumCulled={false}>
+        <sphereGeometry args={[ps * 0.14, 10, 8]} />
+        <meshStandardMaterial color="#1a1a2e" roughness={0.3} />
+      </mesh>
+      <mesh position={[ps * 0.24, ps * 1.68, ps * 0.67]} frustumCulled={false}>
+        <sphereGeometry args={[ps * 0.05, 6, 6]} />
+        <meshBasicMaterial color="white" />
+      </mesh>
+      {/* Left ear */}
+      <mesh position={[-ps * 0.48, ps * 2.18, 0]} rotation={[0, 0, -0.35]} frustumCulled={false}>
+        <coneGeometry args={[ps * 0.22, ps * 0.52, 8]} />
+        <meshStandardMaterial color="#f5c97a" roughness={0.6} />
+      </mesh>
+      <mesh position={[-ps * 0.44, ps * 2.18, ps * 0.06]} rotation={[0, 0, -0.35]} frustumCulled={false}>
+        <coneGeometry args={[ps * 0.12, ps * 0.34, 8]} />
+        <meshStandardMaterial color="#f0a0b0" roughness={0.5} />
+      </mesh>
+      {/* Right ear */}
+      <mesh position={[ps * 0.48, ps * 2.18, 0]} rotation={[0, 0, 0.35]} frustumCulled={false}>
+        <coneGeometry args={[ps * 0.22, ps * 0.52, 8]} />
+        <meshStandardMaterial color="#f5c97a" roughness={0.6} />
+      </mesh>
+      <mesh position={[ps * 0.44, ps * 2.18, ps * 0.06]} rotation={[0, 0, 0.35]} frustumCulled={false}>
+        <coneGeometry args={[ps * 0.12, ps * 0.34, 8]} />
+        <meshStandardMaterial color="#f0a0b0" roughness={0.5} />
+      </mesh>
+      {/* Front left leg */}
+      <mesh ref={frontLeftRef} position={[-ps * 0.32, ps * 0.38, ps * 0.28]} castShadow frustumCulled={false}>
+        <cylinderGeometry args={[ps * 0.13, ps * 0.14, ps * 0.45, 8]} />
+        <meshStandardMaterial color="#f5c97a" roughness={0.6} />
+      </mesh>
+      {/* Front right leg */}
+      <mesh ref={frontRightRef} position={[ps * 0.32, ps * 0.38, ps * 0.28]} castShadow frustumCulled={false}>
+        <cylinderGeometry args={[ps * 0.13, ps * 0.14, ps * 0.45, 8]} />
+        <meshStandardMaterial color="#f5c97a" roughness={0.6} />
+      </mesh>
+      {/* Back left leg */}
+      <mesh ref={backLeftRef} position={[-ps * 0.36, ps * 0.38, -ps * 0.24]} castShadow frustumCulled={false}>
+        <cylinderGeometry args={[ps * 0.13, ps * 0.14, ps * 0.42, 8]} />
+        <meshStandardMaterial color="#f5c97a" roughness={0.6} />
+      </mesh>
+      {/* Back right leg */}
+      <mesh ref={backRightRef} position={[ps * 0.36, ps * 0.38, -ps * 0.24]} castShadow frustumCulled={false}>
+        <cylinderGeometry args={[ps * 0.13, ps * 0.14, ps * 0.42, 8]} />
+        <meshStandardMaterial color="#f5c97a" roughness={0.6} />
+      </mesh>
+      {/* Tail group (animated) */}
+      <group ref={tailRef} frustumCulled={false}>
+        <mesh position={[-ps * 0.1, ps * 0.9, -ps * 0.62]} rotation={[0.7, 0.3, 0.1]} frustumCulled={false}>
+          <cylinderGeometry args={[ps * 0.08, ps * 0.12, ps * 0.8, 8]} />
+          <meshStandardMaterial color="#f5a040" roughness={0.5} />
+        </mesh>
+        <mesh position={[-ps * 0.14, ps * 1.3, -ps * 0.9]} frustumCulled={false}>
+          <sphereGeometry args={[ps * 0.16, 8, 8]} />
+          <meshStandardMaterial color="#fff5e0" roughness={0.5} />
+        </mesh>
+      </group>
+    </group>
+  );
+}
+
 export default function SoloMissionMap3D({ 
   onExit, 
   onMapUpdate, 
@@ -1357,11 +1691,12 @@ export default function SoloMissionMap3D({
 
   // Destructure for convenience (avoids updating all downstream call sites)
   const {
-    collectibleFlowers, collectibleMushrooms,
-    nearbyFlower, nearbyMushroom,
-    collectingFlower, collectingMushroom, collectingProgress,
-    nearbyFlowerRef, nearbyMushroomRef, collectingFlowerRef, collectingMushroomRef, collectTimerRef,
-    localHeroInventory, setLocalHeroInventory,
+    collectibleFlowers, collectibleMushrooms, collectibleLogs, collectibleIrons, collectibleGlasses,
+    nearbyFlower, nearbyMushroom, nearbyLog, nearbyIron, nearbyGlass,
+    collectingFlower, collectingMushroom, collectingLog, collectingIron, collectingGlass, collectingProgress,
+    nearbyFlowerRef, nearbyMushroomRef, nearbyLogRef, nearbyIronRef, nearbyGlassRef,
+    collectingFlowerRef, collectingMushroomRef, collectingLogRef, collectingIronRef, collectingGlassRef, collectTimerRef,
+    localHeroInventory, setLocalHeroInventory, localHeroInventoryRef,
     localPetInventory, setLocalPetInventory,
     itemSlots, setItemSlots,
     handleCollect,
@@ -1491,7 +1826,21 @@ export default function SoloMissionMap3D({
 
   // Force-save explored on unmount so no tiles are lost when the player exits.
   const profileUidRef = React.useRef<string | undefined>(undefined);
-  useEffect(() => { profileUidRef.current = profile?.uid; }, [profile?.uid]);
+  // Update at render time (not in an effect) so the value is always current at unmount.
+  profileUidRef.current = profile?.uid;
+  // Track hero position in a ref so the unmount flush always has the latest value.
+  const heroPosRef = React.useRef(hero.pos);
+  heroPosRef.current = hero.pos;
+  useEffect(() => {
+    return () => {
+      const uid = profileUidRef.current;
+      if (!uid) return;
+      updateDoc(doc(db, 'players', uid), {
+        'progress.heroPosition': heroPosRef.current,
+        updatedAt: serverTimestamp(),
+      }).catch(() => {});
+    };
+  }, []);
   useEffect(() => {
     return () => {
       const uid = profileUidRef.current;
@@ -1517,6 +1866,72 @@ export default function SoloMissionMap3D({
 
   // World position of hero (for camera recentering)
   const heroWorld = useMemo(() => axialToWorld(hero.pos, hexSize), [hero.pos.q, hero.pos.r, hexSize]);
+
+  // ── Hero facing direction tracking ──────────────────────────────────────
+  const heroPrevPosRef = React.useRef(hero.pos);
+  const [heroFacingAngle, setHeroFacingAngle] = React.useState(0);
+  const [heroIsMoving, setHeroIsMoving] = React.useState(false);
+  const heroMoveTimerRef = React.useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(() => {
+    const prev = heroPrevPosRef.current;
+    if (prev.q === hero.pos.q && prev.r === hero.pos.r) return;
+    const prevW = axialToWorld(prev, hexSize);
+    const currW = axialToWorld(hero.pos, hexSize);
+    const dx = currW.x - prevW.x;
+    const dz = currW.z - prevW.z;
+    if (Math.abs(dx) + Math.abs(dz) > 0.001) setHeroFacingAngle(Math.atan2(dx, dz));
+    setHeroIsMoving(true);
+    if (heroMoveTimerRef.current) clearTimeout(heroMoveTimerRef.current);
+    heroMoveTimerRef.current = setTimeout(() => setHeroIsMoving(false), 350);
+    heroPrevPosRef.current = hero.pos;
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [hero.pos.q, hero.pos.r, hexSize]);
+
+  // ── Pet facing direction tracking ────────────────────────────────────────
+  const petPrevPosRef = React.useRef(pet.pos);
+  const [petFacingAngle, setPetFacingAngle] = React.useState(Math.PI);
+  const [petIsMoving, setPetIsMoving] = React.useState(false);
+  const petMoveTimerRef = React.useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(() => {
+    const prev = petPrevPosRef.current;
+    if (prev.q === pet.pos.q && prev.r === pet.pos.r) return;
+    const prevW = axialToWorld(prev, hexSize);
+    const currW = axialToWorld(pet.pos, hexSize);
+    const dx = currW.x - prevW.x;
+    const dz = currW.z - prevW.z;
+    if (Math.abs(dx) + Math.abs(dz) > 0.001) setPetFacingAngle(Math.atan2(dx, dz));
+    setPetIsMoving(true);
+    if (petMoveTimerRef.current) clearTimeout(petMoveTimerRef.current);
+    petMoveTimerRef.current = setTimeout(() => setPetIsMoving(false), 350);
+    petPrevPosRef.current = pet.pos;
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pet.pos.q, pet.pos.r, hexSize]);
+
+  // ── Pet world position (for collision detection) ─────────────────────────
+  const petWorld = useMemo(() => axialToWorld(pet.pos, hexSize), [pet.pos.q, pet.pos.r, hexSize]);
+
+  // ── Player ↔ Pet proximity / petting ─────────────────────────────────────
+  const [isPetting, setIsPetting] = React.useState(false);
+  const pettingTimerRef    = React.useRef<ReturnType<typeof setTimeout> | null>(null);
+  const wasCollidingRef    = React.useRef(false);
+  useEffect(() => {
+    const dx = heroWorld.x - petWorld.x;
+    const dz = heroWorld.z - petWorld.z;
+    const dist = Math.sqrt(dx * dx + dz * dz);
+    const colliding = dist < hexSize * 1.5;
+    if (colliding && !wasCollidingRef.current) {
+      wasCollidingRef.current = true;
+      setIsPetting(true);
+      if (pettingTimerRef.current) clearTimeout(pettingTimerRef.current);
+      pettingTimerRef.current = setTimeout(() => {
+        setIsPetting(false);
+        wasCollidingRef.current = false;
+      }, 3000);
+    } else if (!colliding) {
+      wasCollidingRef.current = false;
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [hero.pos.q, hero.pos.r, pet.pos.q, pet.pos.r]);
 
   // Log actor positions for debugging
   useEffect(() => {
@@ -1603,6 +2018,12 @@ export default function SoloMissionMap3D({
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tiles, axialBounds, hexSize]);
   const [hover, setHover] = useState<Tile | null>(null);
+  const [mousePos, setMousePos] = useState({ x: 0, y: 0 });
+  useEffect(() => {
+    const handler = (e: MouseEvent) => setMousePos({ x: e.clientX, y: e.clientY });
+    window.addEventListener('mousemove', handler);
+    return () => window.removeEventListener('mousemove', handler);
+  }, []);
   const [refMountains, setRefMountains] = useState(false);
   const [refTrees, setRefTrees] = useState(false);
   const [refWater, setRefWater] = useState(false);
@@ -1641,8 +2062,14 @@ export default function SoloMissionMap3D({
     recenterSignal={recenterSignal}
     nearbyFlowerRef={nearbyFlowerRef}
     nearbyMushroomRef={nearbyMushroomRef}
+    nearbyLogRef={nearbyLogRef}
+    nearbyIronRef={nearbyIronRef}
+    nearbyGlassRef={nearbyGlassRef}
     collectingFlowerRef={collectingFlowerRef}
     collectingMushroomRef={collectingMushroomRef}
+    collectingLogRef={collectingLogRef}
+    collectingIronRef={collectingIronRef}
+    collectingGlassRef={collectingGlassRef}
     handleCollect={handleCollect}
     abilitySlots={abilitySlots}
     setAbilitySlots={setAbilitySlots}
@@ -1697,7 +2124,7 @@ export default function SoloMissionMap3D({
                         <group position={[0, tileTop, 0]}><TreeCluster size={hexSize} seed={t.q * 31 + t.r * 17} /></group>
                       )}
                       {!isActorTile && (inVision || explored) && t.type === 'jungle' && (
-                        <group position={[0, tileTop, 0]}><TreeCluster size={hexSize} seed={t.q * 31 + t.r * 17} /></group>
+                        <group position={[0, tileTop, 0]}><JungleCluster size={hexSize} seed={t.q * 31 + t.r * 17} /></group>
                       )}
                       {!isActorTile && (inVision || explored) && t.type === 'mountain' && (
                         <group position={[0, tileTop, 0]}><MountainDeco size={hexSize} seed={t.q * 31 + t.r * 17} /></group>
@@ -1724,6 +2151,24 @@ export default function SoloMissionMap3D({
                       {inVision && collectibleMushrooms.has(key) && (
                         <group position={[0, tileTop, 0]} renderOrder={30}>
                           <CollectibleMushroom size={hexSize} />
+                        </group>
+                      )}
+                      {/* Collectible logs (forest only) — chop for wood */}
+                      {inVision && collectibleLogs.has(key) && (
+                        <group position={[0, tileTop, 0]} renderOrder={30}>
+                          <CollectibleLog size={hexSize} />
+                        </group>
+                      )}
+                      {/* Collectible iron ore (hills only) — mine for iron */}
+                      {inVision && collectibleIrons.has(key) && (
+                        <group position={[0, tileTop, 0]} renderOrder={30}>
+                          <CollectibleIron size={hexSize} />
+                        </group>
+                      )}
+                      {/* Collectible desert glass (desert only) — collect for glass */}
+                      {inVision && collectibleGlasses.has(key) && (
+                        <group position={[0, tileTop, 0]} renderOrder={30}>
+                          <CollectibleGlass size={hexSize} />
                         </group>
                       )}
                       {/* FoW: solid black over completely unexplored+invisible tiles */}
@@ -1770,130 +2215,18 @@ export default function SoloMissionMap3D({
                       group.position.set() + updateMatrix(), setting matrixWorldNeedsUpdate=true.
                       During gl.render → scene.updateMatrixWorld(), force=true cascades through
                       all descendants including GLB primitive nodes. */}
-                  {/* Default path: render IsometricCharacter directly (same approach as the pet)
-                      when no custom GLB/parts are loaded. Only use GameAvatar for custom assets.
-                      renderOrder={22} ensures avatar renders after FoW overlays (depthWrite=false, renderOrder 14/15)
-                      so transparent FoW overlays at tile boundaries never cover the hero. */}
-                  <group renderOrder={22}>
-                  {(heroModelUrl || Object.values(heroParts).some(Boolean)) ? (
-                    avatarReady && (
-                      <Suspense fallback={
-                        <IsometricCharacter gender={heroGender ?? 'FEMALE'} colors={heroColors} hexSize={hexSize} />
-                      }>
-                        <GameAvatar heroModelUrl={heroModelUrl} heroParts={heroParts} heroColors={heroColors} hexSize={hexSize} gender={heroGender} />
-                      </Suspense>
-                    )
-                  ) : (
-                    <IsometricCharacter gender={heroGender ?? 'FEMALE'} colors={heroColors} hexSize={hexSize} />
-                  )}
+                  {/* Render IsometricCharacter unconditionally — same direct pattern as the pet.
+                      No gating on heroModelUrl / heroParts / avatarReady so the character
+                      is always visible. renderOrder={22} keeps it above FoW overlays. */}
+                  <group renderOrder={22} frustumCulled={false}>
+                    <IsometricCharacter gender={heroGender ?? 'FEMALE'} colors={heroColors} hexSize={hexSize} facingAngle={heroFacingAngle} isMoving={heroIsMoving} />
                   </group>
                 </group>
-                {(() => { const world = axialToWorld(pet.pos, hexSize); const ps = hexSize * 0.32; return (
+                {(() => { const world = axialToWorld(pet.pos, hexSize); return (
                   <group key={pet.id} position={[world.x, 0.48, world.z]} frustumCulled={false}>
-                    {/* ── Isometric cat Pokemon-style pet ── */}
-                    {/* Drop shadow */}
-                    <mesh rotation={[-Math.PI/2, 0, 0]} position={[0, 0.01, 0]} frustumCulled={false}>
-                      <circleGeometry args={[ps * 0.85, 20]} />
-                      <meshBasicMaterial color="#000" transparent opacity={0.18} depthWrite={false} />
-                    </mesh>
-                    {/* Body */}
-                    <mesh position={[0, ps * 0.72, 0]} castShadow frustumCulled={false}>
-                      <sphereGeometry args={[ps * 0.62, 14, 10]} />
-                      <meshStandardMaterial color="#f5c97a" roughness={0.6} />
-                    </mesh>
-                    {/* Belly patch */}
-                    <mesh position={[0, ps * 0.68, ps * 0.48]} frustumCulled={false}>
-                      <sphereGeometry args={[ps * 0.36, 10, 8]} />
-                      <meshStandardMaterial color="#fdecc8" roughness={0.7} />
-                    </mesh>
-                    {/* Head — large sphere (big-head Pokemon ratio) */}
-                    <mesh position={[0, ps * 1.5, 0]} castShadow frustumCulled={false}>
-                      <sphereGeometry args={[ps * 0.72, 16, 12]} />
-                      <meshStandardMaterial color="#f5c97a" roughness={0.6} />
-                    </mesh>
-                    {/* Muzzle */}
-                    <mesh position={[0, ps * 1.42, ps * 0.56]} frustumCulled={false}>
-                      <sphereGeometry args={[ps * 0.28, 10, 8]} />
-                      <meshStandardMaterial color="#fdecc8" roughness={0.7} />
-                    </mesh>
-                    {/* Nose */}
-                    <mesh position={[0, ps * 1.52, ps * 0.8]} frustumCulled={false}>
-                      <sphereGeometry args={[ps * 0.08, 8, 6]} />
-                      <meshStandardMaterial color="#e07090" roughness={0.4} />
-                    </mesh>
-                    {/* Left eye */}
-                    <mesh position={[-ps * 0.28, ps * 1.64, ps * 0.56]} frustumCulled={false}>
-                      <sphereGeometry args={[ps * 0.14, 10, 8]} />
-                      <meshStandardMaterial color="#1a1a2e" roughness={0.3} />
-                    </mesh>
-                    {/* Left eye shine */}
-                    <mesh position={[-ps * 0.24, ps * 1.68, ps * 0.67]} frustumCulled={false}>
-                      <sphereGeometry args={[ps * 0.05, 6, 6]} />
-                      <meshBasicMaterial color="white" />
-                    </mesh>
-                    {/* Right eye */}
-                    <mesh position={[ps * 0.28, ps * 1.64, ps * 0.56]} frustumCulled={false}>
-                      <sphereGeometry args={[ps * 0.14, 10, 8]} />
-                      <meshStandardMaterial color="#1a1a2e" roughness={0.3} />
-                    </mesh>
-                    {/* Right eye shine */}
-                    <mesh position={[ps * 0.24, ps * 1.68, ps * 0.67]} frustumCulled={false}>
-                      <sphereGeometry args={[ps * 0.05, 6, 6]} />
-                      <meshBasicMaterial color="white" />
-                    </mesh>
-                    {/* Left ear — pointy cone */}
-                    <mesh position={[-ps * 0.48, ps * 2.18, 0]} rotation={[0, 0, -0.35]} frustumCulled={false}>
-                      <coneGeometry args={[ps * 0.22, ps * 0.52, 8]} />
-                      <meshStandardMaterial color="#f5c97a" roughness={0.6} />
-                    </mesh>
-                    {/* Left ear inner */}
-                    <mesh position={[-ps * 0.44, ps * 2.18, ps * 0.06]} rotation={[0, 0, -0.35]} frustumCulled={false}>
-                      <coneGeometry args={[ps * 0.12, ps * 0.34, 8]} />
-                      <meshStandardMaterial color="#f0a0b0" roughness={0.5} />
-                    </mesh>
-                    {/* Right ear */}
-                    <mesh position={[ps * 0.48, ps * 2.18, 0]} rotation={[0, 0, 0.35]} frustumCulled={false}>
-                      <coneGeometry args={[ps * 0.22, ps * 0.52, 8]} />
-                      <meshStandardMaterial color="#f5c97a" roughness={0.6} />
-                    </mesh>
-                    {/* Right ear inner */}
-                    <mesh position={[ps * 0.44, ps * 2.18, ps * 0.06]} rotation={[0, 0, 0.35]} frustumCulled={false}>
-                      <coneGeometry args={[ps * 0.12, ps * 0.34, 8]} />
-                      <meshStandardMaterial color="#f0a0b0" roughness={0.5} />
-                    </mesh>
-                    {/* Front left leg */}
-                    <mesh position={[-ps * 0.32, ps * 0.38, ps * 0.28]} castShadow frustumCulled={false}>
-                      <cylinderGeometry args={[ps * 0.13, ps * 0.14, ps * 0.45, 8]} />
-                      <meshStandardMaterial color="#f5c97a" roughness={0.6} />
-                    </mesh>
-                    {/* Front right leg */}
-                    <mesh position={[ps * 0.32, ps * 0.38, ps * 0.28]} castShadow frustumCulled={false}>
-                      <cylinderGeometry args={[ps * 0.13, ps * 0.14, ps * 0.45, 8]} />
-                      <meshStandardMaterial color="#f5c97a" roughness={0.6} />
-                    </mesh>
-                    {/* Back left leg */}
-                    <mesh position={[-ps * 0.36, ps * 0.38, -ps * 0.24]} castShadow frustumCulled={false}>
-                      <cylinderGeometry args={[ps * 0.13, ps * 0.14, ps * 0.42, 8]} />
-                      <meshStandardMaterial color="#f5c97a" roughness={0.6} />
-                    </mesh>
-                    {/* Back right leg */}
-                    <mesh position={[ps * 0.36, ps * 0.38, -ps * 0.24]} castShadow frustumCulled={false}>
-                      <cylinderGeometry args={[ps * 0.13, ps * 0.14, ps * 0.42, 8]} />
-                      <meshStandardMaterial color="#f5c97a" roughness={0.6} />
-                    </mesh>
-                    {/* Tail — angled cylinder */}
-                    <mesh position={[-ps * 0.1, ps * 0.9, -ps * 0.62]} rotation={[0.7, 0.3, 0.1]} frustumCulled={false}>
-                      <cylinderGeometry args={[ps * 0.08, ps * 0.12, ps * 0.8, 8]} />
-                      <meshStandardMaterial color="#f5a040" roughness={0.5} />
-                    </mesh>
-                    {/* Tail tip */}
-                    <mesh position={[-ps * 0.14, ps * 1.3, -ps * 0.9]} frustumCulled={false}>
-                      <sphereGeometry args={[ps * 0.16, 8, 8]} />
-                      <meshStandardMaterial color="#fff5e0" roughness={0.5} />
-                    </mesh>
-                    {/* Name label */}
-                    <Text position={[0, ps * 3.1, 0]} fontSize={ps * 0.55} color="#fff" anchorX="center" anchorY="middle">Pet</Text>
-                  </group> ); })()}
+                    <PetCharacter ps={hexSize * 0.32} facingAngle={petFacingAngle} isMoving={petIsMoving} isPetting={isPetting} />
+                  </group>
+                ); })()}
                 {/* Boundary reference planes */}
                 <group>{boundaryPlanes}</group>
               </group>
@@ -1934,23 +2267,55 @@ export default function SoloMissionMap3D({
                   </div>
                 </div>
               )}
+              {/* Tile hover tooltip */}
+              {hover && (() => {
+                const key = `${hover.q},${hover.r}`;
+                const isFlower = collectibleFlowers.has(key);
+                const isMushroom = collectibleMushrooms.has(key);
+                const TERRAIN_LABEL: Record<string, string> = {
+                  plains: '🌿 Plains', desert: '🏜️ Desert', forest: '🌲 Forest',
+                  jungle: '🌴 Jungle', hills: '⛰️ Hills', mountain: '🗻 Mountain', water: '🌊 Water',
+                };
+                const RESOURCE_INFO: Record<string, { label: string; benefit: string }> = {
+                  ore:    { label: '⚙️ Ore',    benefit: 'Craft materials & equipment' },
+                  energy: { label: '⚡ Energy', benefit: 'Restore EP & power abilities' },
+                  bio:    { label: '🌱 Bio',    benefit: 'Healing & nature buffs' },
+                };
+                const res = hover.resource ? RESOURCE_INFO[hover.resource] : null;
+                return (
+                  <div
+                    className="pointer-events-none absolute z-40 px-3 py-2 rounded-lg bg-black/80 border border-white/20 text-xs text-white shadow-lg"
+                    style={{ left: mousePos.x + 14, top: mousePos.y - 10, maxWidth: 180 }}
+                  >
+                    <div className="font-bold mb-1">{TERRAIN_LABEL[hover.type] ?? hover.type}</div>
+                    {res && (
+                      <div className="text-yellow-300 font-semibold">{res.label}</div>
+                    )}
+                    {res && (
+                      <div className="text-white/70 mt-0.5">{res.benefit}</div>
+                    )}
+                    {isFlower && <div className="text-pink-300 mt-1">🌸 Flower — heals +20 HP</div>}
+                    {isMushroom && <div className="text-emerald-300 mt-1">� Mushroom — restores +5 EP</div>}
+                  </div>
+                );
+              })()}
               {/* Exploration objective tracker */}
               <div className="absolute top-10 left-2 px-3 py-2 rounded-lg bg-black/60 text-xs text-white border border-white/10 font-medium tracking-wide">
-                Explore: {exploredCount}/{explorationGoal} {explorationComplete ? '✓' : ''}
+                Explore: {exploredCount}/{tiles.length > 0 ? tiles.length : explorationGoal} {explorationComplete ? '✓' : ''}
               </div>
               
               {/* Nearby collectible prompt (flower or mushroom) */}
-              {(nearbyFlower || nearbyMushroom) && (
+              {(nearbyFlower || nearbyMushroom || nearbyLog || nearbyIron || nearbyGlass) && (
                 <div className="fixed bottom-56 left-1/2 -translate-x-1/2 animate-bounce">
                   <div className="relative px-6 py-3 rounded-xl bg-emerald-900/80 border border-emerald-400/60 text-sm font-semibold text-emerald-100 backdrop-blur-sm shadow-lg overflow-hidden">
-                    {(collectingFlower || collectingMushroom) && (
+                    {(collectingFlower || collectingMushroom || collectingLog || collectingIron || collectingGlass) && (
                       <div className="absolute inset-0 rounded-xl pointer-events-none" style={{
                         background: `conic-gradient(#10b981 ${collectingProgress * 360}deg, transparent 0)`,
                       }} />
                     )}
                     <div className="relative z-10 flex items-center gap-2">
-                      {nearbyFlower ? '🌸 Flower' : '🍃 Mushroom'} Press <span className="px-1.5 py-0.5 rounded bg-emerald-700 font-bold">C</span> to Collect
-                      {(collectingFlower || collectingMushroom) && <span className="ml-1 text-xs text-emerald-300">{Math.round(collectingProgress * 100)}%</span>}
+                      {nearbyFlower ? '🌸 Flower' : nearbyLog ? '🪵 Wood' : nearbyIron ? '⚙️ Iron Ore' : nearbyGlass ? '💎 Desert Glass' : '🍄 Mushroom'} Press <span className="px-1.5 py-0.5 rounded bg-emerald-700 font-bold">C</span> to {nearbyLog ? 'Chop' : nearbyIron ? 'Mine' : 'Collect'}
+                      {(collectingFlower || collectingMushroom || collectingLog || collectingIron || collectingGlass) && <span className="ml-1 text-xs text-emerald-300">{Math.round(collectingProgress * 100)}%</span>}
                     </div>
                   </div>
                 </div>
@@ -2064,7 +2429,8 @@ function ChunkDebugTiles({ heroPos, hexSize }: { heroPos: Axial; hexSize: number
 // Custom camera controller: edge pan & drag (game mode) with optional follow axial coord
 function MapCameraController({
   bounds, gameMode, heroWorld, recenterSignal,
-  nearbyFlowerRef, nearbyMushroomRef, collectingFlowerRef, collectingMushroomRef,
+  nearbyFlowerRef, nearbyMushroomRef, nearbyLogRef, nearbyIronRef, nearbyGlassRef,
+  collectingFlowerRef, collectingMushroomRef, collectingLogRef, collectingIronRef, collectingGlassRef,
   handleCollect,
   abilitySlots, setAbilitySlots,
 }: {
@@ -2074,10 +2440,16 @@ function MapCameraController({
   recenterSignal?: number;
   nearbyFlowerRef: React.MutableRefObject<string | null>;
   nearbyMushroomRef: React.MutableRefObject<string | null>;
+  nearbyLogRef: React.MutableRefObject<string | null>;
+  nearbyIronRef: React.MutableRefObject<string | null>;
+  nearbyGlassRef: React.MutableRefObject<string | null>;
   collectingFlowerRef: React.MutableRefObject<string | null>;
   collectingMushroomRef: React.MutableRefObject<string | null>;
+  collectingLogRef: React.MutableRefObject<string | null>;
+  collectingIronRef: React.MutableRefObject<string | null>;
+  collectingGlassRef: React.MutableRefObject<string | null>;
   /** Delegated to useCollectibles — starts the 1200 ms collection animation. */
-  handleCollect: (flowerKey: string | null, mushroomKey: string | null) => void;
+  handleCollect: (flowerKey: string | null, mushroomKey: string | null, logKey?: string | null, ironKey?: string | null, glassKey?: string | null) => void;
   abilitySlots: Ability[];
   setAbilitySlots: React.Dispatch<React.SetStateAction<Ability[]>>;
 }) {
@@ -2207,10 +2579,9 @@ function MapCameraController({
           keysPressed.current.ArrowDown = true;
           keysPressed.current.PageDown = true;
         }
-        // 'C' key to collect nearby flower (plains) or mushroom (forest)
-        // Delegated to useCollectibles hook via handleCollect ref
-        if (e.key.toLowerCase() === 'c' && !collectingFlowerRef.current && !collectingMushroomRef.current) {
-          handleCollectRef.current(nearbyFlowerRef.current, nearbyMushroomRef.current);
+        // 'C' key — collect nearby resource
+        if (e.key.toLowerCase() === 'c' && !collectingFlowerRef.current && !collectingMushroomRef.current && !collectingLogRef.current && !collectingIronRef.current && !collectingGlassRef.current) {
+          handleCollectRef.current(nearbyFlowerRef.current, nearbyMushroomRef.current, nearbyLogRef.current, nearbyIronRef.current, nearbyGlassRef.current);
         }
       } catch (err) {
         console.error('[KeybindError]', err);
