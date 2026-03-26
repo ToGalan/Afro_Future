@@ -2,6 +2,8 @@ import React, { useEffect, useState, Suspense, lazy } from 'react';
 import { usePlayerProfile } from './hooks/usePlayerProfile';
 import { usePlayerXP } from './hooks/usePlayerXP';
 import { usePetXP } from './hooks/usePetXP';
+import { getLevelFromXp, getTotalXpForLevel, getXpForNextLevel } from './services/playerExpEconomy';
+import { getXpForNextPetLevel } from './services/petExpEconomy';
 import { useSkillStore, availablePoints } from './store/skillStore';
 import { makeTree } from './store/skillData';
 import { GROUP_ORDER, getVariantsByGroup } from './assets/threeParts';
@@ -1618,17 +1620,18 @@ function LeftPlayerPanel({ className = '', playerName, accountLevel, loadout, he
   const primaryBranch = primaryBranchRaw && primaryBranchRaw.toLowerCase() === 'root' ? undefined : primaryBranchRaw;
   const primaryType = primaryTypeRaw && primaryTypeRaw.toLowerCase() === 'root' ? undefined : primaryTypeRaw;
   // ── Live XP + level from Firestore — same source as in-game HUD ────────────
-  const { profile: fsProfile, saveProgress: fsSave } = usePlayerProfile();
-  const { playerLevel, xpInLevel, xpForLevel } = usePlayerXP({
-    uid: fsProfile?.uid ?? '',
-    profile: fsProfile,
-    saveProgress: fsSave,
-  });
-  const { petLevel, petXp, xpToNext } = usePetXP({
-    uid: fsProfile?.uid ?? '',
-    profile: fsProfile,
-    saveProgress: fsSave,
-  });
+  // Read directly from profile (updated live via onSnapshot) rather than through
+  // usePlayerXP/usePetXP, which only sync once per uid and would show stale data
+  // after returning from a game session.
+  const { profile: fsProfile } = usePlayerProfile();
+  const heroXp    = fsProfile?.progress?.hero?.xp    ?? 0;
+  const playerLevel = getLevelFromXp(heroXp);
+  const levelStartXp = getTotalXpForLevel(playerLevel);
+  const xpForLevel   = Math.max(1, getXpForNextLevel(playerLevel));
+  const xpInLevel    = Math.max(0, heroXp - levelStartXp);
+  const petXp   = fsProfile?.progress?.pet?.xp    ?? 0;
+  const petLevel = fsProfile?.progress?.pet?.level ?? 1;
+  const xpToNext = getXpForNextPetLevel(petLevel);
   // HP/EP derived from level plus skill-derived stats (defense/utility)
   const baseHP = 100; const hpPerLevel = 12; const hpPerDefense = 10;
   const baseEP = 60; const epPerLevel = 6; const epPerUtility = 6;
