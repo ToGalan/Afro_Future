@@ -1,7 +1,7 @@
 import { useEffect, useState, useCallback, useRef } from 'react';
 import { useSkillStore } from '../store/skillStore';
 import { auth, db, ensureAnonAuth, ensureUserAuth, rtdb, rtdbHelpers } from '../services/firebase';
-import { doc, getDoc, setDoc, serverTimestamp } from 'firebase/firestore';
+import { doc, getDoc, onSnapshot, setDoc, serverTimestamp } from 'firebase/firestore';
 import type { PlayerProfile, PlayerProgress } from '../types/player';
 
 interface UsePlayerProfileOptions {
@@ -28,6 +28,7 @@ export function usePlayerProfile(opts: UsePlayerProfileOptions = {}) {
   const saveThrottle = useRef<number>(0);
 
   useEffect(() => {
+    let unsub: (() => void) | null = null;
     let cancelled = false;
     (async () => {
       try {
@@ -35,54 +36,69 @@ export function usePlayerProfile(opts: UsePlayerProfileOptions = {}) {
         const user = await ensureAnonAuth();
         if (cancelled) return;
         const ref = doc(db, 'players', user.uid);
+
+        // One-time read to handle the auto-create case before subscribing.
         const snap = await getDoc(ref);
-        if (snap.exists()) {
-          const data = snap.data() as any;
+        if (cancelled) return;
+
+        if (!snap.exists()) {
+          if (!autoCreate) {
+            setProfile(null);
+            setLoading(false);
+            return;
+          }
+          const initial: PlayerProfile = {
+            uid: user.uid,
+            email: user.email || undefined,
+            displayName: user.displayName || undefined,
+            createdAt: Date.now(),
+            progress: {
+              heroPosition: { q: 0, r: 0 },
+              lastLogin: Date.now(),
+              hero: { level: 1, traits: [], unlockedSkillIds: [], unlockOrder: [], xp: 0 },
+              pet: { level: 1, xp: 0 },
+              skillTokens: { earned: 0, spent: 0, remaining: 0 },
+              avatar: { parts: {}, colors: { primary: '#00A37A', secondary: '#F5F5F5', skin: '#c58b66' }, updatedAt: Date.now() }
+            }
+          };
+          await setDoc(ref, { ...initial, createdAt: serverTimestamp() });
+          if (cancelled) return;
+        }
+
+        // Real-time listener: keeps ALL hook instances in sync whenever Firestore
+        // is updated (saveProgress, updateDoc force-flushes, etc.).
+        unsub = onSnapshot(ref, (docSnap) => {
+          if (cancelled || !docSnap.exists()) return;
+          const data = docSnap.data() as any;
           const progress: PlayerProgress = {
             heroPosition: { q: 0, r: 0 },
             lastLogin: Date.now(),
             hero: { level: 1, xp: 0, traits: [], unlockedSkillIds: [], unlockOrder: [] },
             pet: { level: 1, xp: 0 },
             skillTokens: { earned: 0, spent: 0, remaining: 0 },
-            avatar: { parts: {}, colors: { primary:'#00A37A', secondary:'#F5F5F5', skin:'#c58b66' }, updatedAt: Date.now() },
+            avatar: { parts: {}, colors: { primary: '#00A37A', secondary: '#F5F5F5', skin: '#c58b66' }, updatedAt: Date.now() },
             ...data.progress,
           };
-          setProfile({ 
-            uid: user.uid, 
-            displayName: data.displayName, 
-            email: data.email, 
-            avatarUrl: data.avatarUrl, 
-            faction: data.faction, 
-            createdAt: data.createdAt || Date.now(), 
-            progress 
-          });
-        } else if (autoCreate) {
-          const initial: PlayerProfile = {
+          setProfile({
             uid: user.uid,
-            email: user.email || undefined,  // Save email from auth
-            displayName: user.displayName || undefined, // Save display name from auth
-            createdAt: Date.now(),
-            progress: {
-              heroPosition: { q: 0, r: 0 },
-              lastLogin: Date.now(),
-              hero: { level:1, traits:[], unlockedSkillIds:[], unlockOrder:[], xp: 0 },
-              pet: { level:1, xp: 0 },
-              skillTokens: { earned:0, spent:0, remaining:0 },
-              avatar: { parts:{}, colors:{ primary:'#00A37A', secondary:'#F5F5F5', skin:'#c58b66' }, updatedAt: Date.now() }
-            }
-          };
-          await setDoc(ref, { ...initial, createdAt: serverTimestamp() });
-          if (!cancelled) setProfile(initial);
-        } else {
-          setProfile(null);
-        }
+            displayName: data.displayName,
+            email: data.email,
+            avatarUrl: data.avatarUrl,
+            faction: data.faction,
+            createdAt: data.createdAt || Date.now(),
+            progress
+          });
+          setLoading(false);
+        }, (err) => {
+          if (!cancelled) setError(err.message || 'Realtime listener failed');
+          if (!cancelled) setLoading(false);
+        });
       } catch (e: any) {
         if (!cancelled) setError(e.message || 'Failed to load profile');
-      } finally {
         if (!cancelled) setLoading(false);
       }
     })();
-    return () => { cancelled = true; };
+    return () => { cancelled = true; unsub?.(); };
   }, [autoCreate]);
 
   // Migration: if user later signs in with Google/email (non-anon) and we have an anon profile loaded, copy progress over
