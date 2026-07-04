@@ -1722,9 +1722,12 @@ export default function SoloMissionMap3D({
   // Ability cooldown countdown (1 second intervals)
   React.useEffect(() => {
     const interval = setInterval(() => {
-      setAbilitySlots(prev => prev.map(ability =>
-        (ability.cooldown ?? 0) > 0 ? { ...ability, cooldown: Math.max(0, (ability.cooldown ?? 0) - 1) } : ability
-      ));
+      setAbilitySlots(prev => {
+        if (!prev.some(a => (a.cooldown ?? 0) > 0)) return prev; // no active cooldowns — preserve reference
+        return prev.map(ability =>
+          (ability.cooldown ?? 0) > 0 ? { ...ability, cooldown: Math.max(0, (ability.cooldown ?? 0) - 1) } : ability
+        );
+      });
     }, 1000);
     return () => clearInterval(interval);
   }, []);
@@ -2295,7 +2298,7 @@ export default function SoloMissionMap3D({
                       <div className="text-white/70 mt-0.5">{res.benefit}</div>
                     )}
                     {isFlower && <div className="text-pink-300 mt-1">🌸 Flower — heals +20 HP</div>}
-                    {isMushroom && <div className="text-emerald-300 mt-1">� Mushroom — restores +5 EP</div>}
+                    {isMushroom && <div className="text-emerald-300 mt-1">🍄 Mushroom — restores +5 EP</div>}
                   </div>
                 );
               })()}

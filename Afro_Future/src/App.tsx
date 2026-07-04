@@ -6,6 +6,7 @@ import { getLevelFromXp, getTotalXpForLevel, getXpForNextLevel } from './service
 import { getXpForNextPetLevel } from './services/petExpEconomy';
 import { useSkillStore, availablePoints } from './store/skillStore';
 import { makeTree } from './store/skillData';
+import { skillIconFn } from './utils/skillUtils';
 import { GROUP_ORDER, getVariantsByGroup } from './assets/threeParts';
 import { buildAvatarConfig } from './services/avatarConfig';
 import AvatarScene from './components/AvatarScene';
@@ -592,22 +593,6 @@ export default function App() {
   );
 }
 
-// Module-level skill icon helper (used by MissionScreen and SkillsModal)
-function skillIconFn(id: string): string {
-  if(id.includes('combat')) return '⚔️';
-  if(id.includes('support')) return '✚';
-  if(id.includes('pet') || id.includes('bond')) return '🐾';
-  if(id.includes('weapon')) return '🔫';
-  if(id.includes('spell') || id.includes('spellcraft')) return '✨';
-  if(id.includes('defense') || id.includes('shield')) return '🛡️';
-  if(id.includes('mobility')) return '🦶';
-  if(id.includes('leadership')) return '🗣️';
-  if(id.includes('terraform')) return '🌍';
-  if(id.includes('technologist') || id.includes('techno')) return '🧪';
-  if(id.includes('merchant') || id.includes('trade')) return '💱';
-  if(id.includes('looting')) return '📦';
-  return '⬢';
-}
 
 // Full-screen skills modal with SnowflakeSkillTree + ability assignment loadout
 function SkillsModal({ loadout, onClose }: { loadout: CharacterLoadout; onClose: () => void }) {

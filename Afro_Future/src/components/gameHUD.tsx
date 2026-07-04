@@ -285,13 +285,10 @@ export const GameHUD: React.FC<GameHUDProps> = ({
   }, [pet?.level]);
 
   let shardsValue: number | undefined;
-  const filteredResources = resources.filter(r => {
+  resources.forEach(r => {
     const id = (r.id || '').toLowerCase();
     const label = (r.label || '').toLowerCase();
-    if (!label) return false;
-    if (id === 'shards' || label === 'shards') { shardsValue = r.value; return false; }
-    if (id.includes('skill') || id.includes('token') || label.includes('skill') || label.includes('token')) return false;
-    return true;
+    if (id === 'shards' || label === 'shards') shardsValue = r.value;
   });
 
   const offensiveSlots = abilities.slice(0, 4);
@@ -334,20 +331,6 @@ export const GameHUD: React.FC<GameHUDProps> = ({
         </div>
       </div>
 
-      {/* Resources — top right, offset below the top bar so they don't overlap */}
-      {!!filteredResources.length && (
-        <div className={`fixed top-12 sm:top-14 right-4 ${panelCls} rounded-xl px-3 py-2 pointer-events-auto z-40`}>
-          <div className="flex items-center gap-2 flex-wrap max-w-[500px] justify-end">
-            {filteredResources.map(r => (
-              <div key={r.id} className="px-2.5 py-1.5 rounded-lg bg-white/5 ring-1 ring-white/8 text-sm flex items-center gap-1.5">
-                <span>{r.icon || '◈'}</span>
-                <span className="opacity-55 text-xs">{r.label}</span>
-                <span className="font-bold tabular-nums">{r.value}</span>
-              </div>
-            ))}
-          </div>
-        </div>
-      )}
 
       {/* ══════════════════ BOTTOM HUD BAR — full width, Dota 2 style ════════ */}
       {/*
