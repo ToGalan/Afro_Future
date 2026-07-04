@@ -10,7 +10,9 @@ import { useCreatorStore } from '../store/creatorStore';
 // To extend: add new channel key (e.g. "emissive") and update AvatarSceneProps.colors + tintHierarchy logic.
 const MATERIAL_TOKENS: Record<string,string[]> = {
   skin: ['skin'],
-  primary: ['primary','fabric','cloth','armor'],
+  // 'color' catches the generic `Color_` material the GLB parts use for their main
+  // tintable surface (hair, tops, bottoms, shoes) — without it those parts never recolor.
+  primary: ['primary','fabric','cloth','armor','color'],
   secondary: ['secondary','trim','detail','accent'],
 };
 

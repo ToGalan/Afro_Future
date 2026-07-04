@@ -26,6 +26,11 @@ export function usePlayerProfile(opts: UsePlayerProfileOptions = {}) {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const saveThrottle = useRef<number>(0);
+  // Trailing-flush throttle state: the network write is rate-limited, but local
+  // state is ALWAYS updated and the latest value is eventually persisted.
+  const pendingTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const progressRef = useRef<PlayerProgress | null>(null);
+  const uidRef = useRef<string | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -154,17 +159,52 @@ export function usePlayerProfile(opts: UsePlayerProfileOptions = {}) {
     }
   }, [profile]);
 
+  // Persist the latest accumulated progress to Firestore (bypasses throttle).
+  const writeProgress = useCallback(() => {
+    const uid = uidRef.current;
+    const merged = progressRef.current;
+    if (!uid || !merged) return;
+    saveThrottle.current = Date.now();
+    setDoc(doc(db, 'players', uid), { progress: merged, updatedAt: serverTimestamp() }, { merge: true })
+      .catch(() => {/* swallow */});
+  }, []);
+
   const saveProgress = useCallback((partial: Partial<PlayerProfile['progress']>) => {
     if (!profile) return;
     const now = Date.now();
-    if (saveThrottle.current && now - saveThrottle.current < 1500) return;
-    saveThrottle.current = now;
-    const ref = doc(db, 'players', profile.uid);
-    const merged = mergeProgress({ ...profile.progress }, { ...partial, lastLogin: now });
-    const next: PlayerProfile = { ...profile, progress: merged };
-    setProfile(next);
-    setDoc(ref, { progress: merged, updatedAt: serverTimestamp() }, { merge: true }).catch(() => {/* swallow */});
-  }, [profile]);
+    // Merge onto the freshest progress (progressRef is updated synchronously so
+    // rapid successive saves in the same tick accumulate instead of clobbering).
+    const base = progressRef.current ?? profile.progress;
+    const merged = mergeProgress({ ...base }, { ...partial, lastLogin: now });
+    progressRef.current = merged;
+    uidRef.current = profile.uid;
+    // Always update local state immediately so the UI (and profileRef consumers
+    // such as useCollectibles) reflect the new XP without waiting on the throttle.
+    setProfile(prev => (prev ? { ...prev, progress: merged } : prev));
+    // Rate-limit the network write, but never DROP it: schedule a trailing flush
+    // so the last value within a throttle window is still persisted.
+    const elapsed = now - saveThrottle.current;
+    if (elapsed >= 1500) {
+      if (pendingTimer.current) { clearTimeout(pendingTimer.current); pendingTimer.current = null; }
+      writeProgress();
+    } else if (!pendingTimer.current) {
+      pendingTimer.current = setTimeout(() => {
+        pendingTimer.current = null;
+        writeProgress();
+      }, 1500 - elapsed);
+    }
+  }, [profile, writeProgress]);
+
+  // Keep progressRef aligned with externally-driven profile changes, and flush
+  // any pending write on unmount so in-flight XP isn't lost.
+  useEffect(() => { if (profile) { progressRef.current = profile.progress; uidRef.current = profile.uid; } }, [profile]);
+  useEffect(() => () => {
+    if (pendingTimer.current) {
+      clearTimeout(pendingTimer.current);
+      pendingTimer.current = null;
+      writeProgress();
+    }
+  }, [writeProgress]);
 
   const updateProfile = useCallback((fields: Partial<Omit<PlayerProfile, 'progress' | 'uid' | 'createdAt'>>) => {
     if (!profile) return;

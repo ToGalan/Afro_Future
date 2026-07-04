@@ -1,4 +1,4 @@
-import React, { useEffect, useState, Suspense, lazy } from 'react';
+﻿import React, { useEffect, useState, Suspense, lazy } from 'react';
 import { usePlayerProfile } from './hooks/usePlayerProfile';
 import { useSkillStore, availablePoints } from './store/skillStore';
 import { makeTree } from './store/skillData';
@@ -31,6 +31,19 @@ const SnowflakeSkillTree = lazy(() => import('./components/SnowflakeSkillTree'))
 interface RuntimeConfig { storeDomain: string | null; apiVersion: string; debug: boolean; buildHash?: string | null; }
 const APP_VERSION_FALLBACK = 'v0.2.3';
 
+// Default avatar parts so the 3D character renders even before the creator is used.
+const DEFAULT_THREE_PARTS: Record<string, string> = {
+  Head: 'head_head_001',
+  Face: 'face_face_001',
+  Eyes: 'eyes_eyes_001',
+  Eyebrows: 'eyebrows_eyebrow_001',
+  Nose: 'nose_nose_001',
+  Hair: 'hair_hair_001',
+  Outfit: 'outfit_outfit_001',
+  Shoes: 'shoes_shoes_001',
+};
+const DEFAULT_THREE_COLORS = { primary: '#00A37A', secondary: '#F5F5F5', skin: '#c58b66' };
+
 const defaultLoadout: CharacterLoadout = {
   id: uid('char'),
   name: 'Nia',
@@ -48,9 +61,10 @@ const defaultLoadout: CharacterLoadout = {
     role: 'SCOUT',
     cosmetics: { pattern: 'grid' },
   },
+  threeConfig: { parts: DEFAULT_THREE_PARTS, colors: DEFAULT_THREE_COLORS, summary: {}, updatedAt: Date.now() },
   createdAt: now(),
   updatedAt: now(),
-};
+} as any;
 
 export default function App() {
   const { saveProgress: saveProfileProgress } = usePlayerProfile();
@@ -511,7 +525,7 @@ export default function App() {
   }, [rtc]);
 
   if (phase === 'auth') return <GameViewport mode="fit"><AuthGate onSignedIn={handleSignedIn} /></GameViewport>;
-  if (phase === 'boot') return <GameViewport mode="fit"><WelcomeScreen progress={progress} build="v0.2.3 demo • UE5" onSignOut={handleSignOut} /></GameViewport>;
+  if (phase === 'boot') return <GameViewport mode="fit"><WelcomeScreen progress={progress} build="v0.2.3" onSignOut={handleSignOut} /></GameViewport>;
 
   if (phase === 'onboard') return (
     <GameViewport mode="fit">
@@ -837,6 +851,18 @@ class MissionErrorBoundary extends React.Component<
   }
 }
 
+// Isolates a 3D <AvatarScene> canvas so a WebGL/render error inside it can't crash
+// the surrounding React UI (creator tabs, sidepanel, buttons).
+class CanvasErrorBoundary extends React.Component<
+  { children: React.ReactNode; fallback?: React.ReactNode },
+  { hasError: boolean }
+> {
+  constructor(props: any) { super(props); this.state = { hasError: false }; }
+  static getDerivedStateFromError() { return { hasError: true }; }
+  componentDidCatch(err: unknown) { console.error('[AvatarScene] canvas render error:', err); }
+  render() { return this.state.hasError ? (this.props.fallback ?? null) : this.props.children; }
+}
+
 function MissionScreen({ onExit, onOpenSkillTree, activeLoadout }: { onExit: () => void; onOpenSkillTree?: () => void; activeLoadout?: CharacterLoadout | null }){
   // Access active loadout & skill state for HUD
   // Prefer the live prop from App (stays in sync with configurator changes),
@@ -889,6 +915,7 @@ function MissionScreen({ onExit, onOpenSkillTree, activeLoadout }: { onExit: () 
   const resources = React.useMemo(()=>[
     { id:'shards', label:'Shards', value: shards, icon:'◈' },
     { id:'tokens', label:'Skill Tokens', value: available, icon:'⬢' },
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   ],[shards, available]);
 
   const loadout = activeLoadoutRaw || { name:'Hero', faction:'PAA', level: skillState.level, portraitUrl: undefined, pet:{ type:'CYBER_DOG', level:1, role:'SCOUT' } } as any;
@@ -956,7 +983,7 @@ function MissionScreen({ onExit, onOpenSkillTree, activeLoadout }: { onExit: () 
           heroVitals={{
             hp: { current: Math.floor(heroVitals.hp), max: HP_MAX },
             ep: { current: Math.floor(heroVitals.ep), max: EP_MAX },
-            xp: { current: XP_CUR, max: XP_MAX },
+            xp: { current: Math.floor(profile?.progress?.hero?.xp ?? 0), max: XP_MAX },
             level: skillState.level,
             name: loadout.name,
             portraitUrl: loadout.portraitUrl,
@@ -1095,12 +1122,6 @@ function GameViewport({ children, mode = 'fixed', allowUpscale = true, minScale 
       <div className="relative" style={stageStyle}>
         <div className="absolute inset-0 pointer-events-none shadow-[0_0_0_1px_rgba(255,255,255,0.04)]" />
         {children}
-        <div className="absolute bottom-1 left-2 text-[10px] font-mono bg-black/40 backdrop-blur-sm px-2 py-1 rounded border border-white/10 text-white/80">
-          {mode === 'fit'
-            ? <>fit mode • win {viewport.w}×{viewport.h}</>
-            : <>fixed {DESIGN_W}×{DESIGN_H} • win {viewport.w}×{viewport.h} • scale {scale.toFixed(3)}</>
-          }
-        </div>
       </div>
     </div>
   );
@@ -1463,9 +1484,13 @@ function FirstTimeFlow({ faction, archetype, pet, onFaction, onArchetype, onPet,
 }
 
 function MainMenu({ playerName, accountLevel, loadout, onCustomize, heroLocked, view, onChangeView, profile, onSignOut }: { playerName: string; accountLevel: number; loadout: CharacterLoadout; onCustomize: () => void; heroLocked: boolean; view: 'dashboard' | 'skills' | 'store' | 'help' | 'settings' | 'mission'; onChangeView: (v: 'dashboard' | 'skills' | 'store' | 'help' | 'settings' | 'mission') => void; profile?: { sub: string; name?: string; email?: string; picture?: string } | null; onSignOut?: () => void; }) {
-  // Ensure skill store level matches active loadout level even when Skills view isn't open
+  // Keep the skill store level in sync with progression: the higher of the loadout
+  // level and the XP-driven hero level, so leveling up from XP grants skill points
+  // and is reflected in the dashboard even when the Skills view isn't open.
   const setSkillLevel = useSkillStore(s=>s.setLevel);
-  useEffect(()=>{ setSkillLevel(loadout.level); }, [loadout.level, setSkillLevel]);
+  const { profile: gameProfile } = usePlayerProfile();
+  const heroLvl = gameProfile?.progress?.hero?.level ?? 1;
+  useEffect(()=>{ setSkillLevel(Math.max(loadout.level ?? 1, heroLvl)); }, [loadout.level, heroLvl, setSkillLevel]);
   return (
     <div className="h-full w-full bg-[#0f1218] text-gray-100 relative">
   <TopNav view={view} onChangeView={onChangeView} profile={profile} onSignOut={onSignOut} />
@@ -1535,7 +1560,12 @@ function TopNav({ view, onChangeView, profile, onSignOut }: { view: 'dashboard' 
       </div>
       <div className="ml-auto flex items-center justify-end gap-4">
         <Chip>1,458 <span className="opacity-70">shards</span></Chip>
-  <IconButton label="Notifications">🔔</IconButton>
+  <IconButton label="Notifications">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+              <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/>
+              <path d="M13.73 21a2 2 0 0 1-3.46 0"/>
+            </svg>
+          </IconButton>
         <IconButton label={isFs ? 'Exit Fullscreen' : 'Enter Fullscreen'} onClick={toggleFullscreen}>
           {/* Expand arrows icon */}
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
@@ -1600,6 +1630,8 @@ function LeftPlayerPanel({ className = '', playerName, accountLevel, loadout, he
   const skillLevel = useSkillStore(s=>s.level);
   const defense = useSkillStore(s=>s.defense);
   const utility = useSkillStore(s=>s.utility);
+  // Hero XP from Firestore profile
+  const { profile: playerProfile } = usePlayerProfile();
   // Removed Attack/Defense/Utility stat cards per UI cleanup request.
   const primaryBranchRaw = useSkillStore(s=>s.primaryBranch);
   const primaryTypeRaw = useSkillStore(s=>s.primaryType);
@@ -1724,7 +1756,7 @@ function LeftPlayerPanel({ className = '', playerName, accountLevel, loadout, he
               <span className="font-semibold text-white text-sm leading-tight tracking-wide">{loadout.name}</span>
             </div>
             <div className="mt-1 text-[10px] text-gray-300 flex items-center gap-2">
-              <span className="px-2 py-0.5 rounded-full bg-white/5 border border-white/10 tracking-wide">Lv {loadout.level}</span>
+              <span className="px-2 py-0.5 rounded-full bg-white/5 border border-white/10 tracking-wide">Lv {Math.max(loadout.level ?? 1, playerProfile?.progress?.hero?.level ?? 1)}</span>
               <span>{loadout.archetype === 'MALE' ? 'Male' : 'Female'}</span>
             </div>
           </div>
@@ -1747,6 +1779,24 @@ function LeftPlayerPanel({ className = '', playerName, accountLevel, loadout, he
             <div className="flex justify-between mt-1"><span className="opacity-70">Unlocked</span><span className="font-semibold">{skillUnlocked.length}</span></div>
           </div>
         </div>
+        {/* Hero XP progress bar */}
+        {(() => {
+          const heroXp = Math.floor(playerProfile?.progress?.hero?.xp ?? 0);
+          const heroLevel = playerProfile?.progress?.hero?.level ?? skillLevel;
+          const xpMax = 100 + (heroLevel - 1) * 40;
+          const xpPct = Math.min(100, Math.round((heroXp / xpMax) * 100));
+          return (
+            <div className="mt-3 w-full rounded-2xl border border-white/10 bg-gradient-to-br from-amber-500/10 to-orange-500/10 p-3 text-[10px]">
+              <div className="flex justify-between mb-1.5">
+                <span className="opacity-70">Hero XP</span>
+                <span className="font-semibold text-amber-300">{heroXp} / {xpMax}</span>
+              </div>
+              <div className="h-1.5 w-full rounded-full bg-white/10 overflow-hidden">
+                <div className="h-full bg-gradient-to-r from-amber-500 to-orange-400 transition-all" style={{ width: `${xpPct}%` }} />
+              </div>
+            </div>
+          );
+        })()}
         {/* Traits summary */}
         <div className="mt-4 w-full rounded-2xl border border-white/10 bg-gradient-to-br from-white/5 to-white/[0.02] p-3 text-[10px] flex flex-col gap-1">
           <div className="flex justify-between"><span className="opacity-70">Primary Path</span><span className="font-semibold text-emerald-300">{primaryBranch || '—'}</span></div>
@@ -1807,9 +1857,10 @@ function RightPlayerPanel({ className = '', loadout, onCustomize, onPlay }: { cl
             <div className="relative w-full max-w-[240px] aspect-[4/3] rounded-3xl border border-white/10 bg-gradient-to-br from-[#0b0e13] to-[#1a1e29] overflow-hidden">
               <div className="absolute inset-0 bg-gradient-to-tr from-[#0b0e13]/80 via-transparent to-[#0b0e13]/50" />
               <div className="absolute inset-x-0 bottom-0 top-[20%]">
+                <CanvasErrorBoundary fallback={<div className="w-full h-full flex items-center justify-center text-xs opacity-40">avatar preview unavailable</div>}>
                 <AvatarScene
-                  parts={(loadout as any).threeConfig?.parts}
-                  colors={(loadout as any).threeConfig?.colors}
+                  parts={(loadout as any).threeConfig?.parts ?? DEFAULT_THREE_PARTS}
+                  colors={(loadout as any).threeConfig?.colors ?? DEFAULT_THREE_COLORS}
                   debugTint={false}
                   animPaused={false}
                   animSpeed={1}
@@ -1822,6 +1873,7 @@ function RightPlayerPanel({ className = '', loadout, onCustomize, onPlay }: { cl
                   autoFrame
                   frameMargin={0.12}
                 />
+                </CanvasErrorBoundary>
               </div>
             </div>
           </div>
@@ -2270,6 +2322,7 @@ function CharacterCreator({ onSave, onBack, initial, locked }: { onSave: (payloa
           <div className="relative w-full h-full max-h-[55vh] rounded-[32px] bg-[#12171f] border border-white/10 shadow-2xl overflow-hidden flex items-center justify-center mx-auto max-w-5xl">
             <div className="absolute inset-0 bg-gradient-to-tr from-emerald-500/5 via-transparent to-sky-500/5 pointer-events-none" />
             <div className="absolute inset-0">
+              <CanvasErrorBoundary fallback={<div className="w-full h-full flex items-center justify-center text-sm opacity-40">avatar preview unavailable</div>}>
               <AvatarScene
                 parts={picked}
                 colors={colorState}
@@ -2280,6 +2333,7 @@ function CharacterCreator({ onSave, onBack, initial, locked }: { onSave: (payloa
                 modelScale={0.8}
                 modelOffset={[0,-0.25,0]}
               />
+              </CanvasErrorBoundary>
               <div className="absolute top-3 left-3 flex items-center gap-2 bg-black/40 backdrop-blur-sm px-3 py-2 rounded-xl border border-white/10 text-[11px]">
                 <button
                   onClick={() => setAnimPaused(p=>!p)}
@@ -2377,10 +2431,13 @@ function Card({ children }: { children: React.ReactNode }) {
 }
 
 interface VariantCardProps { v: { id:string; file:string; label:string }; active: boolean; onSelect: () => void; eager?: boolean; }
-function VariantCard({ v, active, onSelect, eager }: VariantCardProps) {
+function VariantCard({ v, active, onSelect }: VariantCardProps) {
   const [hover, setHover] = React.useState(false);
-  // Only mount 3D when eager (first few) or hovered/active to reduce WebGL contexts.
-  const show3D = eager || hover || active;
+  // Mount the live 3D thumbnail ONLY when hovered or active. Each VariantPreview is
+  // its own WebGL context; rendering one per card (there can be a dozen per tab)
+  // exhausts the browser's ~16-context limit, which blanks the thumbnails AND the
+  // main avatar preview (shared limit) and can cascade into a frozen creator UI.
+  const show3D = hover || active;
   return (
     <button
       onClick={onSelect}

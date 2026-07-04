@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "npm exec tsc -- -b && npm exec vite -- build",
+    "build": "npm exec tsc -- -p tsconfig.json --noEmit && npm exec vite -- build",
     "preview": "vite preview",
     "preview:1002": "vite preview --port 1002 --strictPort",
     "build:firebase": "npm run build",

@@ -2,6 +2,7 @@ import React, { Suspense, useEffect, useMemo, useRef, useState } from 'react';
 import { Canvas, useThree, useFrame } from '@react-three/fiber';
 import { useGLTF } from '@react-three/drei';
 import * as THREE from 'three';
+import { clone as skeletonClone } from 'three/examples/jsm/utils/SkeletonUtils.js';
 
 /** Lightweight 3D thumbnail preview for a single variant GLB.
  * Performance considerations:
@@ -12,9 +13,10 @@ import * as THREE from 'three';
  */
 export function VariantPreview({ file }: { file: string }) {
   const path = `/assets/3d/${file}`;
-  const [hover, setHover] = useState(false);
+  const hover = true; // parent only mounts this while the card is hovered/active
   return (
-    <div className="absolute inset-0" onMouseEnter={()=>setHover(true)} onMouseLeave={()=>setHover(false)}>
+    // pointer-events-none so the thumbnail canvas never swallows the card's click.
+    <div className="absolute inset-0 pointer-events-none">
       <Canvas shadows={false} dpr={0.9} camera={{ position: [0.9, 0.9, 0.9], fov: 34 }}>
         <ambientLight intensity={0.85} />
         <directionalLight position={[1.2,2,2]} intensity={0.65} />
@@ -42,7 +44,7 @@ function Rotator({ children, speedBase, speedHover, hover }: { children: React.R
 function FitModel({ url }: { url: string }) {
   const group = useRef<THREE.Group>(null);
   const { scene } = useGLTF(url) as any;
-  const clone = useMemo(()=>scene.clone(true), [scene]);
+  const clone = useMemo(()=>skeletonClone(scene), [scene]); // skinned meshes need SkeletonUtils.clone
   const { invalidate } = useThree();
 
   // Fit & center once

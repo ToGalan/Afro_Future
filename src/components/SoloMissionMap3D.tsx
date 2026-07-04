@@ -8,6 +8,7 @@ import * as THREE from 'three';
 import { Canvas, useThree, useFrame } from '@react-three/fiber';
 import { OrbitControls, Text, Sky, ContactShadows } from '@react-three/drei';
 import { GameAvatar, type AvatarColors } from './GameAvatarMesh';
+import { resolveHeroModel } from '../config/heroModels';
 import { IsometricCharacter } from './IsometricCharacter';
 import type { Archetype, CharacterLoadout } from '../types/loadout';
 import { GameHUD, type MinimapData, type Ability, type Item } from './gameHUD';
@@ -624,34 +625,11 @@ function GrassCluster({ size, seed = 1 }: { size: number; seed?: number }) {
 // Collectible healing flower for pet - renders with glow effect
 function CollectibleFlower({ size }: { size: number }) {
   const S = size * 0.7; // 0.7x size for visibility
-  // Shimmer animation for glow effect
-  const glowRef = React.useRef<THREE.Mesh>(null);
-  useFrame(({ clock }) => {
-    if (!glowRef.current) return;
-    const t = clock.getElapsedTime();
-    const glow = 0.6 + 0.4 * Math.sin(t * 3);
-    (glowRef.current.material as any).emissiveIntensity = glow;
-  });
-  
   const petalColor = '#ff6b9d';
   const stemColor = '#2d8659';
   
   return (
     <group>
-      {/* Glowing aura behind flower */}
-      <mesh ref={glowRef} position={[0, S * 0.25, 0]} renderOrder={19}>
-        <sphereGeometry args={[S * 0.35, 8, 8]} />
-        <meshStandardMaterial 
-          color="#ff6b9d" 
-          emissive="#ff6b9d"
-          emissiveIntensity={0.7}
-          transparent 
-          opacity={0.3}
-          depthWrite={false}
-          roughness={0.8}
-          metalness={0}
-        />
-      </mesh>
       {/* Petals and stem - rest of component */}
       {/* Stem */}
       <mesh position={[0, S * 0.18, 0]} castShadow>
@@ -1178,6 +1156,158 @@ function HexTile({ t, size, onClick, onHover }: { t: Tile; size: number; onClick
   );
 }
 
+/** Animated isometric cat pet with leg & tail walk cycle */
+function IsometricPet({ ps, isMoving }: { ps: number; isMoving: boolean }) {
+  const flRef = React.useRef<THREE.Mesh>(null);  // front-left leg
+  const frRef = React.useRef<THREE.Mesh>(null);  // front-right leg
+  const blRef = React.useRef<THREE.Mesh>(null);  // back-left leg
+  const brRef = React.useRef<THREE.Mesh>(null);  // back-right leg
+  const tailRef = React.useRef<THREE.Mesh>(null); // tail cylinder
+  const tipRef = React.useRef<THREE.Mesh>(null);  // tail tip
+  const timeRef = React.useRef(0);
+
+  // Base positions (rest pose)
+  const flBase = [-ps * 0.32, ps * 0.38, ps * 0.28] as const;
+  const frBase = [ps * 0.32, ps * 0.38, ps * 0.28] as const;
+  const blBase = [-ps * 0.36, ps * 0.38, -ps * 0.24] as const;
+  const brBase = [ps * 0.36, ps * 0.38, -ps * 0.24] as const;
+
+  useFrame((_, delta) => {
+    timeRef.current += delta;
+    const t = timeRef.current;
+
+    if (isMoving) {
+      const freq = 10.0;
+      const phase = t * freq;
+      const legSwing = Math.sin(phase) * ps * 0.18;
+      const tailSwing = Math.sin(phase * 1.5) * 0.6;
+
+      // Front legs alternate with back legs (diagonal gait)
+      if (flRef.current) flRef.current.position.z = flBase[2] + legSwing;
+      if (brRef.current) brRef.current.position.z = brBase[2] + legSwing;
+      if (frRef.current) frRef.current.position.z = frBase[2] - legSwing;
+      if (blRef.current) blRef.current.position.z = blBase[2] - legSwing;
+
+      // Tail wag
+      if (tailRef.current) tailRef.current.rotation.z = 0.1 + tailSwing;
+      if (tipRef.current) tipRef.current.position.x = -ps * 0.14 + Math.sin(phase * 1.5) * ps * 0.15;
+    } else {
+      // Snap to rest instantly
+      if (flRef.current) flRef.current.position.z = flBase[2];
+      if (frRef.current) frRef.current.position.z = frBase[2];
+      if (blRef.current) blRef.current.position.z = blBase[2];
+      if (brRef.current) brRef.current.position.z = brBase[2];
+      if (tailRef.current) tailRef.current.rotation.z = 0.1;
+      if (tipRef.current) tipRef.current.position.x = -ps * 0.14;
+    }
+  });
+
+  return (
+    <group frustumCulled={false}>
+      {/* Drop shadow */}
+      <mesh rotation={[-Math.PI/2, 0, 0]} position={[0, 0.01, 0]} frustumCulled={false}>
+        <circleGeometry args={[ps * 0.85, 20]} />
+        <meshBasicMaterial color="#000" transparent opacity={0.18} depthWrite={false} />
+      </mesh>
+      {/* Body */}
+      <mesh position={[0, ps * 0.72, 0]} castShadow frustumCulled={false}>
+        <sphereGeometry args={[ps * 0.62, 14, 10]} />
+        <meshStandardMaterial color="#f5c97a" roughness={0.6} />
+      </mesh>
+      {/* Belly patch */}
+      <mesh position={[0, ps * 0.68, ps * 0.48]} frustumCulled={false}>
+        <sphereGeometry args={[ps * 0.36, 10, 8]} />
+        <meshStandardMaterial color="#fdecc8" roughness={0.7} />
+      </mesh>
+      {/* Head */}
+      <mesh position={[0, ps * 1.5, 0]} castShadow frustumCulled={false}>
+        <sphereGeometry args={[ps * 0.72, 16, 12]} />
+        <meshStandardMaterial color="#f5c97a" roughness={0.6} />
+      </mesh>
+      {/* Muzzle */}
+      <mesh position={[0, ps * 1.42, ps * 0.56]} frustumCulled={false}>
+        <sphereGeometry args={[ps * 0.28, 10, 8]} />
+        <meshStandardMaterial color="#fdecc8" roughness={0.7} />
+      </mesh>
+      {/* Nose */}
+      <mesh position={[0, ps * 1.52, ps * 0.8]} frustumCulled={false}>
+        <sphereGeometry args={[ps * 0.08, 8, 6]} />
+        <meshStandardMaterial color="#e07090" roughness={0.4} />
+      </mesh>
+      {/* Left eye */}
+      <mesh position={[-ps * 0.28, ps * 1.64, ps * 0.56]} frustumCulled={false}>
+        <sphereGeometry args={[ps * 0.14, 10, 8]} />
+        <meshStandardMaterial color="#1a1a2e" roughness={0.3} />
+      </mesh>
+      {/* Left eye shine */}
+      <mesh position={[-ps * 0.24, ps * 1.68, ps * 0.67]} frustumCulled={false}>
+        <sphereGeometry args={[ps * 0.05, 6, 6]} />
+        <meshBasicMaterial color="white" />
+      </mesh>
+      {/* Right eye */}
+      <mesh position={[ps * 0.28, ps * 1.64, ps * 0.56]} frustumCulled={false}>
+        <sphereGeometry args={[ps * 0.14, 10, 8]} />
+        <meshStandardMaterial color="#1a1a2e" roughness={0.3} />
+      </mesh>
+      {/* Right eye shine */}
+      <mesh position={[ps * 0.24, ps * 1.68, ps * 0.67]} frustumCulled={false}>
+        <sphereGeometry args={[ps * 0.05, 6, 6]} />
+        <meshBasicMaterial color="white" />
+      </mesh>
+      {/* Left ear */}
+      <mesh position={[-ps * 0.48, ps * 2.18, 0]} rotation={[0, 0, -0.35]} frustumCulled={false}>
+        <coneGeometry args={[ps * 0.22, ps * 0.52, 8]} />
+        <meshStandardMaterial color="#f5c97a" roughness={0.6} />
+      </mesh>
+      {/* Left ear inner */}
+      <mesh position={[-ps * 0.44, ps * 2.18, ps * 0.06]} rotation={[0, 0, -0.35]} frustumCulled={false}>
+        <coneGeometry args={[ps * 0.12, ps * 0.34, 8]} />
+        <meshStandardMaterial color="#f0a0b0" roughness={0.5} />
+      </mesh>
+      {/* Right ear */}
+      <mesh position={[ps * 0.48, ps * 2.18, 0]} rotation={[0, 0, 0.35]} frustumCulled={false}>
+        <coneGeometry args={[ps * 0.22, ps * 0.52, 8]} />
+        <meshStandardMaterial color="#f5c97a" roughness={0.6} />
+      </mesh>
+      {/* Right ear inner */}
+      <mesh position={[ps * 0.44, ps * 2.18, ps * 0.06]} rotation={[0, 0, 0.35]} frustumCulled={false}>
+        <coneGeometry args={[ps * 0.12, ps * 0.34, 8]} />
+        <meshStandardMaterial color="#f0a0b0" roughness={0.5} />
+      </mesh>
+      {/* Front left leg */}
+      <mesh ref={flRef} position={[flBase[0], flBase[1], flBase[2]]} castShadow frustumCulled={false}>
+        <cylinderGeometry args={[ps * 0.13, ps * 0.14, ps * 0.45, 8]} />
+        <meshStandardMaterial color="#f5c97a" roughness={0.6} />
+      </mesh>
+      {/* Front right leg */}
+      <mesh ref={frRef} position={[frBase[0], frBase[1], frBase[2]]} castShadow frustumCulled={false}>
+        <cylinderGeometry args={[ps * 0.13, ps * 0.14, ps * 0.45, 8]} />
+        <meshStandardMaterial color="#f5c97a" roughness={0.6} />
+      </mesh>
+      {/* Back left leg */}
+      <mesh ref={blRef} position={[blBase[0], blBase[1], blBase[2]]} castShadow frustumCulled={false}>
+        <cylinderGeometry args={[ps * 0.13, ps * 0.14, ps * 0.42, 8]} />
+        <meshStandardMaterial color="#f5c97a" roughness={0.6} />
+      </mesh>
+      {/* Back right leg */}
+      <mesh ref={brRef} position={[brBase[0], brBase[1], brBase[2]]} castShadow frustumCulled={false}>
+        <cylinderGeometry args={[ps * 0.13, ps * 0.14, ps * 0.42, 8]} />
+        <meshStandardMaterial color="#f5c97a" roughness={0.6} />
+      </mesh>
+      {/* Tail */}
+      <mesh ref={tailRef} position={[-ps * 0.1, ps * 0.9, -ps * 0.62]} rotation={[0.7, 0.3, 0.1]} frustumCulled={false}>
+        <cylinderGeometry args={[ps * 0.08, ps * 0.12, ps * 0.8, 8]} />
+        <meshStandardMaterial color="#f5a040" roughness={0.5} />
+      </mesh>
+      {/* Tail tip */}
+      <mesh ref={tipRef} position={[-ps * 0.14, ps * 1.3, -ps * 0.9]} frustumCulled={false}>
+        <sphereGeometry args={[ps * 0.16, 8, 8]} />
+        <meshStandardMaterial color="#fff5e0" roughness={0.5} />
+      </mesh>
+    </group>
+  );
+}
+
 export default function SoloMissionMap3D({ 
   onExit, 
   onMapUpdate, 
@@ -1365,6 +1495,9 @@ export default function SoloMissionMap3D({
     { id: 'shield', icon: '🛡️', key: 'E', cooldown: 0, maxCooldown: 8 },
     { id: 'heal', icon: '💚', key: 'R', cooldown: 0, maxCooldown: 10 },
   ]);
+  // Stable ref so the keydown closure always reads current slots without going in the dep array
+  const abilitySlotsRef = React.useRef(abilitySlots);
+  abilitySlotsRef.current = abilitySlots;
 
   // Update abilities when external ones change (from skilltree)
   React.useEffect(() => {
@@ -1376,9 +1509,12 @@ export default function SoloMissionMap3D({
   // Ability cooldown countdown (1 second intervals)
   React.useEffect(() => {
     const interval = setInterval(() => {
-      setAbilitySlots(prev => prev.map(ability =>
-        (ability.cooldown ?? 0) > 0 ? { ...ability, cooldown: Math.max(0, (ability.cooldown ?? 0) - 1) } : ability
-      ));
+      setAbilitySlots(prev => {
+        if (!prev.some(a => (a.cooldown ?? 0) > 0)) return prev; // preserve reference when nothing to tick
+        return prev.map(ability =>
+          (ability.cooldown ?? 0) > 0 ? { ...ability, cooldown: Math.max(0, (ability.cooldown ?? 0) - 1) } : ability
+        );
+      });
     }, 1000);
     return () => clearInterval(interval);
   }, []);
@@ -1531,6 +1667,49 @@ export default function SoloMissionMap3D({
   // World position of hero (for camera recentering)
   const heroWorld = useMemo(() => axialToWorld(hero.pos, hexSize), [hero.pos.q, hero.pos.r, hexSize]);
 
+  // Movement tracking for IsometricCharacter walk animation
+  const prevHeroWorldRef = React.useRef<{ x: number; z: number } | null>(null);
+  const [heroFacingAngle, setHeroFacingAngle] = React.useState(0);
+  const [isHeroMoving, setIsHeroMoving] = React.useState(false);
+  const heroMovingTimerRef = React.useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // Pet facing angle tracking
+  const prevPetWorldRef = React.useRef<{ x: number; z: number } | null>(null);
+  const [petFacingAngle, setPetFacingAngle] = React.useState(0);
+  const [isPetMoving, setIsPetMoving] = React.useState(false);
+  const petMovingTimerRef = React.useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  React.useEffect(() => {
+    const prev = prevHeroWorldRef.current;
+    if (prev) {
+      const dx = heroWorld.x - prev.x;
+      const dz = heroWorld.z - prev.z;
+      if (Math.abs(dx) > 0.01 || Math.abs(dz) > 0.01) {
+        setHeroFacingAngle(Math.atan2(dx, dz));
+        setIsHeroMoving(true);
+        if (heroMovingTimerRef.current) clearTimeout(heroMovingTimerRef.current);
+        heroMovingTimerRef.current = setTimeout(() => setIsHeroMoving(false), 200);
+      }
+    }
+    prevHeroWorldRef.current = { x: heroWorld.x, z: heroWorld.z };
+  }, [heroWorld]);
+
+  React.useEffect(() => {
+    const pw = axialToWorld(pet.pos, hexSize);
+    const prev = prevPetWorldRef.current;
+    if (prev) {
+      const dx = pw.x - prev.x;
+      const dz = pw.z - prev.z;
+      if (Math.abs(dx) > 0.01 || Math.abs(dz) > 0.01) {
+        setPetFacingAngle(Math.atan2(dx, dz));
+        setIsPetMoving(true);
+        if (petMovingTimerRef.current) clearTimeout(petMovingTimerRef.current);
+        petMovingTimerRef.current = setTimeout(() => setIsPetMoving(false), 250);
+      }
+    }
+    prevPetWorldRef.current = { x: pw.x, z: pw.z };
+  }, [pet.pos.q, pet.pos.r, hexSize]);
+
   // Log actor positions for debugging
   useEffect(() => {
     const petWorld = axialToWorld(pet.pos, hexSize);
@@ -1581,7 +1760,8 @@ export default function SoloMissionMap3D({
         skin:      (tc?.colors as any)?.skin || fd.skin,
       };
       const parts = (tc?.parts || {}) as Record<string, string | undefined>;
-      const modelUrl = (tc as any)?.modelUrl as string | undefined;
+      // Explicit per-loadout GLB wins; otherwise fall back to the faction/gender hero model.
+      const modelUrl = ((tc as any)?.modelUrl as string | undefined) ?? resolveHeroModel(faction, archetype);
       return { parts, colors, archetype, faction, modelUrl };
     }
 
@@ -1591,7 +1771,7 @@ export default function SoloMissionMap3D({
     const fpAvatar = (profile as any)?.progress?.avatar;
     return {
       parts: (fpAvatar?.parts || {}) as Record<string, string | undefined>,
-      modelUrl: undefined as string | undefined,
+      modelUrl: resolveHeroModel(fpFaction, 'FEMALE') as string | undefined,
       colors: {
         primary:   fpAvatar?.colors?.primary   || fd.primary,
         secondary: fpAvatar?.colors?.secondary || fd.secondary,
@@ -1606,7 +1786,7 @@ export default function SoloMissionMap3D({
   const heroGender   = avatarData.archetype;
   const heroParts    = avatarData.parts;
   const heroColors   = avatarData.colors;
-
+  const heroFaction  = avatarData.faction;
   // avatarReady: always true since IsometricCharacter is procedural (no async loading).
   // Only reset briefly when a custom GLB modelUrl changes to avoid stale-model flash.
   const [avatarReady, setAvatarReady] = useState(true);
@@ -1846,7 +2026,7 @@ export default function SoloMissionMap3D({
       if (abilityMap[k]) {
         if (e.repeat) return;
         const slotKey = abilityMap[k].toUpperCase();
-        const ability = abilitySlots.find(a => a.key === slotKey);
+        const ability = abilitySlotsRef.current.find(a => a.key === slotKey);
         if (ability && ability.cooldown === 0) {
           console.log(`[Ability] Activated ${ability.id} (${ability.icon})`);
           // Trigger cooldown
@@ -1880,7 +2060,7 @@ export default function SoloMissionMap3D({
     window.addEventListener('keydown', onKey);
     window.addEventListener('keyup', onKeyUp);
     return () => { window.removeEventListener('keydown', onKey); window.removeEventListener('keyup', onKeyUp); };
-  }, [tilesByKey, saveProgress, profile?.progress?.hero?.xp, profile?.progress?.hero?.level, abilitySlots, setAbilitySlots, setCollisionMessage, updateHeroPosition, petXPSystem.gainXPOnMove, handleItemUse]);
+  }, [tilesByKey, saveProgress, setAbilitySlots, setCollisionMessage, updateHeroPosition, petXPSystem.gainXPOnMove, handleItemUse]);
   // endTurn logic removed (turn system disabled)
 
   // Keyboard hex movement (pointy axial layout with q,r; adapt to 6 neighbors)
@@ -2025,123 +2205,26 @@ export default function SoloMissionMap3D({
                       group.position.set() + updateMatrix(), setting matrixWorldNeedsUpdate=true.
                       During gl.render → scene.updateMatrixWorld(), force=true cascades through
                       all descendants including GLB primitive nodes. */}
-                  {/* Default path: render IsometricCharacter directly (same approach as the pet)
-                      when no custom GLB/parts are loaded. Only use GameAvatar for custom assets. */}
+                  {/* Render the real GLTF avatar (a full hero GLB, or the modular parts
+                      assembled from public/assets/3d) whenever one is available. GameAvatar
+                      auto-fits it to game-map scale and foot-anchors it, and falls back to the
+                      procedural IsometricCharacter if nothing loads. Only when there is neither a
+                      model nor any parts do we use the procedural character directly. */}
                   {(heroModelUrl || Object.values(heroParts).some(Boolean)) ? (
                     avatarReady && (
                       <Suspense fallback={
-                        <IsometricCharacter gender={heroGender ?? 'FEMALE'} colors={heroColors} hexSize={hexSize} />
+                        <IsometricCharacter gender={heroGender ?? 'FEMALE'} colors={heroColors} hexSize={hexSize} faction={heroFaction} isMoving={isHeroMoving} facingAngle={heroFacingAngle} />
                       }>
-                        <GameAvatar heroModelUrl={heroModelUrl} heroParts={heroParts} heroColors={heroColors} hexSize={hexSize} gender={heroGender} />
+                        <GameAvatar heroModelUrl={heroModelUrl} heroParts={heroParts} heroColors={heroColors} hexSize={hexSize} gender={heroGender} isMoving={isHeroMoving} facingAngle={heroFacingAngle} />
                       </Suspense>
                     )
                   ) : (
-                    <IsometricCharacter gender={heroGender ?? 'FEMALE'} colors={heroColors} hexSize={hexSize} />
+                    <IsometricCharacter gender={heroGender ?? 'FEMALE'} colors={heroColors} hexSize={hexSize} faction={heroFaction} isMoving={isHeroMoving} facingAngle={heroFacingAngle} />
                   )}
                 </group>
                 {(() => { const world = axialToWorld(pet.pos, hexSize); const ps = hexSize * 0.32; return (
-                  <group key={pet.id} position={[world.x, 0.48, world.z]} frustumCulled={false}>
-                    {/* ── Isometric cat Pokemon-style pet ── */}
-                    {/* Drop shadow */}
-                    <mesh rotation={[-Math.PI/2, 0, 0]} position={[0, 0.01, 0]} frustumCulled={false}>
-                      <circleGeometry args={[ps * 0.85, 20]} />
-                      <meshBasicMaterial color="#000" transparent opacity={0.18} depthWrite={false} />
-                    </mesh>
-                    {/* Body */}
-                    <mesh position={[0, ps * 0.72, 0]} castShadow frustumCulled={false}>
-                      <sphereGeometry args={[ps * 0.62, 14, 10]} />
-                      <meshStandardMaterial color="#f5c97a" roughness={0.6} />
-                    </mesh>
-                    {/* Belly patch */}
-                    <mesh position={[0, ps * 0.68, ps * 0.48]} frustumCulled={false}>
-                      <sphereGeometry args={[ps * 0.36, 10, 8]} />
-                      <meshStandardMaterial color="#fdecc8" roughness={0.7} />
-                    </mesh>
-                    {/* Head — large sphere (big-head Pokemon ratio) */}
-                    <mesh position={[0, ps * 1.5, 0]} castShadow frustumCulled={false}>
-                      <sphereGeometry args={[ps * 0.72, 16, 12]} />
-                      <meshStandardMaterial color="#f5c97a" roughness={0.6} />
-                    </mesh>
-                    {/* Muzzle */}
-                    <mesh position={[0, ps * 1.42, ps * 0.56]} frustumCulled={false}>
-                      <sphereGeometry args={[ps * 0.28, 10, 8]} />
-                      <meshStandardMaterial color="#fdecc8" roughness={0.7} />
-                    </mesh>
-                    {/* Nose */}
-                    <mesh position={[0, ps * 1.52, ps * 0.8]} frustumCulled={false}>
-                      <sphereGeometry args={[ps * 0.08, 8, 6]} />
-                      <meshStandardMaterial color="#e07090" roughness={0.4} />
-                    </mesh>
-                    {/* Left eye */}
-                    <mesh position={[-ps * 0.28, ps * 1.64, ps * 0.56]} frustumCulled={false}>
-                      <sphereGeometry args={[ps * 0.14, 10, 8]} />
-                      <meshStandardMaterial color="#1a1a2e" roughness={0.3} />
-                    </mesh>
-                    {/* Left eye shine */}
-                    <mesh position={[-ps * 0.24, ps * 1.68, ps * 0.67]} frustumCulled={false}>
-                      <sphereGeometry args={[ps * 0.05, 6, 6]} />
-                      <meshBasicMaterial color="white" />
-                    </mesh>
-                    {/* Right eye */}
-                    <mesh position={[ps * 0.28, ps * 1.64, ps * 0.56]} frustumCulled={false}>
-                      <sphereGeometry args={[ps * 0.14, 10, 8]} />
-                      <meshStandardMaterial color="#1a1a2e" roughness={0.3} />
-                    </mesh>
-                    {/* Right eye shine */}
-                    <mesh position={[ps * 0.24, ps * 1.68, ps * 0.67]} frustumCulled={false}>
-                      <sphereGeometry args={[ps * 0.05, 6, 6]} />
-                      <meshBasicMaterial color="white" />
-                    </mesh>
-                    {/* Left ear — pointy cone */}
-                    <mesh position={[-ps * 0.48, ps * 2.18, 0]} rotation={[0, 0, -0.35]} frustumCulled={false}>
-                      <coneGeometry args={[ps * 0.22, ps * 0.52, 8]} />
-                      <meshStandardMaterial color="#f5c97a" roughness={0.6} />
-                    </mesh>
-                    {/* Left ear inner */}
-                    <mesh position={[-ps * 0.44, ps * 2.18, ps * 0.06]} rotation={[0, 0, -0.35]} frustumCulled={false}>
-                      <coneGeometry args={[ps * 0.12, ps * 0.34, 8]} />
-                      <meshStandardMaterial color="#f0a0b0" roughness={0.5} />
-                    </mesh>
-                    {/* Right ear */}
-                    <mesh position={[ps * 0.48, ps * 2.18, 0]} rotation={[0, 0, 0.35]} frustumCulled={false}>
-                      <coneGeometry args={[ps * 0.22, ps * 0.52, 8]} />
-                      <meshStandardMaterial color="#f5c97a" roughness={0.6} />
-                    </mesh>
-                    {/* Right ear inner */}
-                    <mesh position={[ps * 0.44, ps * 2.18, ps * 0.06]} rotation={[0, 0, 0.35]} frustumCulled={false}>
-                      <coneGeometry args={[ps * 0.12, ps * 0.34, 8]} />
-                      <meshStandardMaterial color="#f0a0b0" roughness={0.5} />
-                    </mesh>
-                    {/* Front left leg */}
-                    <mesh position={[-ps * 0.32, ps * 0.38, ps * 0.28]} castShadow frustumCulled={false}>
-                      <cylinderGeometry args={[ps * 0.13, ps * 0.14, ps * 0.45, 8]} />
-                      <meshStandardMaterial color="#f5c97a" roughness={0.6} />
-                    </mesh>
-                    {/* Front right leg */}
-                    <mesh position={[ps * 0.32, ps * 0.38, ps * 0.28]} castShadow frustumCulled={false}>
-                      <cylinderGeometry args={[ps * 0.13, ps * 0.14, ps * 0.45, 8]} />
-                      <meshStandardMaterial color="#f5c97a" roughness={0.6} />
-                    </mesh>
-                    {/* Back left leg */}
-                    <mesh position={[-ps * 0.36, ps * 0.38, -ps * 0.24]} castShadow frustumCulled={false}>
-                      <cylinderGeometry args={[ps * 0.13, ps * 0.14, ps * 0.42, 8]} />
-                      <meshStandardMaterial color="#f5c97a" roughness={0.6} />
-                    </mesh>
-                    {/* Back right leg */}
-                    <mesh position={[ps * 0.36, ps * 0.38, -ps * 0.24]} castShadow frustumCulled={false}>
-                      <cylinderGeometry args={[ps * 0.13, ps * 0.14, ps * 0.42, 8]} />
-                      <meshStandardMaterial color="#f5c97a" roughness={0.6} />
-                    </mesh>
-                    {/* Tail — angled cylinder */}
-                    <mesh position={[-ps * 0.1, ps * 0.9, -ps * 0.62]} rotation={[0.7, 0.3, 0.1]} frustumCulled={false}>
-                      <cylinderGeometry args={[ps * 0.08, ps * 0.12, ps * 0.8, 8]} />
-                      <meshStandardMaterial color="#f5a040" roughness={0.5} />
-                    </mesh>
-                    {/* Tail tip */}
-                    <mesh position={[-ps * 0.14, ps * 1.3, -ps * 0.9]} frustumCulled={false}>
-                      <sphereGeometry args={[ps * 0.16, 8, 8]} />
-                      <meshStandardMaterial color="#fff5e0" roughness={0.5} />
-                    </mesh>
+                  <group key={pet.id} position={[world.x, 0.48, world.z]} rotation={[0, petFacingAngle, 0]} frustumCulled={false}>
+                    <IsometricPet ps={ps} isMoving={isPetMoving} />
                     {/* Name label */}
                     <Text position={[0, ps * 3.1, 0]} fontSize={ps * 0.55} color="#fff" anchorX="center" anchorY="middle">Pet</Text>
                   </group> ); })()}

@@ -16,6 +16,7 @@
 
 import { useState, useEffect, useRef, useCallback } from 'react';
 import type { PlayerProfile } from '../types/player';
+import { getLevelFromXp } from '../services/playerExpEconomy';
 
 // ── Shared tile shape (subset of SoloMissionMap3D's Tile) ───────────────────
 type TileType = 'water' | 'desert' | 'plains' | 'forest' | 'jungle' | 'hills' | 'mountain';
@@ -249,8 +250,21 @@ export function useCollectibles({
           setNearbyMushroom(null);
         }
 
+        // Advance level from the new XP total, and carry forward the EXISTING skill
+        // data (traits/unlockedSkillIds/unlockOrder). Previously these were sent as
+        // empty arrays, which mergeProgress shallow-merged over the real values —
+        // wiping the player's skill progression on every pickup.
+        const newXp = heroXp + 5;
+        const newLevel = Math.max(heroLevel, getLevelFromXp(newXp));
         saveProgressRef.current({
-          hero: { xp: heroXp + 5, level: heroLevel, traits: [], unlockedSkillIds: [], unlockOrder: [] },
+          hero: {
+            traits: prof?.progress?.hero?.traits ?? [],
+            unlockedSkillIds: prof?.progress?.hero?.unlockedSkillIds ?? [],
+            unlockOrder: prof?.progress?.hero?.unlockOrder ?? [],
+            ...prof?.progress?.hero,
+            xp: newXp,
+            level: newLevel,
+          },
         });
         setCollectingProgress(0);
       };

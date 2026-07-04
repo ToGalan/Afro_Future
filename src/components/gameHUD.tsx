@@ -210,15 +210,6 @@ const Slot = React.memo(function Slot({ icon = '', hotkey, qty, cooldown, maxCoo
   );
 });
 
-const StatPill = React.memo(function StatPill({ label, value }: { label: string; value: string | number }) {
-  return (
-    <div className="px-3 py-1.5 rounded-lg bg-white/5 ring-1 ring-white/10 text-sm flex items-center gap-2">
-      <span className="opacity-55 text-xs uppercase tracking-wide">{label}</span>
-      <span className="font-bold tabular-nums text-sm">{value}</span>
-    </div>
-  );
-});
-
 const AB_KEYS = ['Q', 'W', 'E', 'R'];
 const IT_KEYS = ['1', '2', '3', '4', '5', '6', '7', '8'];
 
@@ -253,13 +244,10 @@ export const GameHUD: React.FC<GameHUDProps> = ({
   }, []);
 
   let shardsValue: number | undefined;
-  const filteredResources = resources.filter(r => {
+  resources.forEach(r => {
     const id = (r.id || '').toLowerCase();
     const label = (r.label || '').toLowerCase();
-    if (!label) return false;
-    if (id === 'shards' || label === 'shards') { shardsValue = r.value; return false; }
-    if (id.includes('skill') || id.includes('token') || label.includes('skill') || label.includes('token')) return false;
-    return true;
+    if (id === 'shards' || label === 'shards') shardsValue = r.value;
   });
 
   const offensiveSlots = abilities.slice(0, 4);
@@ -272,50 +260,6 @@ export const GameHUD: React.FC<GameHUDProps> = ({
 
   return (
     <div className="pointer-events-none text-white select-none font-sans">
-
-      {/* ══════════════════ TOP BAR ══════════════════════════════════════════ */}
-      <div className="fixed top-0 left-0 right-0 flex items-center justify-center pt-2 sm:pt-3 z-40 pointer-events-none">
-        <div className={`flex items-center gap-2 sm:gap-5 ${panelCls} rounded-xl px-2 sm:px-5 py-1.5 sm:py-2.5 shadow-xl pointer-events-auto max-w-[calc(100vw-1rem)] overflow-x-auto`}>
-          <span className="font-semibold text-xs sm:text-sm tracking-wide opacity-75 shrink-0">{team}</span>
-
-          {/* Scoreline */}
-          <div className="flex items-center gap-2 sm:gap-3 shrink-0">
-            <span className="font-extrabold text-emerald-300 text-sm sm:text-lg tabular-nums">{score.radiant}</span>
-            <span className="text-white/30 text-xs">vs</span>
-            <span className="font-extrabold text-rose-300 text-sm sm:text-lg tabular-nums">{score.dire}</span>
-          </div>
-
-          {/* Clock */}
-          <div className="font-mono font-bold text-sm sm:text-base tracking-widest px-2 sm:px-3 py-0.5 sm:py-1 bg-black/30 rounded-lg tabular-nums shrink-0">{clock}</div>
-
-          {/* Tokens */}
-          <div className="hidden sm:flex items-center gap-2">
-            <StatPill label="Shards" value={typeof shardsValue === 'number' ? shardsValue : 0} />
-            <StatPill label="Skill" value={skillTokens} />
-          </div>
-
-          {/* Menu trigger */}
-          <button
-            onClick={() => setMenuOpen(o => !o)}
-            className="ml-1 px-2 sm:px-4 py-1 sm:py-1.5 rounded-lg bg-white/5 hover:bg-white/10 ring-1 ring-white/10 text-xs sm:text-sm font-semibold transition pointer-events-auto shrink-0"
-          >≡ Menu</button>
-        </div>
-      </div>
-
-      {/* Resources — top right, offset below the top bar so they don't overlap */}
-      {!!filteredResources.length && (
-        <div className={`fixed top-12 sm:top-14 right-4 ${panelCls} rounded-xl px-3 py-2 pointer-events-auto z-40`}>
-          <div className="flex items-center gap-2 flex-wrap max-w-[500px] justify-end">
-            {filteredResources.map(r => (
-              <div key={r.id} className="px-2.5 py-1.5 rounded-lg bg-white/5 ring-1 ring-white/8 text-sm flex items-center gap-1.5">
-                <span>{r.icon || '◈'}</span>
-                <span className="opacity-55 text-xs">{r.label}</span>
-                <span className="font-bold tabular-nums">{r.value}</span>
-              </div>
-            ))}
-          </div>
-        </div>
-      )}
 
       {/* ══════════════════ BOTTOM HUD BAR — full width, Dota 2 style ════════ */}
       {/*

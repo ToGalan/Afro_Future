@@ -1,19 +1,12 @@
 /**
- * IsometricCharacter — Standalone procedural Pokémon/chibi-style 3D player character.
+ * IsometricCharacter — Faction-aware Pokémon/chibi-style 3D player character.
+ * Six distinct designs: PAA / ASF / WC × MALE / FEMALE.
  *
- * Built entirely from Three.js primitives (no GLTF dependency).
- * Drop-in replacement for the placeholder pink wireframe box in GameAvatarMesh.
+ * All meshes use inline <meshStandardMaterial> children (NOT material={} prop) for
+ * reliable R3F 8.x rendering. Pre-created materials via the material prop are silently
+ * ignored in some R3F versions; inline children are always attached correctly.
  *
- * Features:
- *  • Male / Female variants (different hair geometry)
- *  • Fully colour-customisable (skin, primary outfit, secondary trim)
- *  • Smooth idle bob animation via useFrame
- *  • Faction-aware skin tones via `skinColor` prop
- *  • Accepts optional `modelUrl` — if provided, defers rendering to the GLTF branch;
- *    this file's geometry is the fallback until real assets are supplied.
- *
- * Usage:
- *   <IsometricCharacter gender="FEMALE" colors={heroColors} hexSize={hexSize} />
+ * Limbs use hip/shoulder pivot groups for walk-cycle animation.
  */
 
 import React, { useRef } from 'react';
@@ -22,250 +15,613 @@ import * as THREE from 'three';
 import type { AvatarColors } from '../services/avatarConfig';
 import type { Archetype } from '../types/loadout';
 
-/** Alias of Archetype — CharacterGender kept for legacy import compatibility. */
 export type CharacterGender = Archetype;
 
 interface IsometricCharacterProps {
-  gender?: CharacterGender;
-  colors: AvatarColors;
-  hexSize: number;
-  /** When true, plays an idle bobbing animation. Default true. */
-  animated?: boolean;
+  gender?:      CharacterGender;
+  colors:       AvatarColors;
+  hexSize:      number;
+  faction?:     string;
+  /** Set true while the hero is moving — drives the walk cycle. */
+  isMoving?:    boolean;
+  /** Y-axis rotation (radians) toward movement direction. */
+  facingAngle?: number;
+  animated?:    boolean;
 }
 
-// ── Shared material cache — avoids creating new materials every render ─────
-function useMat(color: string, roughness = 0.6, metalness = 0.1) {
-  return React.useMemo(
-    () => new THREE.MeshStandardMaterial({ color, roughness, metalness }),
-    [color, roughness, metalness],
+function darken(hex: string, amount: number): string {
+  try {
+    const c = new THREE.Color(hex);
+    c.r = Math.max(0, c.r - amount);
+    c.g = Math.max(0, c.g - amount);
+    c.b = Math.max(0, c.b - amount);
+    return '#' + c.getHexString();
+  } catch { return hex; }
+}
+
+// ─── Eyes — no spectacles, eyebrows instead ────────────────────────────────
+function Eyes({ headR }: { headR: number }) {
+  const sr = headR * 0.21;
+  const ex = headR * 0.34;
+  const ey = headR * 0.10;
+  // Center inside the head so the sphere naturally pokes through the surface
+  const ez = headR * 0.80;
+
+  return (
+    <>
+      {([-1, 1] as const).map(side => (
+        <group key={side} position={[side * ex, ey, ez]} frustumCulled={false}>
+          {/* Kawaii iris — large dark sphere embedded in face */}
+          <mesh frustumCulled={false}>
+            <sphereGeometry args={[sr * 0.82, 12, 10]} />
+            <meshStandardMaterial color="#1a1a2e" roughness={0.25} metalness={0.05} />
+          </mesh>
+          {/* Pupil */}
+          <mesh position={[0, 0, sr * 0.58]} frustumCulled={false}>
+            <sphereGeometry args={[sr * 0.44, 10, 8]} />
+            <meshStandardMaterial color="#06060c" roughness={0.2} metalness={0} />
+          </mesh>
+          {/* Shine highlight */}
+          <mesh position={[side * -sr * 0.24, sr * 0.28, sr * 0.72]} frustumCulled={false}>
+            <sphereGeometry args={[sr * 0.17, 6, 6]} />
+            <meshBasicMaterial color="white" />
+          </mesh>
+          {/* Eyebrow */}
+          <mesh position={[0, sr * 1.08, sr * 0.55]} rotation={[0.28, 0, side * 0.12]} frustumCulled={false}>
+            <boxGeometry args={[sr * 1.1, sr * 0.17, sr * 0.1]} />
+            <meshStandardMaterial color="#151520" roughness={0.9} metalness={0} />
+          </mesh>
+        </group>
+      ))}
+    </>
   );
 }
 
-// ── Male hair: three spiky wedges on top of the head ──────────────────────
-function MaleHair({ r, primaryColor }: { r: number; primaryColor: string }) {
-  const mat = useMat(primaryColor, 0.8, 0.0);
-  const spikeH = r * 0.55;
-  const spikeR = r * 0.22;
-  const offsets: [number, number, number][] = [
-    [0, r * 0.92, 0],
-    [-r * 0.42, r * 0.74, 0],
-    [r * 0.42, r * 0.74, 0],
-  ];
-  const rotations: [number, number, number][] = [
-    [0, 0, 0],
-    [0, 0, 0.45],
-    [0, 0, -0.45],
-  ];
+// ─── PAA Male Hair: Flat top + gold headband ───────────────────────────────
+function PAAMaleHair({ headR, primary }: { headR: number; primary: string }) {
+  const hair = darken(primary, 0.14);
   return (
     <>
-      {offsets.map((pos, i) => (
-        <mesh key={i} position={pos} rotation={rotations[i]} material={mat}>
-          <coneGeometry args={[spikeR, spikeH, 5]} />
+      {/* Close-cropped sides */}
+      <mesh position={[0, headR * 0.1, 0]} frustumCulled={false}>
+        <sphereGeometry args={[headR * 1.03, 12, 8, 0, Math.PI * 2, 0, Math.PI * 0.44]} />
+        <meshStandardMaterial color={hair} roughness={0.95} metalness={0} />
+      </mesh>
+      {/* Flat top platform */}
+      <mesh position={[0, headR * 0.49, 0]} frustumCulled={false}>
+        <cylinderGeometry args={[headR * 0.82, headR * 0.9, headR * 0.1, 12]} />
+        <meshStandardMaterial color={hair} roughness={0.92} metalness={0} />
+      </mesh>
+    </>
+  );
+}
+
+// ─── PAA Female Hair: Ponytail + plaits + gold adornments ──────────────────
+function PAAFemaleHair({ headR, primary }: { headR: number; primary: string }) {
+  const hair = darken(primary, 0.14);
+  return (
+    <>
+      {/* Base hair cap */}
+      <mesh position={[0, headR * 0.14, 0]} frustumCulled={false}>
+        <sphereGeometry args={[headR * 1.04, 12, 8, 0, Math.PI * 2, 0, Math.PI * 0.5]} />
+        <meshStandardMaterial color={hair} roughness={0.95} metalness={0} />
+      </mesh>
+      {/* Ponytail gather */}
+      <mesh position={[0, headR * 0.66, -headR * 0.64]} rotation={[0.5, 0, 0]} frustumCulled={false}>
+        <sphereGeometry args={[headR * 0.28, 8, 6]} />
+        <meshStandardMaterial color={hair} roughness={0.95} metalness={0} />
+      </mesh>
+      {/* Ponytail shaft */}
+      <mesh position={[0, headR * 0.28, -headR * 1.1]} rotation={[0.6, 0, 0]} frustumCulled={false}>
+        <cylinderGeometry args={[headR * 0.18, headR * 0.1, headR * 0.9, 8]} />
+        <meshStandardMaterial color={hair} roughness={0.95} metalness={0} />
+      </mesh>
+      {/* Ponytail tip */}
+      <mesh position={[0, headR * 0.0, -headR * 1.6]} frustumCulled={false}>
+        <sphereGeometry args={[headR * 0.12, 6, 5]} />
+        <meshStandardMaterial color={hair} roughness={0.95} metalness={0} />
+      </mesh>
+      {/* Left plaits */}
+      {([0, 1, 2] as const).map(i => (
+        <mesh key={i} position={[-headR * 0.78, headR * (-0.08 - i * 0.32), headR * (0.34 - i * 0.1)]} rotation={[0.15, 0, 0.12]} frustumCulled={false}>
+          <cylinderGeometry args={[headR * 0.1, headR * 0.08, headR * 0.35, 5]} />
+          <meshStandardMaterial color={hair} roughness={0.9} metalness={0} />
+        </mesh>
+      ))}
+      {/* Right plaits */}
+      {([0, 1, 2] as const).map(i => (
+        <mesh key={i} position={[headR * 0.78, headR * (-0.08 - i * 0.32), headR * (0.34 - i * 0.1)]} rotation={[0.15, 0, -0.12]} frustumCulled={false}>
+          <cylinderGeometry args={[headR * 0.1, headR * 0.08, headR * 0.35, 5]} />
+          <meshStandardMaterial color={hair} roughness={0.9} metalness={0} />
         </mesh>
       ))}
     </>
   );
 }
 
-// ── Female hair: rounded buns on either side + larger top sphere ──────────
-function FemaleHair({ r, primaryColor }: { r: number; primaryColor: string }) {
-  const mat = useMat(primaryColor, 0.7, 0.0);
-  const bunR = r * 0.38;
+// ─── ASF Male Hair: Flat top + beret + insignia ────────────────────────────
+function ASFMaleHair({ headR, primary, secondary }: { headR: number; primary: string; secondary: string }) {
   return (
     <>
-      {/* Top bun */}
-      <mesh position={[0, r * 0.9, 0]} material={mat}>
-        <sphereGeometry args={[bunR, 10, 8]} />
+      {/* Flat cropped sides */}
+      <mesh position={[0, headR * 0.12, 0]} frustumCulled={false}>
+        <sphereGeometry args={[headR * 1.04, 12, 8, 0, Math.PI * 2, 0, Math.PI * 0.46]} />
+        <meshStandardMaterial color="#1a0c04" roughness={0.9} metalness={0} />
       </mesh>
-      {/* Left bun */}
-      <mesh position={[-r * 0.82, r * 0.45, 0]} material={mat}>
-        <sphereGeometry args={[bunR * 0.78, 10, 8]} />
+      {/* Flat top */}
+      <mesh position={[0, headR * 0.52, 0]} frustumCulled={false}>
+        <cylinderGeometry args={[headR * 0.82, headR * 0.9, headR * 0.1, 12]} />
+        <meshStandardMaterial color="#1a0c04" roughness={0.9} metalness={0} />
       </mesh>
-      {/* Right bun */}
-      <mesh position={[r * 0.82, r * 0.45, 0]} material={mat}>
-        <sphereGeometry args={[bunR * 0.78, 10, 8]} />
+      {/* Beret tilted to right */}
+      <mesh position={[headR * 0.16, headR * 0.6, 0]} rotation={[0, 0, -0.2]} frustumCulled={false}>
+        <cylinderGeometry args={[headR * 0.9, headR * 0.93, headR * 0.15, 12]} />
+        <meshStandardMaterial color={secondary} roughness={0.8} metalness={0.05} />
+      </mesh>
+      {/* Beret dome */}
+      <mesh position={[headR * 0.3, headR * 0.74, 0]} rotation={[0, 0, -0.18]} frustumCulled={false}>
+        <sphereGeometry args={[headR * 0.62, 10, 8, 0, Math.PI * 2, 0, Math.PI * 0.5]} />
+        <meshStandardMaterial color={secondary} roughness={0.8} metalness={0.05} />
+      </mesh>
+      {/* Faction badge */}
+      <mesh position={[-headR * 0.44, headR * 0.72, headR * 0.52]} frustumCulled={false}>
+        <cylinderGeometry args={[headR * 0.13, headR * 0.13, headR * 0.06, 8]} />
+        <meshStandardMaterial color={primary} roughness={0.3} metalness={0.5} />
+      </mesh>
+      <mesh position={[-headR * 0.44, headR * 0.76, headR * 0.56]} frustumCulled={false}>
+        <cylinderGeometry args={[headR * 0.065, headR * 0.065, headR * 0.04, 5]} />
+        <meshStandardMaterial color="#f5c518" roughness={0.2} metalness={0.6} />
       </mesh>
     </>
   );
 }
 
-// ── Eye pair — two dark spheres on the front hemisphere of the head ────────
-function Eyes({ headR, skinColor }: { headR: number; skinColor: string }) {
-  const eyeMat = React.useMemo(
-    () => new THREE.MeshStandardMaterial({ color: '#0d0d1f', roughness: 0.3, metalness: 0.2 }),
-    [],
-  );
-  const highlightMat = React.useMemo(
-    () => new THREE.MeshStandardMaterial({ color: '#ffffff', roughness: 0.1, metalness: 0.0 }),
-    [],
-  );
-  // Blush marks for more Pokémon-style charm
-  const blushMat = React.useMemo(
-    () =>
-      new THREE.MeshStandardMaterial({
-        color: '#ffb3b3',
-        roughness: 0.9,
-        metalness: 0.0,
-        transparent: true,
-        opacity: 0.55,
-      }),
-    [],
-  );
-  void skinColor; // may use for blush tint in future
-  const er = headR * 0.13;
-  const ex = headR * 0.38;
-  const ey = headR * 0.08;
-  const ez = headR * 0.87;
+// ─── ASF Female Hair: Ponytail + plaits + tactical headband ────────────────
+function ASFFemaleHair({ headR }: { headR: number }) {
+  const hair = '#1a0c04';
   return (
     <>
-      {/* Left eye */}
-      <mesh position={[-ex, ey, ez]} material={eyeMat}>
-        <sphereGeometry args={[er, 8, 6]} />
+      {/* Base hair cap */}
+      <mesh position={[0, headR * 0.14, -headR * 0.06]} frustumCulled={false}>
+        <sphereGeometry args={[headR * 1.03, 12, 8, 0, Math.PI * 2, 0, Math.PI * 0.5]} />
+        <meshStandardMaterial color={hair} roughness={0.88} metalness={0} />
       </mesh>
-      {/* Right eye */}
-      <mesh position={[ex, ey, ez]} material={eyeMat}>
-        <sphereGeometry args={[er, 8, 6]} />
+      {/* Ponytail gather */}
+      <mesh position={[0, headR * 0.6, -headR * 0.62]} rotation={[0.5, 0, 0]} frustumCulled={false}>
+        <sphereGeometry args={[headR * 0.26, 8, 6]} />
+        <meshStandardMaterial color={hair} roughness={0.88} metalness={0} />
       </mesh>
-      {/* Eye highlights */}
-      <mesh position={[-ex + er * 0.3, ey + er * 0.35, ez + er * 0.7]} material={highlightMat}>
-        <sphereGeometry args={[er * 0.32, 6, 5]} />
+      {/* Ponytail shaft */}
+      <mesh position={[0, headR * 0.24, -headR * 1.08]} rotation={[0.6, 0, 0]} frustumCulled={false}>
+        <cylinderGeometry args={[headR * 0.17, headR * 0.09, headR * 0.86, 8]} />
+        <meshStandardMaterial color={hair} roughness={0.88} metalness={0} />
       </mesh>
-      <mesh position={[ex + er * 0.3, ey + er * 0.35, ez + er * 0.7]} material={highlightMat}>
-        <sphereGeometry args={[er * 0.32, 6, 5]} />
+      {/* Ponytail tip */}
+      <mesh position={[0, headR * 0.0, -headR * 1.55]} frustumCulled={false}>
+        <sphereGeometry args={[headR * 0.11, 6, 5]} />
+        <meshStandardMaterial color={hair} roughness={0.88} metalness={0} />
       </mesh>
-      {/* Blush spots */}
-      <mesh position={[-ex * 1.55, ey - er * 0.8, ez * 0.88]} rotation={[-0.15, 0, 0]} material={blushMat}>
-        <sphereGeometry args={[er * 0.72, 6, 5]} />
+      {/* Left plaits */}
+      {([0, 1, 2] as const).map(i => (
+        <mesh key={i} position={[-headR * 0.76, headR * (-0.06 - i * 0.3), headR * (0.3 - i * 0.1)]} rotation={[0.15, 0, 0.1]} frustumCulled={false}>
+          <cylinderGeometry args={[headR * 0.09, headR * 0.07, headR * 0.33, 5]} />
+          <meshStandardMaterial color={hair} roughness={0.88} metalness={0} />
+        </mesh>
+      ))}
+      {/* Right plaits */}
+      {([0, 1, 2] as const).map(i => (
+        <mesh key={i} position={[headR * 0.76, headR * (-0.06 - i * 0.3), headR * (0.3 - i * 0.1)]} rotation={[0.15, 0, -0.1]} frustumCulled={false}>
+          <cylinderGeometry args={[headR * 0.09, headR * 0.07, headR * 0.33, 5]} />
+          <meshStandardMaterial color={hair} roughness={0.88} metalness={0} />
+        </mesh>
+      ))}
+    </>
+  );
+}
+
+// ─── WC Male Hair: Flat top + tech implant ─────────────────────────────────
+function WCMaleHair({ headR, primary }: { headR: number; primary: string }) {
+  return (
+    <>
+      {/* Flat cropped sides */}
+      <mesh position={[0, headR * 0.12, 0]} frustumCulled={false}>
+        <sphereGeometry args={[headR * 1.03, 12, 8, 0, Math.PI * 2, 0, Math.PI * 0.44]} />
+        <meshStandardMaterial color="#12121e" roughness={0.75} metalness={0.05} />
       </mesh>
-      <mesh position={[ex * 1.55, ey - er * 0.8, ez * 0.88]} rotation={[-0.15, 0, 0]} material={blushMat}>
-        <sphereGeometry args={[er * 0.72, 6, 5]} />
+      {/* Flat top */}
+      <mesh position={[0, headR * 0.5, 0]} frustumCulled={false}>
+        <cylinderGeometry args={[headR * 0.82, headR * 0.88, headR * 0.1, 12]} />
+        <meshStandardMaterial color="#12121e" roughness={0.72} metalness={0.05} />
+      </mesh>
+      {/* Tech temple implant */}
+      <mesh position={[headR * 1.1, headR * 0.04, headR * 0.28]} frustumCulled={false}>
+        <boxGeometry args={[headR * 0.11, headR * 0.22, headR * 0.1]} />
+        <meshStandardMaterial color={primary} roughness={0.2} metalness={0.7} />
+      </mesh>
+      {/* Implant antenna */}
+      <mesh position={[headR * 1.15, headR * 0.24, headR * 0.26]} rotation={[0, 0, 0.1]} frustumCulled={false}>
+        <cylinderGeometry args={[headR * 0.03, headR * 0.02, headR * 0.3, 5]} />
+        <meshStandardMaterial color={primary} roughness={0.2} metalness={0.7} />
+      </mesh>
+      {/* Glowing implant tip */}
+      <mesh position={[headR * 1.16, headR * 0.41, headR * 0.26]} frustumCulled={false}>
+        <sphereGeometry args={[headR * 0.05, 5, 4]} />
+        <meshStandardMaterial color="#00ffff" roughness={0} metalness={0} emissive="#00ffff" emissiveIntensity={0.9} />
       </mesh>
     </>
   );
 }
 
-// ── Main character component ───────────────────────────────────────────────
+// ─── WC Female Hair: Ponytail + plaits + glowing ring ──────────────────────
+function WCFemaleHair({ headR, secondary }: { headR: number; secondary: string }) {
+  const hair = '#12121e';
+  return (
+    <>
+      {/* Base smooth hair cap */}
+      <mesh position={[0, headR * 0.16, 0]} frustumCulled={false}>
+        <sphereGeometry args={[headR * 1.04, 12, 8, 0, Math.PI * 2, 0, Math.PI * 0.5]} />
+        <meshStandardMaterial color={hair} roughness={0.75} metalness={0.05} />
+      </mesh>
+      {/* Ponytail gather */}
+      <mesh position={[0, headR * 0.7, -headR * 0.66]} rotation={[0.5, 0, 0]} frustumCulled={false}>
+        <sphereGeometry args={[headR * 0.28, 8, 6]} />
+        <meshStandardMaterial color={hair} roughness={0.75} metalness={0.05} />
+      </mesh>
+      {/* Ponytail shaft */}
+      <mesh position={[0, headR * 0.3, -headR * 1.12]} rotation={[0.6, 0, 0]} frustumCulled={false}>
+        <cylinderGeometry args={[headR * 0.18, headR * 0.1, headR * 0.92, 8]} />
+        <meshStandardMaterial color={hair} roughness={0.75} metalness={0.05} />
+      </mesh>
+      {/* Ponytail tip */}
+      <mesh position={[0, headR * 0.02, -headR * 1.62]} frustumCulled={false}>
+        <sphereGeometry args={[headR * 0.12, 6, 5]} />
+        <meshStandardMaterial color={hair} roughness={0.75} metalness={0.05} />
+      </mesh>
+      {/* Left plaits */}
+      {([0, 1, 2] as const).map(i => (
+        <mesh key={i} position={[-headR * 0.78, headR * (-0.08 - i * 0.3), headR * (0.32 - i * 0.1)]} rotation={[0.15, 0, 0.12]} frustumCulled={false}>
+          <cylinderGeometry args={[headR * 0.1, headR * 0.08, headR * 0.33, 5]} />
+          <meshStandardMaterial color={hair} roughness={0.75} metalness={0.05} />
+        </mesh>
+      ))}
+      {/* Right plaits */}
+      {([0, 1, 2] as const).map(i => (
+        <mesh key={i} position={[headR * 0.78, headR * (-0.08 - i * 0.3), headR * (0.32 - i * 0.1)]} rotation={[0.15, 0, -0.12]} frustumCulled={false}>
+          <cylinderGeometry args={[headR * 0.1, headR * 0.08, headR * 0.33, 5]} />
+          <meshStandardMaterial color={hair} roughness={0.75} metalness={0.05} />
+        </mesh>
+      ))}
+      {/* Side tech strips */}
+      {([-1, 1] as const).map(side => (
+        <mesh key={side} position={[side * headR * 1.01, headR * 0.04, headR * 0.3]} frustumCulled={false}>
+          <boxGeometry args={[headR * 0.068, headR * 0.18, headR * 0.12]} />
+          <meshStandardMaterial color={secondary} roughness={0.2} metalness={0.6} />
+        </mesh>
+      ))}
+    </>
+  );
+}
+
+// ─── Faction outfit overlays ────────────────────────────────────────────────
+function PAAOutfit({ s, bodyY, bodyH, secondary }: { s: number; bodyY: number; bodyH: number; secondary: string }) {
+  return (
+    <>
+      {/* Sash/diagonal band */}
+      <mesh position={[0, bodyY + bodyH * 0.08, 0]} rotation={[0, 0, 0.48]} frustumCulled={false}>
+        <cylinderGeometry args={[s * 0.86, s * 0.86, s * 0.11, 8, 1, true]} />
+        <meshStandardMaterial color={secondary} roughness={0.24} metalness={0.65} side={THREE.DoubleSide} />
+      </mesh>
+      {/* Chest amulet */}
+      <mesh position={[0, bodyY + bodyH * 0.24, s * 0.74]} frustumCulled={false}>
+        <octahedronGeometry args={[s * 0.11, 0]} />
+        <meshStandardMaterial color={secondary} roughness={0.24} metalness={0.65} />
+      </mesh>
+      {/* Shoulder pads */}
+      {([-1, 1] as const).map(side => (
+        <mesh key={side} position={[side * s * 0.8, bodyY + bodyH * 0.4, 0]} frustumCulled={false}>
+          <sphereGeometry args={[s * 0.21, 8, 6]} />
+          <meshStandardMaterial color="#0d3d24" roughness={0.65} metalness={0.1} />
+        </mesh>
+      ))}
+    </>
+  );
+}
+
+function ASFOutfit({ s, bodyY, bodyH, primary, secondary }: { s: number; bodyY: number; bodyH: number; primary: string; secondary: string }) {
+  return (
+    <>
+      {/* Chest armor plate */}
+      <mesh position={[0, bodyY + bodyH * 0.26, s * 0.7]} frustumCulled={false}>
+        <boxGeometry args={[s * 0.88, s * 0.44, s * 0.13]} />
+        <meshStandardMaterial color={primary} roughness={0.38} metalness={0.42} />
+      </mesh>
+      {/* Center ridge */}
+      <mesh position={[0, bodyY + bodyH * 0.28, s * 0.77]} frustumCulled={false}>
+        <boxGeometry args={[s * 0.12, s * 0.38, s * 0.06]} />
+        <meshStandardMaterial color={darken(primary, 0.1)} roughness={0.3} metalness={0.55} />
+      </mesh>
+      {/* Shoulder armor */}
+      {([-1, 1] as const).map(side => (
+        <group key={side} position={[side * s * 0.8, bodyY + bodyH * 0.4, 0]} frustumCulled={false}>
+          <mesh frustumCulled={false}>
+            <boxGeometry args={[s * 0.3, s * 0.17, s * 0.3]} />
+            <meshStandardMaterial color={primary} roughness={0.38} metalness={0.42} />
+          </mesh>
+          <mesh position={[0, s * 0.13, 0]} frustumCulled={false}>
+            <boxGeometry args={[s * 0.24, s * 0.09, s * 0.25]} />
+            <meshStandardMaterial color={secondary} roughness={0.72} metalness={0.18} />
+          </mesh>
+        </group>
+      ))}
+    </>
+  );
+}
+
+function WCOutfit({ s, bodyY, bodyH, primary }: { s: number; bodyY: number; bodyH: number; primary: string }) {
+  return (
+    <>
+      {/* Collar */}
+      <mesh position={[0, bodyY + bodyH * 0.42, s * 0.6]} frustumCulled={false}>
+        <boxGeometry args={[s * 0.4, s * 0.26, s * 0.1]} />
+        <meshStandardMaterial color="#f0f4ff" roughness={0.72} metalness={0.04} />
+      </mesh>
+      {/* Left lapel */}
+      <mesh position={[-s * 0.22, bodyY + bodyH * 0.22, s * 0.66]} rotation={[0, 0, 0.38]} frustumCulled={false}>
+        <boxGeometry args={[s * 0.17, s * 0.34, s * 0.09]} />
+        <meshStandardMaterial color="#f0f4ff" roughness={0.72} metalness={0.04} />
+      </mesh>
+      {/* Right lapel */}
+      <mesh position={[s * 0.22, bodyY + bodyH * 0.22, s * 0.66]} rotation={[0, 0, -0.38]} frustumCulled={false}>
+        <boxGeometry args={[s * 0.17, s * 0.34, s * 0.09]} />
+        <meshStandardMaterial color="#f0f4ff" roughness={0.72} metalness={0.04} />
+      </mesh>
+      {/* Tech badge */}
+      <mesh position={[-s * 0.44, bodyY + bodyH * 0.28, s * 0.7]} frustumCulled={false}>
+        <boxGeometry args={[s * 0.13, s * 0.11, s * 0.07]} />
+        <meshStandardMaterial color={primary} roughness={0.22} metalness={0.65} />
+      </mesh>
+      {/* Wrist device */}
+      <mesh position={[s * 0.9, bodyY - bodyH * 0.2, s * 0.18]} rotation={[0, 0, 0.28]} frustumCulled={false}>
+        <boxGeometry args={[s * 0.18, s * 0.1, s * 0.18]} />
+        <meshStandardMaterial color={primary} roughness={0.22} metalness={0.65} />
+      </mesh>
+    </>
+  );
+}
+
+// ─── MAIN COMPONENT ─────────────────────────────────────────────────────────
 export function IsometricCharacter({
-  gender = 'FEMALE',
+  gender      = 'FEMALE',
   colors,
   hexSize,
-  animated = true,
+  faction,
+  isMoving    = false,
+  facingAngle,
+  animated    = true,
 }: IsometricCharacterProps) {
-  const groupRef = useRef<THREE.Group>(null);
+  const groupRef    = useRef<THREE.Group>(null);
+  const leftLegRef  = useRef<THREE.Group>(null);
+  const rightLegRef = useRef<THREE.Group>(null);
+  const leftArmRef  = useRef<THREE.Group>(null);
+  const rightArmRef = useRef<THREE.Group>(null);
 
-  // Scale everything relative to hexSize so the character fits different tile sizes
-  const s = hexSize * 0.32; // base scale — slightly larger for better visibility
+  // ── Proportions ───────────────────────────────────────────────────────
+  const s         = hexSize * 0.38;   // slightly larger than 0.32 for visibility
+  const footR     = s * 0.30;
+  const footY     = footR;
+  const legR      = s * 0.24;
+  const legH      = s * 0.58;
+  const legSep    = legR * 1.30;
+  const ankleY    = footY + footR * 0.28;
+  const bodyBotY  = ankleY + legH;
+  const bodyH     = s * 0.90;
+  const bodyTopR  = s * 0.70;
+  const bodyBotR  = s * 0.82;
+  const bodyY     = bodyBotY + bodyH / 2;
+  const bodyTopY  = bodyBotY + bodyH;
+  const armR      = s * 0.20;
+  const armH      = s * 0.68;
+  const armX      = bodyTopR + armR * 0.85;
+  const handR     = armR * 1.15;
+  const neckH     = s * 0.16;
+  const neckY     = bodyTopY + neckH / 2;
+  const headR     = s * 1.28;
+  const headY     = bodyTopY + neckH + headR * 0.70;
 
-  // Geometry measurements
-  const headR = s * 1.18;      // big Pokémon head
-  const bodyH = s * 1.0;
-  const bodyTopR = s * 0.72;
-  const bodyBotR = s * 0.82;
-  const armR = s * 0.22;
-  const armH = s * 0.72;
-  const legR = s * 0.26;
-  const legH = s * 0.7;
-  const footR = s * 0.3;
+  // Leg geometry in group-local space (pivot = bodyBotY)
+  const legCylY  = -legH / 2;
+  const kneeLY   = -legH * 0.20;
+  const footGrpY = -(legH + footR * 0.28);
+  const toeGrpY  = -legH;
 
-  // Vertical stacking: footY = footR so that the BOTTOM of each foot sphere is exactly at y=0.
-  // This means no negative-Y geometry → GameAvatarFootAnchor never needs to compensate,
-  // and the character stands cleanly on the tile surface.
-  const footY = footR;
-  const legY = footY + footR * 0.4 + legH / 2;
-  const bodyY = legY + legH / 2 + bodyH / 2 - s * 0.05;
-  const headY = bodyY + bodyH / 2 + headR * 0.72;
+  // ── Faction detection ─────────────────────────────────────────────────
+  const fac = (faction ?? '').toUpperCase();
+  const det: 'PAA' | 'ASF' | 'WC' =
+    fac === 'PAA' ? 'PAA' :
+    fac === 'ASF' ? 'ASF' :
+    fac === 'WC'  ? 'WC'  :
+    (colors.primary || '').toLowerCase().includes('a3') ? 'PAA' :
+    (colors.primary || '').toLowerCase().includes('c7') ? 'ASF' : 'WC';
 
-  // Materials — all four in one useMemo so only one memo entry is tracked
-  const { skinMat, primaryMat, secondaryMat, darkMat } = React.useMemo(() => ({
-    skinMat:      new THREE.MeshStandardMaterial({ color: colors?.skin      || '#c58b66', roughness: 0.65, metalness: 0.05 }),
-    primaryMat:   new THREE.MeshStandardMaterial({ color: colors?.primary   || '#00A37A', roughness: 0.55, metalness: 0.15 }),
-    secondaryMat: new THREE.MeshStandardMaterial({ color: colors?.secondary || '#F5F5F5', roughness: 0.5,  metalness: 0.2  }),
-    darkMat:      new THREE.MeshStandardMaterial({ color: '#1a1a2e',                      roughness: 0.8,  metalness: 0.1  }),
-  }), [colors?.skin, colors?.primary, colors?.secondary]);
 
-  // Idle animation: gentle vertical bob + subtle sway
+  const skinC     = colors?.skin      || '#c58b66';
+  const primaryC  = colors?.primary   || '#00A37A';
+  const secC      = colors?.secondary || '#D4AF37';
+  const darkSkinC = darken(skinC, 0.18);
+  const armTilt   = gender === 'FEMALE' ? 0.10 : 0.12;
+
+  // ── Animation ─────────────────────────────────────────────────────────
   const timeRef = useRef(0);
+
   useFrame((_, delta) => {
-    if (!animated || !groupRef.current) return;
+    if (!groupRef.current) return;
     timeRef.current += delta;
-    const bob = Math.sin(timeRef.current * 2.2) * s * 0.08;
-    const sway = Math.sin(timeRef.current * 1.1) * 0.015;
-    groupRef.current.position.y = bob;
-    groupRef.current.rotation.z = sway;
+    const t = timeRef.current;
+
+    // Snap Y-axis rotation to movement direction instantly
+    if (facingAngle !== undefined) {
+      groupRef.current.rotation.y = facingAngle;
+    }
+
+    if (isMoving && animated) {
+      // Fluid walk cycle — arms and legs swing naturally
+      const freq  = 9.0;
+      const phase = t * freq;
+      const leg   =  Math.sin(phase) * 0.55;
+      const arm   = -Math.sin(phase) * 0.42;
+
+      if (leftLegRef.current)  leftLegRef.current.rotation.x  =  leg;
+      if (rightLegRef.current) rightLegRef.current.rotation.x = -leg;
+      if (leftArmRef.current)  leftArmRef.current.rotation.set(arm,   0,  armTilt);
+      if (rightArmRef.current) rightArmRef.current.rotation.set(-arm,  0, -armTilt);
+
+      // No Y bounce or Z sway — clean movement
+      groupRef.current.position.y = 0;
+      groupRef.current.rotation.z = 0;
+    } else {
+      // Idle: snap limbs to rest instantly (no easing)
+      if (leftLegRef.current)  leftLegRef.current.rotation.x = 0;
+      if (rightLegRef.current) rightLegRef.current.rotation.x = 0;
+      if (leftArmRef.current)  { leftArmRef.current.rotation.x = 0; leftArmRef.current.rotation.z = armTilt; }
+      if (rightArmRef.current) { rightArmRef.current.rotation.x = 0; rightArmRef.current.rotation.z = -armTilt; }
+      groupRef.current.position.y = 0;
+      groupRef.current.rotation.z = 0;
+    }
   });
 
   return (
-    // frustumCulled={false} on the root group AND on each mesh guarantees the character
-    // is always rendered even before the camera has centered on the hero (first frame).
-    <group ref={groupRef} frustumCulled={false}>
+    <group ref={groupRef} name="IsometricCharacter-avatar" frustumCulled={false}>
 
-      {/* ── Feet / Boots ── */}
-      <mesh frustumCulled={false} position={[-legR * 1.05, footY, 0]} material={darkMat}>
-        <sphereGeometry args={[footR, 8, 6]} />
-      </mesh>
-      <mesh frustumCulled={false} position={[legR * 1.05, footY, 0]} material={darkMat}>
-        <sphereGeometry args={[footR, 8, 6]} />
-      </mesh>
+      {/* ── LEGS — pivot groups at hip (bodyBotY) ── */}
+      <group ref={leftLegRef} position={[-legSep, bodyBotY, 0]} frustumCulled={false}>
+        <mesh position={[0, legCylY, 0]} castShadow frustumCulled={false}>
+          <cylinderGeometry args={[legR * 0.85, legR, legH, 8]} />
+          <meshStandardMaterial color={secC} roughness={0.55} metalness={0.12} />
+        </mesh>
+        <mesh position={[0, kneeLY, s * 0.05]} frustumCulled={false}>
+          <sphereGeometry args={[legR * 0.58, 7, 5]} />
+          <meshStandardMaterial color={primaryC} roughness={0.55} metalness={0.12} />
+        </mesh>
+        <mesh position={[0, footGrpY, s * 0.06]} castShadow frustumCulled={false}>
+          <sphereGeometry args={[footR, 9, 7]} />
+          <meshStandardMaterial color="#16161e" roughness={0.82} metalness={0.08} />
+        </mesh>
+        <mesh position={[0, toeGrpY, footR + s * 0.1]} frustumCulled={false}>
+          <sphereGeometry args={[footR * 0.38, 6, 5]} />
+          <meshStandardMaterial color={secC} roughness={0.45} metalness={0.35} />
+        </mesh>
+      </group>
 
-      {/* ── Legs ── */}
-      <mesh frustumCulled={false} position={[-legR * 1.05, legY, 0]} material={secondaryMat}>
-        <cylinderGeometry args={[legR, legR * 1.1, legH, 8]} />
-      </mesh>
-      <mesh frustumCulled={false} position={[legR * 1.05, legY, 0]} material={secondaryMat}>
-        <cylinderGeometry args={[legR, legR * 1.1, legH, 8]} />
-      </mesh>
+      <group ref={rightLegRef} position={[legSep, bodyBotY, 0]} frustumCulled={false}>
+        <mesh position={[0, legCylY, 0]} castShadow frustumCulled={false}>
+          <cylinderGeometry args={[legR * 0.85, legR, legH, 8]} />
+          <meshStandardMaterial color={secC} roughness={0.55} metalness={0.12} />
+        </mesh>
+        <mesh position={[0, kneeLY, s * 0.05]} frustumCulled={false}>
+          <sphereGeometry args={[legR * 0.58, 7, 5]} />
+          <meshStandardMaterial color={primaryC} roughness={0.55} metalness={0.12} />
+        </mesh>
+        <mesh position={[0, footGrpY, s * 0.06]} castShadow frustumCulled={false}>
+          <sphereGeometry args={[footR, 9, 7]} />
+          <meshStandardMaterial color="#16161e" roughness={0.82} metalness={0.08} />
+        </mesh>
+        <mesh position={[0, toeGrpY, footR + s * 0.1]} frustumCulled={false}>
+          <sphereGeometry args={[footR * 0.38, 6, 5]} />
+          <meshStandardMaterial color={secC} roughness={0.45} metalness={0.35} />
+        </mesh>
+      </group>
 
-      {/* ── Torso / Body ── */}
-      <mesh frustumCulled={false} position={[0, bodyY, 0]} material={primaryMat}>
+      {/* ── TORSO ── */}
+      <mesh position={[0, bodyY, 0]} castShadow frustumCulled={false}>
         <cylinderGeometry args={[bodyTopR, bodyBotR, bodyH, 10]} />
+        <meshStandardMaterial color={primaryC} roughness={0.55} metalness={0.12} />
+      </mesh>
+      {/* Belt */}
+      <mesh position={[0, bodyBotY + bodyH * 0.17, 0]} frustumCulled={false}>
+        <cylinderGeometry args={[bodyBotR + s * 0.014, bodyBotR + s * 0.014, s * 0.13, 10]} />
+        <meshStandardMaterial color="#16161e" roughness={0.82} metalness={0.08} />
+      </mesh>
+      <mesh position={[0, bodyBotY + bodyH * 0.17, bodyBotR + s * 0.04]} frustumCulled={false}>
+        <boxGeometry args={[s * 0.2, s * 0.14, s * 0.08]} />
+        <meshStandardMaterial color={secC} roughness={0.45} metalness={0.35} />
       </mesh>
 
-      {/* Belt / trim stripe */}
-      <mesh frustumCulled={false} position={[0, bodyY - bodyH * 0.28, 0]} material={secondaryMat}>
-        <cylinderGeometry args={[bodyBotR + s * 0.02, bodyBotR + s * 0.02, s * 0.18, 10]} />
-      </mesh>
+      {/* Faction outfit details */}
+      {det === 'PAA' && <PAAOutfit s={s} bodyY={bodyY} bodyH={bodyH} secondary={secC} />}
+      {det === 'ASF' && <ASFOutfit s={s} bodyY={bodyY} bodyH={bodyH} primary={primaryC} secondary={secC} />}
+      {det === 'WC'  && <WCOutfit  s={s} bodyY={bodyY} bodyH={bodyH} primary={primaryC} />}
 
-      {/* ── Arms ── */}
-      <group frustumCulled={false} position={[-bodyTopR * 1.1, bodyY + bodyH * 0.2, 0]} rotation={[0, 0, 0.3]}>
-        <mesh frustumCulled={false} material={primaryMat}>
-          <cylinderGeometry args={[armR, armR * 0.9, armH, 8]} />
+      {/* ── ARMS — pivot groups at shoulder (bodyTopY) ── */}
+      <group ref={leftArmRef} position={[-armX, bodyTopY, 0]} rotation={[0, 0, armTilt]} frustumCulled={false}>
+        <mesh position={[0, -armH / 2, 0]} castShadow frustumCulled={false}>
+          <cylinderGeometry args={[armR, armR * 0.82, armH, 8]} />
+          <meshStandardMaterial color={primaryC} roughness={0.55} metalness={0.12} />
         </mesh>
-        <mesh frustumCulled={false} position={[0, -armH / 2 - armR * 0.6, 0]} material={skinMat}>
-          <sphereGeometry args={[armR * 1.1, 8, 6]} />
+        <mesh position={[0, -armH - handR * 0.48, 0]} castShadow frustumCulled={false}>
+          <sphereGeometry args={[handR, 9, 7]} />
+          <meshStandardMaterial color={skinC} roughness={0.68} metalness={0} />
         </mesh>
       </group>
-      <group frustumCulled={false} position={[bodyTopR * 1.1, bodyY + bodyH * 0.2, 0]} rotation={[0, 0, -0.3]}>
-        <mesh frustumCulled={false} material={primaryMat}>
-          <cylinderGeometry args={[armR, armR * 0.9, armH, 8]} />
+
+      <group ref={rightArmRef} position={[armX, bodyTopY, 0]} rotation={[0, 0, -armTilt]} frustumCulled={false}>
+        <mesh position={[0, -armH / 2, 0]} castShadow frustumCulled={false}>
+          <cylinderGeometry args={[armR, armR * 0.82, armH, 8]} />
+          <meshStandardMaterial color={primaryC} roughness={0.55} metalness={0.12} />
         </mesh>
-        <mesh frustumCulled={false} position={[0, -armH / 2 - armR * 0.6, 0]} material={skinMat}>
-          <sphereGeometry args={[armR * 1.1, 8, 6]} />
+        <mesh position={[0, -armH - handR * 0.48, 0]} castShadow frustumCulled={false}>
+          <sphereGeometry args={[handR, 9, 7]} />
+          <meshStandardMaterial color={skinC} roughness={0.68} metalness={0} />
         </mesh>
       </group>
 
-      {/* ── Neck ── */}
-      <mesh frustumCulled={false} position={[0, bodyY + bodyH / 2 + s * 0.12, 0]} material={skinMat}>
-        <cylinderGeometry args={[s * 0.28, s * 0.32, s * 0.3, 8]} />
+      {/* ── NECK ── */}
+      <mesh position={[0, neckY, 0]} castShadow frustumCulled={false}>
+        <cylinderGeometry args={[s * 0.22, s * 0.26, neckH, 8]} />
+        <meshStandardMaterial color={skinC} roughness={0.68} metalness={0} />
       </mesh>
 
-      {/* ── Head ── */}
-      <group frustumCulled={false} position={[0, headY, 0]}>
-        <mesh frustumCulled={false} material={skinMat}>
-          <sphereGeometry args={[headR, 16, 12]} />
+      {/* ── HEAD ── */}
+      <group position={[0, headY, 0]} frustumCulled={false}>
+        <mesh castShadow frustumCulled={false}>
+          <sphereGeometry args={[headR, 16, 13]} />
+          <meshStandardMaterial color={skinC} roughness={0.68} metalness={0} />
+        </mesh>
+        {/* Ears */}
+        {([-1, 1] as const).map(side => (
+          <mesh key={side} position={[side * headR * 1.02, 0, 0]} frustumCulled={false}>
+            <sphereGeometry args={[headR * 0.18, 7, 5]} />
+            <meshStandardMaterial color={skinC} roughness={0.68} metalness={0} />
+          </mesh>
+        ))}
+
+        <Eyes headR={headR} />
+
+        {/* Nose */}
+        <mesh position={[0, -headR * 0.06, headR * 0.96]} frustumCulled={false}>
+          <sphereGeometry args={[headR * 0.072, 6, 5]} />
+          <meshStandardMaterial color={darkSkinC} roughness={0.72} metalness={0} />
+        </mesh>
+        {/* Mouth — kawaii smile, 3 box segments like eyebrows */}
+        <mesh position={[-headR * 0.13, -headR * 0.26, headR * 0.97]} rotation={[0, 0, -0.52]} frustumCulled={false}>
+          <boxGeometry args={[headR * 0.13, headR * 0.055, headR * 0.05]} />
+          <meshStandardMaterial color="#1a0808" roughness={0.9} metalness={0} />
+        </mesh>
+        <mesh position={[0, -headR * 0.32, headR * 0.97]} rotation={[0, 0, 0]} frustumCulled={false}>
+          <boxGeometry args={[headR * 0.16, headR * 0.055, headR * 0.05]} />
+          <meshStandardMaterial color="#1a0808" roughness={0.9} metalness={0} />
+        </mesh>
+        <mesh position={[headR * 0.13, -headR * 0.26, headR * 0.97]} rotation={[0, 0, 0.52]} frustumCulled={false}>
+          <boxGeometry args={[headR * 0.13, headR * 0.055, headR * 0.05]} />
+          <meshStandardMaterial color="#1a0808" roughness={0.9} metalness={0} />
         </mesh>
 
-        {gender === 'MALE' ? (
-          <MaleHair r={headR} primaryColor={colors?.primary || '#00A37A'} />
-        ) : (
-          <FemaleHair r={headR} primaryColor={colors?.primary || '#00A37A'} />
-        )}
-
-        <Eyes headR={headR} skinColor={colors?.skin || '#c58b66'} />
-
-        {/* Mouth */}
-        <mesh frustumCulled={false} position={[0, -headR * 0.18, headR * 0.91]} rotation={[0.2, 0, 0]} material={darkMat}>
-          <torusGeometry args={[headR * 0.18, headR * 0.045, 6, 10, Math.PI]} />
-        </mesh>
+{/* Hair / headwear — faction × gender */}
+        {det === 'PAA' && gender === 'MALE'   && <PAAMaleHair   headR={headR} primary={primaryC} />}
+        {det === 'PAA' && gender === 'FEMALE' && <PAAFemaleHair headR={headR} primary={primaryC} />}
+        {det === 'ASF' && gender === 'MALE'   && <ASFMaleHair   headR={headR} primary={primaryC} secondary={secC} />}
+        {det === 'ASF' && gender === 'FEMALE' && <ASFFemaleHair headR={headR} />}
+        {det === 'WC'  && gender === 'MALE'   && <WCMaleHair    headR={headR} primary={primaryC} />}
+        {det === 'WC'  && gender === 'FEMALE' && <WCFemaleHair  headR={headR} secondary={secC} />}
       </group>
 
     </group>

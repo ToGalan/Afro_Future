@@ -1,5 +1,6 @@
 import React, { Suspense, useMemo } from 'react';
 import { useGLTF } from '@react-three/drei';
+import { clone as skeletonClone } from 'three/examples/jsm/utils/SkeletonUtils.js';
 import { PART_VARIANTS } from '../assets/threeParts';
 
 interface AvatarPartsLoaderProps {
@@ -16,7 +17,13 @@ function PartMesh({ file, group }: { file: string; group: string }) {
   // Without this, every parent re-render creates a new clone, causing R3F to
   // dispose+remount the mesh every frame — making it invisible continuously.
   const inst = useMemo(() => {
-    const clone = scene.clone();
+    // SkeletonUtils.clone (NOT scene.clone()) — these parts are skinned meshes.
+    // A plain clone keeps referencing the ORIGINAL cached skeleton, so the clone
+    // ignores its parent group's transform (renders at the source scale/position).
+    // Guarded: a clone failure must not throw and crash the whole avatar Canvas.
+    let clone: any;
+    try { clone = skeletonClone(scene); }
+    catch (e) { console.warn('[AvatarPartsLoader] skeletonClone failed, falling back', e); clone = scene.clone(true); }
     // Clear any baked root transform so the clone renders at parent-relative origin.
     // Also re-enable matrixAutoUpdate on every node — Three.js's GLTFLoader sets it
     // to false for nodes exported with a baked matrix, which prevents world-matrix
@@ -73,7 +80,10 @@ export function BaseBody() {
   // Memoize so the cloned object is stable — prevents per-frame dispose/remount
   // when the parent component (AssembledAvatarMesh) re-renders in the game loop.
   const inst = useMemo(() => {
-    const clone = scene.clone();
+    // SkeletonUtils.clone — BaseBody is a skinned mesh (see PartMesh note above).
+    let clone: any;
+    try { clone = skeletonClone(scene); }
+    catch (e) { console.warn('[BaseBody] skeletonClone failed, falling back', e); clone = scene.clone(true); }
     // Clear baked root transform and re-enable matrixAutoUpdate on entire hierarchy.
     clone.position.set(0, 0, 0);
     clone.rotation.set(0, 0, 0);

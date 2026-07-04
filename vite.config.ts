@@ -3,6 +3,11 @@ import react from '@vitejs/plugin-react';
 
 export default defineConfig({
   plugins: [react()],
+  resolve: {
+    // Prefer TypeScript sources over any stale compiled .js siblings so source
+    // edits always take effect (guards against the tsc-emit-into-src footgun).
+    extensions: ['.mjs', '.mts', '.ts', '.tsx', '.jsx', '.js', '.json'],
+  },
   server: {
     port: 1002,
     strictPort: true,

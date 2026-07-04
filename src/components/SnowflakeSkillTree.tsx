@@ -177,8 +177,8 @@ export default function SnowflakeSkillTree({ initialLevel = 1, onClose }: Snowfl
       </div>
       <div className="grid grid-cols-12 gap-4">
         <div className="col-span-9">
-          <div className="relative mx-auto select-none" style={{ width: size, height: size }} onWheel={onWheel}>
-            <svg width={size} height={size} onPointerDown={onPointerDown} onPointerMove={onPointerMove} onPointerUp={onPointerUp} style={{ cursor: dragging ? 'grabbing' : scale > 1.02 ? 'grab' : 'default' }}>
+          <div className="relative mx-auto select-none w-full aspect-square max-w-[min(100%,760px)]" onWheel={onWheel}>
+            <svg width="100%" height="100%" viewBox={`0 0 ${size} ${size}`} preserveAspectRatio="xMidYMid meet" onPointerDown={onPointerDown} onPointerMove={onPointerMove} onPointerUp={onPointerUp} style={{ cursor: dragging ? 'grabbing' : scale > 1.02 ? 'grab' : 'default' }}>
               <defs>
                 <filter id="glow" x="-50%" y="-50%" width="200%" height="200%">
                   <feGaussianBlur stdDeviation="3" result="colored" />

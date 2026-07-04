@@ -1,0 +1,14 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(grep \"\\\\.js$\")",
+      "Bash(echo \"typecheck exit: $?\")",
+      "Bash(grep -c \"src/.*\\\\.js$\")",
+      "Bash(xargs echo \"tracked-modified src .js changes:\")",
+      "Bash(echo \"exit: $?\")",
+      "Bash(echo \"typecheck: $?\")",
+      "Bash(node -e \"console.log\\(require\\('./node_modules/three/package.json'\\).version\\)\")",
+      "Bash(grep -n \"rotation={\\\\[0, Math.PI, 0\\\\]}\" src/components/GameAvatarMesh.tsx)"
+    ]
+  }
+}
