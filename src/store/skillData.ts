@@ -1,48 +1,86 @@
 import { SkillType } from '../components/SnowflakeSkillTree';
 
-export interface SkillNode { id: string; label: string; description: string; type: SkillType; tier: number; branch: number; requires?: string[]; counters?: string[]; faction?: 'PAA' | 'ASF' | 'WC'; }
-export interface BranchDef { id: number; name: string; type: SkillType; }
+/** Per-node stat contribution. Summed across unlocked nodes into attack/defense/utility. */
+export interface SkillStats { atk?: number; def?: number; util?: number; }
+export interface SkillNode { id: string; label: string; description: string; type: SkillType; tier: number; branch: number; requires?: string[]; counters?: string[]; faction?: 'PAA' | 'ASF' | 'WC'; stats?: SkillStats; }
+export interface BranchDef { id: number; name: string; type: SkillType; stat: 'atk' | 'def' | 'util'; }
 
 export const BRANCHES: BranchDef[] = [
-  { id: 0, name: 'Combat', type: 'stat' },
-  { id: 1, name: 'Support', type: 'buff' },
-  { id: 2, name: 'Pet Bond', type: 'ability' },
-  { id: 3, name: 'Weapons', type: 'weapon' },
-  { id: 4, name: 'Spellcraft', type: 'spell' },
-  { id: 5, name: 'Defense', type: 'buff' },
-  { id: 6, name: 'Mobility', type: 'ability' },
-  { id: 7, name: 'Leadership', type: 'zone' },
-  { id: 8, name: 'Terraform', type: 'ability' },
-  { id: 9, name: 'Technologist', type: 'ability' },
-  { id: 10, name: 'Merchant', type: 'trade' },
-  { id: 11, name: 'Looting', type: 'ability' },
+  { id: 0,  name: 'Combat',       type: 'stat',    stat: 'atk' },
+  { id: 1,  name: 'Support',      type: 'buff',    stat: 'util' },
+  { id: 2,  name: 'Pet Bond',     type: 'ability', stat: 'util' },
+  { id: 3,  name: 'Weapons',      type: 'weapon',  stat: 'atk' },
+  { id: 4,  name: 'Spellcraft',   type: 'spell',   stat: 'atk' },
+  { id: 5,  name: 'Defense',      type: 'buff',    stat: 'def' },
+  { id: 6,  name: 'Mobility',     type: 'ability', stat: 'util' },
+  { id: 7,  name: 'Leadership',   type: 'zone',    stat: 'util' },
+  { id: 8,  name: 'Terraform',    type: 'ability', stat: 'util' },
+  { id: 9,  name: 'Technologist', type: 'ability', stat: 'util' },
+  { id: 10, name: 'Merchant',     type: 'trade',   stat: 'util' },
+  { id: 11, name: 'Looting',      type: 'ability', stat: 'util' },
 ];
+
+// Human-readable skill names per branch (index 0 = core, 1..8 = tier skills).
+const SKILL_NAMES: Record<string, string[]> = {
+  Combat:       ['Combat Training', 'Power Strike', 'Cleave', 'Adrenaline', 'Berserk', 'Executioner', 'Battle Fury', 'Rampage', 'Warlord'],
+  Support:      ['Field Medic', 'Mend', 'Rally Cry', 'Regeneration', 'Sanctuary', 'Second Wind', 'Guardian Aura', 'Renewal', 'Benediction'],
+  'Pet Bond':   ['Companion Link', 'Fetch', 'Pack Tactics', 'Beast Ward', 'Feral Bond', 'Alpha Call', 'Symbiosis', 'Primal Fury', 'Soul Tether'],
+  Weapons:      ['Weapon Mastery', 'Sharpen', 'Rapid Reload', 'Piercing Rounds', 'Twin Blades', 'Overdraw', 'Arsenal', 'Deadeye', 'Armament'],
+  Spellcraft:   ['Arcane Focus', 'Firebolt', 'Frost Nova', 'Chain Spark', 'Mana Surge', 'Runic Ward', 'Meteor', 'Elemental Mastery', 'Archmage'],
+  Defense:      ['Iron Skin', 'Bulwark', 'Deflect', 'Fortify', 'Bastion', 'Stone Form', 'Aegis', 'Unbreakable', 'Colossus'],
+  Mobility:     ['Fleet Foot', 'Dash', 'Evasion', 'Sprint', 'Blink Step', 'Windrunner', 'Phantom Stride', 'Slipstream', 'Untouchable'],
+  Leadership:   ['Command', 'Inspire', 'Banner', 'War Drums', 'Tactician', 'Vanguard', 'Warchief', 'Sovereign', 'Legend'],
+  Terraform:    ['Groundwork', 'Cultivate', 'Reshape', 'Verdant Growth', 'Seismic Shift', 'Bloom', 'Gaia Touch', 'World Shaper', 'Genesis'],
+  Technologist: ['Tinker', 'Overclock', 'Deploy Turret', 'Nanobots', 'Shield Matrix', 'EMP', 'Drone Swarm', 'Singularity', 'Ascendant Tech'],
+  Merchant:     ['Bargain', 'Appraise', 'Stockpile', 'Trade Route', 'Market Insight', 'Investor', 'Monopoly', 'Tycoon', 'Magnate'],
+  Looting:      ['Scavenge', 'Quick Hands', 'Treasure Sense', 'Lockpick', 'Plunder', 'Greed', 'Ransack', 'Fortune', 'Grand Heist'],
+};
 
 export function makeTree(): SkillNode[] {
   const nodes: SkillNode[] = [];
-  nodes.push({ id: 'root', label: 'Origin', description: 'Common root', type: 'root' as SkillType, tier: 0, branch: -1 });
+  nodes.push({ id: 'root', label: 'Origin', description: 'Your starting potential — the source of all paths.', type: 'root' as SkillType, tier: 0, branch: -1 });
   BRANCHES.forEach(b => {
     const baseId = b.name.toLowerCase().replace(/\s+/g,'');
-    nodes.push({ id: `${baseId}_core`, label: `${b.name} Core`, description: `${b.name} fundamentals`, type: b.type, tier: 1, branch: b.id, requires: ['root'] });
+    const names = SKILL_NAMES[b.name] || [];
+    const statLabel = b.stat === 'atk' ? 'ATK' : b.stat === 'def' ? 'DEF' : 'UTIL';
+    // Core node (tier 1)
+    nodes.push({
+      id: `${baseId}_core`, label: names[0] || `${b.name} Core`,
+      description: `${b.name} fundamentals. +1 ${statLabel}.`,
+      type: b.type, tier: 1, branch: b.id, requires: ['root'], stats: { [b.stat]: 1 },
+    });
     for (let i=0;i<8;i++) {
-      const t = 2 + Math.floor(i / 3);
+      const t = 2 + Math.floor(i / 3);            // tier 2..4
+      const amount = t;                           // higher tier → bigger bonus (2..4)
       const id = `${baseId}_${i+1}`;
       const req = i < 3 ? [`${baseId}_core`] : [`${baseId}_${i-2}`];
-      const label = `${b.name} Skill ${i+1}`;
       nodes.push({
         id,
-        label,
-        description: `${b.name} skill ${i+1}`,
+        label: names[i+1] || `${b.name} ${i+1}`,
+        description: `+${amount} ${statLabel}.`,
         type: b.type,
         tier: t,
         branch: b.id,
         requires: req,
         faction: b.id % 3 === 0 ? 'PAA' : b.id % 3 === 1 ? 'ASF' : 'WC',
-        counters: i % 2 === 0 ? ['combat_core'] : ['support_core']
+        counters: i % 2 === 0 ? ['combat_core'] : ['support_core'],
+        stats: { [b.stat]: amount },
       });
     }
   });
   return nodes;
+}
+
+/** Sum the stat contributions of a set of unlocked node ids. */
+export function sumSkillStats(unlocked: string[], nodes: SkillNode[]): { attack: number; defense: number; utility: number } {
+  const byId = new Map(nodes.map(n => [n.id, n]));
+  let attack = 0, defense = 0, utility = 0;
+  for (const id of unlocked) {
+    const s = byId.get(id)?.stats;
+    if (!s) continue;
+    attack += s.atk || 0; defense += s.def || 0; utility += s.util || 0;
+  }
+  return { attack, defense, utility };
 }
 
 export function deriveTraits(unlocked: string[], nodes: SkillNode[]) {

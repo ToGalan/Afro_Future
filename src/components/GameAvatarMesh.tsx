@@ -1,9 +1,10 @@
 import React, { useEffect, useRef, useMemo } from 'react';
 import { useFrame } from '@react-three/fiber';
-import { useGLTF } from '@react-three/drei';
+import { useGLTF, useAnimations } from '@react-three/drei';
 import * as THREE from 'three';
 import { clone as skeletonClone } from 'three/examples/jsm/utils/SkeletonUtils.js';
 import { AvatarPartsLoader, BaseBody } from './AvatarPartsLoader';
+import { AvatarAnimator } from './AvatarAnimator';
 import type { AvatarColors } from '../services/avatarConfig';
 import { IsometricCharacter, type CharacterGender } from './IsometricCharacter';
 
@@ -15,10 +16,11 @@ export type { AvatarColors };
  * Used by SoloMissionMap3D for rendering the player avatar on the game map.
  */
 
-// How tall the avatar should be in world units, relative to the hex size.
-// The procedural IsometricCharacter is ~1.45×hexSize tall, so this keeps GLB
-// avatars visually consistent with it. Tunable once real hero GLBs are dropped in.
-const TARGET_HEIGHT_FACTOR = 1.4;
+// Avatar height in world units = TARGET_HEIGHT_FACTOR × hexSize (hexSize is 3 in game,
+// so 0.9 → ~2.7 units tall). This is THE size knob — raise it if the hero looks too
+// small, lower it if too big. The auto-fit below makes the final height land on this
+// value regardless of the model's native size.
+const TARGET_HEIGHT_FACTOR = 0.9;
 
 // Base yaw applied to the model so it faces the movement direction correctly.
 // The avatar's authored forward was 180° off, so this is 0 (was Math.PI). If a
@@ -115,30 +117,37 @@ function GameAvatarFitAnchor({
 }: { groupRef: React.RefObject<THREE.Group>; hexSize: number; colors: AvatarColors }) {
   const doneRef = useRef(false);
   const attemptRef = useRef(0);
+  // colours arrive as a fresh object reference on every profile/XP update; read via
+  // a ref so they DON'T retrigger the fit (which would re-scale every frame).
+  const colorsRef = useRef(colors);
+  colorsRef.current = colors;
 
-  // Recompute when hexSize or colours change.
-  useEffect(() => { doneRef.current = false; attemptRef.current = 0; }, [hexSize, colors]);
+  // Only recompute the fit when the map scale itself changes.
+  useEffect(() => { doneRef.current = false; attemptRef.current = 0; }, [hexSize]);
 
   useFrame(() => {
     const g = groupRef.current;
     if (doneRef.current || !g) return;
     if (attemptRef.current++ > 300) return; // give up after ~5s of no valid geometry
 
-    const box0 = new THREE.Box3().setFromObject(g);
-    if (box0.isEmpty() || !isFinite(box0.min.y) || box0.max.y - box0.min.y < 1e-3) return; // not loaded
-
-    doneRef.current = true;
-    // Geometry is present — one-time setup: tint (reliable timing now that parts
-    // have loaded), then scale to target height and foot-anchor. Bone posing/walk
-    // is handled per-frame by AvatarWalkAnimator.
-    applyGameTint(g, colors);
     g.updateMatrixWorld(true);
-
     const box = new THREE.Box3().setFromObject(g);
     const h = box.max.y - box.min.y;
-    if (h > 1e-3) g.scale.multiplyScalar((hexSize * TARGET_HEIGHT_FACTOR) / h);
+    if (box.isEmpty() || !isFinite(box.min.y) || h < 1e-3) return; // not loaded yet
+
+    doneRef.current = true;
+    applyGameTint(g, colorsRef.current);
+    // ABSOLUTE scale computed from the model's native height (measured height ÷ its
+    // current scale). Idempotent: even if this runs again it lands on the same value,
+    // so there's no drift/growth from relative multiplies or re-measures.
+    const curScale = g.scale.x || 1;
+    const nativeH = h / curScale;
+    g.scale.setScalar((hexSize * TARGET_HEIGHT_FACTOR) / nativeH);
+    // Foot-anchor with fresh world matrices so feet sit exactly at y=0.
+    g.position.y = 0;
+    g.updateMatrixWorld(true);
     const box2 = new THREE.Box3().setFromObject(g);
-    g.position.y -= box2.min.y;
+    g.position.y = -box2.min.y;
   });
   return null;
 }
@@ -181,7 +190,6 @@ export function GameAvatar({
         )}
       </group>
       <GameAvatarFitAnchor groupRef={avatarGroupRef} hexSize={hexSize} colors={heroColors} />
-      <AvatarWalkAnimator groupRef={avatarGroupRef} isMoving={isMoving} />
     </group>
   );
 }
@@ -239,8 +247,13 @@ function AssembledAvatarMesh({
     <GLBErrorBoundary resetKey={partsKey} fallback={procFallback}>
       <React.Suspense fallback={null}>
         <group ref={rootRef} position={[0, 0, 0]}>
-          <BaseBody />
-          <AvatarPartsLoader parts={parts} />
+          {/* Real skeletal animation: idle pose (arms down) when still, walk clip when
+              moving. Uses the same rig/clips as the character creator, so it poses
+              reliably instead of the procedural bone-swing that couldn't lower arms. */}
+          <AvatarAnimator moving={!!isMoving}>
+            <BaseBody />
+            <AvatarPartsLoader parts={parts} />
+          </AvatarAnimator>
         </group>
       </React.Suspense>
     </GLBErrorBoundary>
@@ -268,8 +281,9 @@ class GLBErrorBoundary extends React.Component<
  * Suspense boundary never receives it and the model never loads.
  * GLBErrorBoundary above handles actual JS errors (bad URL, decode failure).
  */
-function GLBAvatarInner({ url, colors }: { url: string; colors: AvatarColors }) {
-  const { scene } = useGLTF(url); // unconditional — do NOT wrap in try/catch
+function GLBAvatarInner({ url, colors, isMoving }: { url: string; colors: AvatarColors; isMoving?: boolean }) {
+  const { scene, animations } = useGLTF(url) as any; // unconditional — do NOT wrap in try/catch
+  const groupRef = useRef<THREE.Group>(null);
   const inst = useMemo(() => {
     // SkeletonUtils.clone — hero GLBs are skinned; a plain clone would ignore this
     // group's fit/scale transform and render at the model's native size.
@@ -287,13 +301,28 @@ function GLBAvatarInner({ url, colors }: { url: string; colors: AvatarColors }) 
     return cloned;
   }, [scene]);
 
+  // Drive the GLB's own rig: play its embedded clips (real skeletal animation).
+  // Clip names are matched loosely so typical Mixamo exports work out of the box.
+  const { actions, names } = useAnimations(animations || [], groupRef);
+  useEffect(() => {
+    if (!actions || !names.length) return;
+    const pick = (kws: string[]) => names.find(n => kws.some(k => n.toLowerCase().includes(k)));
+    const idleName = pick(['idle', 'stand', 'breath']) || names[0];
+    const moveName = pick(['run', 'walk', 'jog', 'sprint', 'move']) || idleName;
+    const target = isMoving ? moveName : idleName;
+    Object.entries(actions).forEach(([n, a]) => { if (a && n !== target) a.fadeOut(0.25); });
+    const act = actions[target];
+    if (act) act.reset().setEffectiveTimeScale(1).fadeIn(0.25).play();
+  }, [actions, names, isMoving]);
+
   useEffect(() => {
     if (inst) applyGameTint(inst, colors);
   }, [inst, colors]);
 
   // Wrap in a group so R3F owns scene-graph parenting; primitive carries mesh data.
+  // useAnimations binds its mixer to groupRef, so the rig must live inside it.
   return (
-    <group position={[0, 0, 0]} frustumCulled={false}>
+    <group ref={groupRef} position={[0, 0, 0]} frustumCulled={false}>
       <primitive object={inst} frustumCulled={false} />
     </group>
   );
@@ -308,7 +337,7 @@ function GLBAvatarMesh({ url, parts, colors, gender, hexSize, isMoving }: { url:
   return (
     <GLBErrorBoundary resetKey={url} fallback={<AssembledAvatarMesh parts={parts} colors={colors} gender={gender} hexSize={hexSize} isMoving={isMoving} />}>
       <React.Suspense fallback={null}>
-        <GLBAvatarInner url={url} colors={colors} />
+        <GLBAvatarInner url={url} colors={colors} isMoving={isMoving} />
       </React.Suspense>
     </GLBErrorBoundary>
   );

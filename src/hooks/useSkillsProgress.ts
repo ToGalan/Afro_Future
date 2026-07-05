@@ -15,6 +15,7 @@
 import { useState, useCallback, useRef, useEffect, useMemo } from 'react';
 import { useSkillStore } from '../store/skillStore';
 import { chromeSyncSet } from '../services/chromeSync';
+import { computeEffectiveStats } from '../services/playerStats';
 
 // ── Icon helper (mirrors App.tsx skillIconFn) ────────────────────────────────
 function skillIconFn(id: string): string {
@@ -53,19 +54,28 @@ export function useSkillsProgress({
   email: _email,
   displayName: _displayName,
   idToken,
+  faction,
+  archetype,
 }: {
   uid: string;
   email?: string;
   displayName?: string;
   /** Google/Firebase ID token for server profile endpoint. */
   idToken: string | null;
+  /** Faction & character archetype drive base stats. */
+  faction?: string;
+  archetype?: string;
 }) {
   const skillState = useSkillStore();
 
-  // ── Derived max stats from skill store ───────────────────────────────────
-  const { level, defense, utility } = skillState;
-  const HP_MAX = 100 + (level - 1) * 12 + defense * 10;
-  const EP_MAX = 60 + (level - 1) * 6 + utility * 6;
+  // ── Effective stats: faction/character base + level growth + skill modifiers ──
+  const { level, attack, defense, utility } = skillState;
+  const stats = useMemo(
+    () => computeEffectiveStats(faction, archetype, { level, attack, defense, utility }),
+    [faction, archetype, level, attack, defense, utility],
+  );
+  const HP_MAX = stats.total.hp;   // faction base HP + level + skill defense
+  const EP_MAX = stats.total.ep;   // faction base EP + level + skill utility
   const XP_MAX = 100 + (level - 1) * 40;
   const XP_CUR = Math.min(XP_MAX - 1, (level - 1) * 40 + 10);
 
@@ -232,6 +242,8 @@ export function useSkillsProgress({
     EP_MAX,
     XP_MAX,
     XP_CUR,
+    // Faction/character base + skill-modifier stat breakdown (hp/ep/atk/def/spd)
+    stats,
     // Abilities
     runtimeAbilities,
     onActivateAbility,

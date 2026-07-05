@@ -8,16 +8,28 @@ interface UsePlayerProfileOptions {
   autoCreate?: boolean;
 }
 
-function mergeProgress(base: PlayerProgress, partial: Partial<PlayerProgress>): PlayerProgress {
+// Deep-partial patch: each nested object (hero, pet, skillTokens, …) can be updated
+// field-by-field. Crucial so e.g. a skill save can send hero.{traits,unlockedSkillIds}
+// WITHOUT re-supplying hero.xp/level (which would clobber the XP system's values).
+export type ProgressPatch =
+  Partial<Omit<PlayerProgress, 'hero' | 'pet' | 'skillTokens' | 'avatar' | 'abilityLoadout'>> & {
+    hero?: Partial<NonNullable<PlayerProgress['hero']>>;
+    pet?: Partial<NonNullable<PlayerProgress['pet']>>;
+    skillTokens?: Partial<NonNullable<PlayerProgress['skillTokens']>>;
+    avatar?: Partial<NonNullable<PlayerProgress['avatar']>>;
+    abilityLoadout?: Partial<NonNullable<PlayerProgress['abilityLoadout']>>;
+  };
+
+function mergeProgress(base: PlayerProgress, partial: ProgressPatch): PlayerProgress {
   return {
     ...base,
     ...partial,
-    hero: partial.hero ? { ...base.hero, ...partial.hero } : base.hero,
-    pet: partial.pet ? { ...base.pet, ...partial.pet } : base.pet,
-    skillTokens: partial.skillTokens ? { ...base.skillTokens, ...partial.skillTokens } : base.skillTokens,
-    avatar: partial.avatar ? { ...base.avatar, ...partial.avatar, parts: { ...(base.avatar?.parts||{}), ...(partial.avatar?.parts||{}) }, colors: { ...(base.avatar?.colors||{}), ...(partial.avatar?.colors||{}) } } : base.avatar,
-    abilityLoadout: partial.abilityLoadout ? { ...base.abilityLoadout, ...partial.abilityLoadout } : base.abilityLoadout,
-  };
+    hero: partial.hero ? { ...(base.hero as any), ...partial.hero } : base.hero,
+    pet: partial.pet ? { ...(base.pet as any), ...partial.pet } : base.pet,
+    skillTokens: partial.skillTokens ? { ...(base.skillTokens as any), ...partial.skillTokens } : base.skillTokens,
+    avatar: partial.avatar ? { ...(base.avatar as any), ...partial.avatar, parts: { ...(base.avatar?.parts||{}), ...((partial.avatar as any)?.parts||{}) }, colors: { ...(base.avatar?.colors||{}), ...((partial.avatar as any)?.colors||{}) } } : base.avatar,
+    abilityLoadout: partial.abilityLoadout ? { ...(base.abilityLoadout as any), ...partial.abilityLoadout } : base.abilityLoadout,
+  } as PlayerProgress;
 }
 
 export function usePlayerProfile(opts: UsePlayerProfileOptions = {}) {
@@ -169,7 +181,7 @@ export function usePlayerProfile(opts: UsePlayerProfileOptions = {}) {
       .catch(() => {/* swallow */});
   }, []);
 
-  const saveProgress = useCallback((partial: Partial<PlayerProfile['progress']>) => {
+  const saveProgress = useCallback((partial: ProgressPatch) => {
     if (!profile) return;
     const now = Date.now();
     // Merge onto the freshest progress (progressRef is updated synchronously so

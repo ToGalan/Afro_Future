@@ -130,6 +130,14 @@ export interface GameHUDProps {
   pet?: { name: string; hp: { current: number; max: number }; ep: { current: number; max: number }; xp?: { current: number; max: number }; level: number; icon?: string; portraitUrl?: string };
   abilities: Ability[];
   defensiveAbilities?: Ability[];
+  /** Controlled attack/defense mode (shared with in-game QWER); falls back to internal state. */
+  abilityMode?: 'offense' | 'defense';
+  onSetAbilityMode?: (m: 'offense' | 'defense') => void;
+  /** Inventory transfer between hero and pet. */
+  onTransferToPet?: (type: string) => void;
+  onTransferToHero?: (type: string) => void;
+  /** Combat stats (faction base + skill modifiers) shown in the menu overview. */
+  heroStats?: { atk: number; def: number; spd: number };
   items: Item[];
   resources: Resource[];
   skillTokens: number;
@@ -233,12 +241,18 @@ export const GameHUD: React.FC<GameHUDProps> = ({
   subtitles, onShop, onAbility, onItem, onMinimapClick, onMenu, onSettings, onTalents,
   onScoreboard, onScan, onGlyph, minimapData,
   skillPoints, totalPlayTime, heroInventory, petInventory, playerProfile,
+  abilityMode: abilityModeProp, onSetAbilityMode, onTransferToPet, onTransferToHero, heroStats,
 }) => {
   const [menuOpen, setMenuOpen] = React.useState(false);
   const [menuTab, setMenuTab] = React.useState<'overview' | 'skills' | 'pet' | 'inventory' | 'settings'>('overview');
-  const [abilityMode, setAbilityMode] = React.useState<'offense' | 'defense'>('offense');
+  // Controlled by the map (so QWER + HUD agree) when provided; else internal.
+  const [internalMode, setInternalMode] = React.useState<'offense' | 'defense'>('offense');
+  const abilityMode = abilityModeProp ?? internalMode;
+  const setAbilityMode = (m: 'offense' | 'defense') => { onSetAbilityMode ? onSetAbilityMode(m) : setInternalMode(m); };
   React.useEffect(() => {
-    function onKey(e: KeyboardEvent) { if (e.key === 'Escape') setMenuOpen(false); }
+    // Escape toggles the menu (it previously only ever closed it, and the button that
+    // opened it was removed — leaving the menu unreachable).
+    function onKey(e: KeyboardEvent) { if (e.key === 'Escape') { e.preventDefault(); setMenuOpen(o => !o); } }
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
   }, []);
@@ -260,6 +274,19 @@ export const GameHUD: React.FC<GameHUDProps> = ({
 
   return (
     <div className="pointer-events-none text-white select-none font-sans">
+
+      {/* Menu button (top-right) — opens the game menu. Esc also toggles it. */}
+      {!menuOpen && (
+        <button
+          onClick={() => setMenuOpen(true)}
+          className={`fixed top-3 right-3 z-40 pointer-events-auto flex items-center gap-2 px-3 py-2 rounded-xl ${panelCls} hover:bg-[#12202c]/90 transition text-sm font-semibold shadow-lg`}
+          title="Menu (Esc)"
+        >
+          <span className="text-base leading-none">☰</span>
+          <span className="hidden sm:inline">Menu</span>
+          <span className="hidden sm:inline text-[10px] opacity-60 px-1 py-0.5 rounded bg-white/10">Esc</span>
+        </button>
+      )}
 
       {/* ══════════════════ BOTTOM HUD BAR — full width, Dota 2 style ════════ */}
       {/*
@@ -502,6 +529,22 @@ export const GameHUD: React.FC<GameHUDProps> = ({
                         <div className="font-bold text-amber-300">{hero.xp.current}/{hero.xp.max}</div>
                       </div>
                     </div>
+                    {heroStats && (
+                      <div className="mt-3 grid grid-cols-3 gap-2 sm:gap-3 text-sm">
+                        <div className="bg-black/30 rounded-lg p-2 sm:p-3 text-center">
+                          <div className="text-xs opacity-60 mb-1">⚔️ Attack</div>
+                          <div className="font-bold text-orange-300">{heroStats.atk}</div>
+                        </div>
+                        <div className="bg-black/30 rounded-lg p-2 sm:p-3 text-center">
+                          <div className="text-xs opacity-60 mb-1">🛡️ Defense</div>
+                          <div className="font-bold text-emerald-300">{heroStats.def}</div>
+                        </div>
+                        <div className="bg-black/30 rounded-lg p-2 sm:p-3 text-center">
+                          <div className="text-xs opacity-60 mb-1">🦶 Speed</div>
+                          <div className="font-bold text-sky-300">{heroStats.spd}</div>
+                        </div>
+                      </div>
+                    )}
                     {hero.buffs && hero.buffs.length > 0 && (
                       <div className="mt-3 flex flex-wrap gap-2">
                         {hero.buffs.map((buff, i) => (
@@ -673,6 +716,9 @@ export const GameHUD: React.FC<GameHUDProps> = ({
                                 <div className="text-xs font-semibold capitalize mb-1">{item.type}</div>
                                 <div className="font-bold text-emerald-300">×{item.quantity}</div>
                                 {item.value && <div className="text-xs opacity-60">+{item.value} {item.type === 'herb' ? 'EP' : 'HP'}</div>}
+                                {onTransferToHero && (
+                                  <button onClick={() => onTransferToHero(item.type)} className="mt-1.5 w-full text-[10px] rounded bg-amber-600/30 hover:bg-amber-600/50 border border-amber-500/40 py-1 transition">→ 🎒 Hero</button>
+                                )}
                               </div>
                             );
                           })}
@@ -726,6 +772,9 @@ export const GameHUD: React.FC<GameHUDProps> = ({
                                 <div className="text-xs font-semibold capitalize mb-1">{item.type}</div>
                                 <div className="font-bold text-emerald-300">×{item.quantity}</div>
                                 {item.value && <div className="text-xs opacity-60">+{item.value} {item.type === 'herb' ? 'EP' : 'HP'}</div>}
+                                {onTransferToPet && (
+                                  <button onClick={() => onTransferToPet(item.type)} className="mt-1.5 w-full text-[10px] rounded bg-sky-600/30 hover:bg-sky-600/50 border border-sky-500/40 py-1 transition">→ 🐾 Pet</button>
+                                )}
                               </div>
                             );
                           })}

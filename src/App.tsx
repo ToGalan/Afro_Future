@@ -1,6 +1,7 @@
 ﻿import React, { useEffect, useState, Suspense, lazy } from 'react';
 import { usePlayerProfile } from './hooks/usePlayerProfile';
 import { useSkillStore, availablePoints } from './store/skillStore';
+import { computeEffectiveStats, STAT_META } from './services/playerStats';
 import { makeTree } from './store/skillData';
 import { GROUP_ORDER, getVariantsByGroup } from './assets/threeParts';
 import { buildAvatarConfig } from './services/avatarConfig';
@@ -883,11 +884,13 @@ function MissionScreen({ onExit, onOpenSkillTree, activeLoadout }: { onExit: () 
     email: profile?.email,
     displayName: profile?.displayName,
     idToken,
+    faction: (activeLoadoutRaw as any)?.faction ?? (profile as any)?.progress?.faction,
+    archetype: (activeLoadoutRaw as any)?.archetype,
   });
   const {
     skillState,
     heroVitals, setHeroVitals, hpMaxRef, epMaxRef,
-    HP_MAX, EP_MAX, XP_MAX, XP_CUR,
+    HP_MAX, EP_MAX, XP_MAX, XP_CUR, stats: heroStats,
     abilities, defensiveAbilities, onActivateAbility,
   } = skillsProgress;
 
@@ -1007,6 +1010,9 @@ function MissionScreen({ onExit, onOpenSkillTree, activeLoadout }: { onExit: () 
           onOpenSkillTree={onOpenSkillTree}
           onHealHP={(amount) => setHeroVitals(v => ({ ...v, hp: Math.min(hpMaxRef.current, v.hp + amount) }))}
           onRestoreEP={(amount) => setHeroVitals(v => ({ ...v, ep: Math.min(epMaxRef.current, v.ep + amount) }))}
+          onDamageHP={(amount) => setHeroVitals(v => ({ ...v, hp: Math.max(0, v.hp - amount) }))}
+          heroAttack={heroStats.total.atk}
+          combatStats={{ atk: heroStats.total.atk, def: heroStats.total.def, spd: heroStats.total.spd }}
           heroAvatar={activeLoadout}
         />
         <PetPanel />
@@ -1641,14 +1647,17 @@ function LeftPlayerPanel({ className = '', playerName, accountLevel, loadout, he
   const basePoints = useSkillStore(s=>s.basePoints);
   const bonusPer5 = useSkillStore(s=>s.bonusPer5);
   const bonusBlocks = Math.floor((Math.max(1,skillLevel)-1)/5);
-  const pointsLeft = basePoints + bonusBlocks * bonusPer5 - skillSpent;
+  const pointsLeft = basePoints + (Math.max(1,skillLevel)-1) + bonusBlocks * bonusPer5 - skillSpent;
   const primaryBranch = primaryBranchRaw && primaryBranchRaw.toLowerCase() === 'root' ? undefined : primaryBranchRaw;
   const primaryType = primaryTypeRaw && primaryTypeRaw.toLowerCase() === 'root' ? undefined : primaryTypeRaw;
-  // HP/EP derived from level plus skill-derived stats (defense/utility)
-  const baseHP = 100; const hpPerLevel = 12; const hpPerDefense = 10;
-  const baseEP = 60; const epPerLevel = 6; const epPerUtility = 6;
-  const HP = baseHP + (skillLevel-1)*hpPerLevel + defense*hpPerDefense;
-  const EP = baseEP + (skillLevel-1)*epPerLevel + utility*epPerUtility;
+  // Effective stats: faction/character base + level growth + skill-tree modifiers.
+  const attack = useSkillStore(s=>s.attack);
+  const stats = React.useMemo(
+    () => computeEffectiveStats((loadout as any)?.faction, (loadout as any)?.archetype, { level: skillLevel, attack, defense, utility }),
+    [(loadout as any)?.faction, (loadout as any)?.archetype, skillLevel, attack, defense, utility],
+  );
+  const HP = stats.total.hp;
+  const EP = stats.total.ep;
   const [shareOpen, setShareOpen] = React.useState(false);
   const shareRef = React.useRef<HTMLDivElement|null>(null);
   React.useEffect(()=>{
@@ -1777,6 +1786,26 @@ function LeftPlayerPanel({ className = '', playerName, accountLevel, loadout, he
             <div className="flex justify-between"><span className="opacity-70">Tokens Spent</span><span className="font-semibold">{skillSpent}</span></div>
             <div className="flex justify-between mt-1"><span className="opacity-70">Tokens Left</span><span className="font-semibold text-emerald-300">{pointsLeft}</span></div>
             <div className="flex justify-between mt-1"><span className="opacity-70">Unlocked</span><span className="font-semibold">{skillUnlocked.length}</span></div>
+          </div>
+        </div>
+        {/* Combat stats — faction/character base + skill-tree modifiers (green = from skills) */}
+        <div className="mt-3 w-full rounded-2xl border border-white/10 bg-gradient-to-br from-white/5 to-white/[0.02] p-3 text-[10px]">
+          <div className="flex justify-between mb-1.5">
+            <span className="opacity-70 uppercase tracking-wide">Stats</span>
+            <span className="opacity-50">{((loadout as any)?.faction) || 'PAA'} · {(loadout as any)?.archetype === 'MALE' ? '♂' : '♀'}</span>
+          </div>
+          <div className="grid grid-cols-5 gap-1">
+            {STAT_META.map(m => {
+              const total = (stats.total as any)[m.key] as number;
+              const bonus = (stats.skill as any)[m.key] as number;
+              return (
+                <div key={m.key} className="flex flex-col items-center rounded-lg bg-white/5 border border-white/10 py-1.5">
+                  <span className="text-xs leading-none" title={m.label}>{m.icon}</span>
+                  <span className="font-bold tabular-nums mt-0.5">{total}</span>
+                  {bonus > 0 && <span className="text-emerald-300 text-[8px] leading-none">+{bonus}</span>}
+                </div>
+              );
+            })}
           </div>
         </div>
         {/* Hero XP progress bar */}

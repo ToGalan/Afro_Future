@@ -16,11 +16,11 @@ export function useAutoSyncSkills(enabled: boolean = true) {
   useEffect(() => {
     if (!enabled) return; // skip syncing if disabled
     const unsub = useSkillStore.subscribe((state) => {
-      // Build progress subset we persist
+      // Build progress subset we persist. IMPORTANT: only the skill-derived hero
+      // fields — NOT level or xp. Those are owned by the XP/leveling system; sending
+      // them here (previously xp:0) shallow-merged over and wiped the player's XP.
       const payload = {
         hero: {
-          level: state.level,
-          xp: 0, // XP is managed separately by movement/collection systems
           traits: state.traitTags,
           unlockedSkillIds: state.unlocked,
           unlockOrder: state.unlockOrder,

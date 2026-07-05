@@ -2,13 +2,15 @@ import React, { useMemo, useState, useEffect, Suspense, useRef } from 'react';
 import { usePlayerProfile } from '../hooks/usePlayerProfile';
 import { usePlayerSession } from '../hooks/usePlayerSession';
 import { usePetXP } from '../hooks/usePetXP';
-import { useCollectibles } from '../hooks/useCollectibles';
+import { useCollectibles, RESOURCE_DEFS } from '../hooks/useCollectibles';
 import type { Mesh } from 'three';
 import * as THREE from 'three';
 import { Canvas, useThree, useFrame } from '@react-three/fiber';
 import { OrbitControls, Text, Sky, ContactShadows } from '@react-three/drei';
 import { GameAvatar, type AvatarColors } from './GameAvatarMesh';
 import { resolveHeroModel } from '../config/heroModels';
+import { useCreeps, type CreepCamp } from '../hooks/useCreeps';
+import { getLevelFromXp } from '../services/playerExpEconomy';
 import { IsometricCharacter } from './IsometricCharacter';
 import type { Archetype, CharacterLoadout } from '../types/loadout';
 import { GameHUD, type MinimapData, type Ability, type Item } from './gameHUD';
@@ -285,9 +287,18 @@ function generateTerrainMapRect(width: number, height: number, seed = 42): Tile[
   return tiles;
 }
 
-// Assign resources based on terrain
-// Placeholder: resources disabled for flat prototype
-function assignResources(tiles: Tile[]) { for (const t of tiles) t.resource = null; }
+// Assign gatherable resources by terrain: ore on rocky ground (mountains/hills),
+// energy in the desert, bio in forest/jungle. Deterministic per-tile hash so the
+// same map always seeds the same resources.
+function assignResources(tiles: Tile[]) {
+  for (const t of tiles) {
+    t.resource = null;
+    const h = Math.abs(Math.sin(t.q * 12.9898 + t.r * 78.233) * 43758.5453) % 1;
+    if (t.type === 'mountain' || t.type === 'hills') { if (h < 0.26) t.resource = 'ore'; }
+    else if (t.type === 'desert') { if (h < 0.18) t.resource = 'energy'; }
+    else if (t.type === 'forest' || t.type === 'jungle') { if (h < 0.16) t.resource = 'bio'; }
+  }
+}
 
 function keyOf(a: Axial) { return `${a.q},${a.r}`; }
 
@@ -336,13 +347,63 @@ function adjacentMountains(tilesByKey: Map<string, Tile>, a: Axial) {
   return count;
 }
 
+/** Low-poly neutral creep camp: alive creeps in a ring, each with an HP bar + a level tag. */
+function CreepCampMesh({ camp, size }: { camp: CreepCamp; size: number }) {
+  const alive = camp.creeps.filter(c => c.hp > 0);
+  if (!alive.length) return null;
+  const cs = size * 0.3;
+  return (
+    <group>
+      {alive.map((c, i) => {
+        const ang = (i / alive.length) * Math.PI * 2;
+        const rad = alive.length > 1 ? size * 0.42 : 0;
+        const x = Math.cos(ang) * rad, z = Math.sin(ang) * rad;
+        const hpPct = Math.max(0, c.hp / c.maxHp);
+        return (
+          <group key={c.id} position={[x, 0, z]} rotation={[0, ang, 0]}>
+            {/* Body */}
+            <mesh position={[0, cs * 0.95, 0]} castShadow>
+              <icosahedronGeometry args={[cs * 0.7, 0]} />
+              <meshStandardMaterial color="#5a2233" roughness={0.7} emissive="#3a0d18" emissiveIntensity={0.35} flatShading />
+            </mesh>
+            {/* Glowing eyes */}
+            <mesh position={[cs * 0.22, cs * 1.05, cs * 0.5]}><sphereGeometry args={[cs * 0.1, 6, 6]} /><meshBasicMaterial color="#ff3b3b" /></mesh>
+            <mesh position={[-cs * 0.22, cs * 1.05, cs * 0.5]}><sphereGeometry args={[cs * 0.1, 6, 6]} /><meshBasicMaterial color="#ff3b3b" /></mesh>
+            {/* Horns */}
+            <mesh position={[cs * 0.32, cs * 1.4, -cs * 0.1]} rotation={[0, 0, -0.5]} castShadow><coneGeometry args={[cs * 0.12, cs * 0.5, 5]} /><meshStandardMaterial color="#2a0e16" roughness={0.8} flatShading /></mesh>
+            <mesh position={[-cs * 0.32, cs * 1.4, -cs * 0.1]} rotation={[0, 0, 0.5]} castShadow><coneGeometry args={[cs * 0.12, cs * 0.5, 5]} /><meshStandardMaterial color="#2a0e16" roughness={0.8} flatShading /></mesh>
+            {/* Back spikes */}
+            {[0.15, -0.15].map((sx, si) => (
+              <mesh key={si} position={[cs * sx, cs * 1.25, -cs * 0.5]} rotation={[-0.6, 0, 0]} castShadow><coneGeometry args={[cs * 0.09, cs * 0.36, 4]} /><meshStandardMaterial color="#3a1622" roughness={0.85} flatShading /></mesh>
+            ))}
+            {/* Clawed arms */}
+            <mesh position={[cs * 0.6, cs * 0.85, cs * 0.1]} rotation={[0, 0, -0.9]} castShadow><cylinderGeometry args={[cs * 0.09, cs * 0.11, cs * 0.7, 5]} /><meshStandardMaterial color="#4a1c2b" roughness={0.75} flatShading /></mesh>
+            <mesh position={[-cs * 0.6, cs * 0.85, cs * 0.1]} rotation={[0, 0, 0.9]} castShadow><cylinderGeometry args={[cs * 0.09, cs * 0.11, cs * 0.7, 5]} /><meshStandardMaterial color="#4a1c2b" roughness={0.75} flatShading /></mesh>
+            {/* Legs */}
+            <mesh position={[cs * 0.26, cs * 0.32, 0]} castShadow><cylinderGeometry args={[cs * 0.1, cs * 0.1, cs * 0.64, 5]} /><meshStandardMaterial color="#3a1622" flatShading /></mesh>
+            <mesh position={[-cs * 0.26, cs * 0.32, 0]} castShadow><cylinderGeometry args={[cs * 0.1, cs * 0.1, cs * 0.64, 5]} /><meshStandardMaterial color="#3a1622" flatShading /></mesh>
+            {/* HP bar */}
+            <mesh position={[0, cs * 1.95, 0]}><boxGeometry args={[cs * 1.2, cs * 0.16, cs * 0.05]} /><meshBasicMaterial color="#300000" /></mesh>
+            <mesh position={[-(cs * 1.2) * (1 - hpPct) / 2, cs * 1.95, cs * 0.04]}><boxGeometry args={[Math.max(0.001, cs * 1.2 * hpPct), cs * 0.12, cs * 0.05]} /><meshBasicMaterial color="#ff4d4d" /></mesh>
+          </group>
+        );
+      })}
+      <Text position={[0, cs * 2.7, 0]} fontSize={size * 0.3} color="#ff9a9a" anchorX="center" anchorY="middle" outlineWidth={size * 0.02} outlineColor="#000">Lv {camp.level}</Text>
+    </group>
+  );
+}
+
+const TERRAIN_ICON: Record<string, string> = {
+  water: '🌊', desert: '🏜️', plains: '🌾', forest: '🌲', jungle: '🌴', hills: '⛰️', mountain: '🏔️',
+};
+
 function tileColor(t: Tile) {
   if (t.type === 'water') return '#87d5ff';
   if (t.type === 'desert') return '#f7d08a';
   if (t.type === 'plains') return '#a7e39b';
   if (t.type === 'forest') return '#59b96b';
   if (t.type === 'jungle') return '#2a7f49';
-  if (t.type === 'hills') return '#c9c6c0';
+  if (t.type === 'hills') return '#a2b86a';
   if (t.type === 'mountain') return '#9aa3a7';
   return '#c9c6c0';
 }
@@ -359,62 +420,146 @@ function ResourceIcon({ t, size }: { t: Tile; size: number }) {
   );
 }
 
+/** Low-poly 3D resource node placed on a tile (ore/energy/bio). Isometric, faceted,
+ *  with a soft glow for energy/bio so gatherables read at a glance. */
+function ResourceProp({ type, size, seed = 1 }: { type: ResourceType; size: number; seed?: number }) {
+  const glowRef = React.useRef<THREE.Mesh>(null);
+  useFrame(({ clock }) => {
+    if (!glowRef.current) return;
+    const s = 0.85 + 0.15 * Math.sin(clock.getElapsedTime() * 2 + seed);
+    glowRef.current.scale.setScalar(s);
+  });
+  if (!type) return null;
+  const S = size * 0.42;
+  // Offset toward a tile corner so the node doesn't fully overlap terrain decor.
+  const ox = Math.cos(seed) * size * 0.28;
+  const oz = Math.sin(seed) * size * 0.28;
+
+  if (type === 'ore') {
+    return (
+      <group position={[ox, 0, oz]} rotation={[0, seed, 0]}>
+        {/* Rocky base cluster with embedded metallic crystals */}
+        <mesh castShadow position={[0, S * 0.4, 0]}>
+          <dodecahedronGeometry args={[S * 0.7, 0]} />
+          <meshStandardMaterial color="#5b5f6b" roughness={0.9} metalness={0.15} flatShading />
+        </mesh>
+        <mesh castShadow position={[S * 0.34, S * 0.7, -S * 0.1]} rotation={[0.3, 0.6, 0.2]}>
+          <octahedronGeometry args={[S * 0.34, 0]} />
+          <meshStandardMaterial color="#8aa0b8" roughness={0.35} metalness={0.75} flatShading />
+        </mesh>
+        <mesh castShadow position={[-S * 0.3, S * 0.62, S * 0.16]} rotation={[0.5, -0.4, 0]}>
+          <octahedronGeometry args={[S * 0.26, 0]} />
+          <meshStandardMaterial color="#b7c4d4" roughness={0.3} metalness={0.8} flatShading />
+        </mesh>
+      </group>
+    );
+  }
+  if (type === 'energy') {
+    return (
+      <group position={[ox, 0, oz]} rotation={[0, seed, 0]}>
+        <mesh ref={glowRef} position={[0, S * 0.9, 0]}>
+          <sphereGeometry args={[S * 0.7, 10, 10]} />
+          <meshBasicMaterial color="#38e1ff" transparent opacity={0.16} depthWrite={false} />
+        </mesh>
+        <mesh castShadow position={[0, S * 0.95, 0]} rotation={[0, 0, 0.05]}>
+          <coneGeometry args={[S * 0.34, S * 1.5, 6]} />
+          <meshStandardMaterial color="#22c3e6" emissive="#0ea5c4" emissiveIntensity={0.9} roughness={0.25} metalness={0.4} flatShading />
+        </mesh>
+        <mesh castShadow position={[S * 0.32, S * 0.55, 0]} rotation={[0, 0, -0.5]}>
+          <coneGeometry args={[S * 0.18, S * 0.85, 6]} />
+          <meshStandardMaterial color="#5fe6ff" emissive="#22c3e6" emissiveIntensity={0.8} roughness={0.25} metalness={0.4} flatShading />
+        </mesh>
+      </group>
+    );
+  }
+  // bio
+  return (
+    <group position={[ox, 0, oz]} rotation={[0, seed, 0]}>
+      <mesh ref={glowRef} position={[0, S * 0.7, 0]}>
+        <sphereGeometry args={[S * 0.6, 10, 10]} />
+        <meshBasicMaterial color="#7CFF6B" transparent opacity={0.16} depthWrite={false} />
+      </mesh>
+      <mesh castShadow position={[0, S * 0.55, 0]}>
+        <icosahedronGeometry args={[S * 0.5, 0]} />
+        <meshStandardMaterial color="#3fa14a" emissive="#2e8b3a" emissiveIntensity={0.5} roughness={0.6} flatShading />
+      </mesh>
+      <mesh position={[0, S * 0.95, 0]}>
+        <icosahedronGeometry args={[S * 0.24, 0]} />
+        <meshStandardMaterial color="#8fe36b" emissive="#5fd44a" emissiveIntensity={0.7} roughness={0.5} flatShading />
+      </mesh>
+    </group>
+  );
+}
+
 // Extracted so each canopy has a stable useRef + useFrame — avoids the inline-arrow-ref
 // null-flush problem that occurs when the parent re-renders (new arrow = React clears old ref).
-function SwayingCanopy({ sizeArg, phase }: { sizeArg: [number, number, number]; phase: number }) {
-  const ref = React.useRef<THREE.Mesh>(null);
+// Sways an entire canopy group (not just one cone) so detailed multi-mesh trees move.
+function SwayingCanopy({ phase, children }: { phase: number; children: React.ReactNode }) {
+  const ref = React.useRef<THREE.Group>(null);
   useFrame(({ clock }) => {
     if (!ref.current) return;
     const t = clock.getElapsedTime();
-    // Doubled amplitude so the sway is actually visible
-    ref.current.rotation.z = Math.sin(t * 0.75 + phase) * 0.09;
-    ref.current.rotation.x = Math.cos(t * 0.55 + phase) * 0.06;
+    ref.current.rotation.z = Math.sin(t * 0.75 + phase) * 0.06;
+    ref.current.rotation.x = Math.cos(t * 0.55 + phase) * 0.04;
   });
-  return (
-    <mesh ref={ref} castShadow>
-      <coneGeometry args={sizeArg} />
-      <meshStandardMaterial color="#4aa05c" roughness={0.7} metalness={0.0} />
-    </mesh>
-  );
+  return <group ref={ref}>{children}</group>;
 }
+
+const TREE_GREENS = ['#3f8f4e', '#4aa05c', '#5bb56a', '#357f45'];
 
 function TreeCluster({ size, seed = 1 }: { size: number; seed?: number }) {
   const rng = useMemo(() => seededRand(seed), [seed]);
   const trees = useMemo(() => {
-    const count = 3 + Math.floor(rng() * 5); // 3-7 trees
-    const arr: Array<{ x: number; z: number; s: number; h: number }> = [];
-    for (let i = 0; i < count; i++) {
+    const count = 3 + Math.floor(rng() * 4); // 3–6 trees
+    return Array.from({ length: count }, () => {
       const ang = rng() * Math.PI * 2;
-      const rad = (0.2 + rng() * 0.6) * size * 0.9;
-      const x = Math.cos(ang) * rad;
-      const z = Math.sin(ang) * rad;
-      const s = 0.7 + rng() * 0.6;
-      const h = 1.2 + rng() * 0.7;
-      arr.push({ x, z, s, h });
-    }
-    return arr;
+      const rad = (0.15 + rng() * 0.6) * size * 0.9;
+      return {
+        x: Math.cos(ang) * rad, z: Math.sin(ang) * rad,
+        s: 0.7 + rng() * 0.6, h: 1.2 + rng() * 0.7,
+        pine: rng() > 0.42,                       // conifer vs broadleaf
+        c1: TREE_GREENS[Math.floor(rng() * TREE_GREENS.length)],
+        c2: TREE_GREENS[Math.floor(rng() * TREE_GREENS.length)],
+        snow: rng() > 0.72,
+      };
+    });
   }, [rng, size]);
-  // Stable phase offsets derived from seed — never change between renders
   const phaseOffsets = useMemo(() => trees.map((_, i) => i * 1.37 + seed * 0.01), [trees, seed]);
   return (
     <group>
-      {trees.map((t, i) => (
-        <group key={i} position={[t.x, 0, t.z]}>
-          {/* Trunk — 2x radius, reduced by 15% from 1.5 to 1.275, width reduced by 0.5x */}
-          <mesh position={[0, 0.6375 * t.s, 0]} castShadow>
-            <cylinderGeometry args={[size * 0.08 * t.s, size * 0.10 * t.s, 1.275 * t.s, 6]} />
-            <meshStandardMaterial color="#8b5a3c" roughness={0.9} metalness={0.0} />
-          </mesh>
-          {/* Canopy — SwayingCanopy owns its own stable ref + useFrame */}
-          {/* Position at trunk top + half canopy height to align properly */}
-          <group position={[0, 1.275 * t.s + 0.7 * t.h, 0]}>
-            <SwayingCanopy
-              sizeArg={[size * 0.35 * t.s, t.h, 7]}
-              phase={phaseOffsets[i]}
-            />
+      {trees.map((t, i) => {
+        const trunkH = 1.0 * t.s;
+        const S = size * t.s;
+        return (
+          <group key={i} position={[t.x, 0, t.z]}>
+            {/* Trunk (tapered, faceted) */}
+            <mesh position={[0, trunkH * 0.5, 0]} castShadow>
+              <cylinderGeometry args={[size * 0.06 * t.s, size * 0.1 * t.s, trunkH, 6]} />
+              <meshStandardMaterial color="#7a5236" roughness={0.92} flatShading />
+            </mesh>
+            <group position={[0, trunkH, 0]}>
+              <SwayingCanopy phase={phaseOffsets[i]}>
+                {t.pine ? (
+                  <>
+                    {/* Layered conifer tiers */}
+                    <mesh position={[0, t.h * 0.35, 0]} castShadow><coneGeometry args={[S * 0.42, t.h * 0.85, 7]} /><meshStandardMaterial color={t.c1} roughness={0.72} flatShading /></mesh>
+                    <mesh position={[0, t.h * 0.78, 0]} castShadow><coneGeometry args={[S * 0.32, t.h * 0.75, 7]} /><meshStandardMaterial color={t.c2} roughness={0.72} flatShading /></mesh>
+                    <mesh position={[0, t.h * 1.15, 0]} castShadow><coneGeometry args={[S * 0.22, t.h * 0.62, 7]} /><meshStandardMaterial color={t.c1} roughness={0.72} flatShading /></mesh>
+                    {t.snow && <mesh position={[0, t.h * 1.42, 0]}><coneGeometry args={[S * 0.12, t.h * 0.3, 7]} /><meshStandardMaterial color="#eef4f7" roughness={0.55} flatShading /></mesh>}
+                  </>
+                ) : (
+                  <>
+                    {/* Rounded broadleaf foliage clumps */}
+                    <mesh position={[0, t.h * 0.55, 0]} castShadow><icosahedronGeometry args={[S * 0.44, 0]} /><meshStandardMaterial color={t.c1} roughness={0.78} flatShading /></mesh>
+                    <mesh position={[S * 0.2, t.h * 0.82, S * 0.1]} castShadow><icosahedronGeometry args={[S * 0.28, 0]} /><meshStandardMaterial color={t.c2} roughness={0.78} flatShading /></mesh>
+                    <mesh position={[-S * 0.18, t.h * 0.76, -S * 0.08]} castShadow><icosahedronGeometry args={[S * 0.24, 0]} /><meshStandardMaterial color={t.c1} roughness={0.78} flatShading /></mesh>
+                  </>
+                )}
+              </SwayingCanopy>
+            </group>
           </group>
-        </group>
-      ))}
+        );
+      })}
     </group>
   );
 }
@@ -442,26 +587,97 @@ function RockScatter({ size, seed = 1, count = 3 }: { size: number; seed?: numbe
   );
 }
 
-function MountainDeco({ size, seed=1 }: { size: number; seed?: number }) {
-  const rng = useMemo(()=>seededRand(seed),[seed]);
-  // peakScale MUST be inside useMemo — rng() is a stateful closure, calling it in the
-  // render body directly gives a new value every render, making the peaks jiggle.
-  const peakScale = useMemo(() => 0.6 + rng()*0.5, [rng]);
-  // 2x size: doubled all cone radii, heights, and position offsets
+// Grassy hills: rounded low mounds (real elevation) topped with rocks and grass tufts,
+// instead of the old flat rock scatter — reads as rolling hills in isometric view.
+function HillsDeco({ size, seed = 1 }: { size: number; seed?: number }) {
+  const rng = useMemo(() => seededRand(seed), [seed]);
+  const ap = hexApothem(size);
+  // Hills read as GRASS: taller, rounder green knolls (much taller than desert dunes),
+  // topped with grass-blade tufts and grey rocks — matches the green hills tile.
+  const mounds = useMemo(() => {
+    const n = 2 + Math.floor(rng() * 2); // 2–3 knolls
+    return Array.from({ length: n }, (_, i) => {
+      const ang = rng() * Math.PI * 2;
+      const rad = rng() * ap * 0.4;
+      const r = ap * (0.44 + rng() * 0.28);
+      return { x: Math.cos(ang) * rad, z: Math.sin(ang) * rad, r, flat: 0.5 + rng() * 0.35, rot: rng() * Math.PI, light: i % 2 === 0 };
+    });
+  }, [rng, ap]);
+  const rocks = useMemo(() => {
+    const n = 1 + Math.floor(rng() * 2);
+    return Array.from({ length: n }, () => {
+      const ang = rng() * Math.PI * 2;
+      const rad = (0.25 + rng() * 0.55) * ap;
+      return { x: Math.cos(ang) * rad, z: Math.sin(ang) * rad, s: 0.4 + rng() * 0.6, rx: rng() * 0.6, ry: rng() * Math.PI * 2, y: 0.25 + rng() * 0.35 };
+    });
+  }, [rng, ap]);
+  // Grass-blade tufts scattered over the tile so hills read as grassy, not sandy.
+  const tufts = useMemo(() => Array.from({ length: 5 + Math.floor(rng() * 4) }, () => ({
+    x: (rng() - 0.5) * ap * 1.2, z: (rng() - 0.5) * ap * 1.2, h: size * (0.16 + rng() * 0.16), tilt: (rng() - 0.5) * 0.4, light: rng() > 0.5,
+  })), [rng, ap, size]);
   return (
     <group>
-      <mesh position={[0, 2.4*peakScale, 0]} castShadow>
-        <coneGeometry args={[size * 1.1, 4.8*peakScale, 6]} />
-        <meshStandardMaterial color="#9aa3a7" roughness={0.85} metalness={0.03} />
-      </mesh>
-      <mesh position={[-size*0.7, 1.4, size*0.4]} castShadow>
-        <coneGeometry args={[size * 0.6, 2.4, 6]} />
-        <meshStandardMaterial color="#8f989c" roughness={0.85} metalness={0.03} />
-      </mesh>
-      <mesh position={[size*0.8, 1.2, -size*0.5]} castShadow>
-        <coneGeometry args={[size * 0.56, 2.0, 6]} />
-        <meshStandardMaterial color="#8f989c" roughness={0.85} metalness={0.03} />
-      </mesh>
+      {mounds.map((m, i) => (
+        <mesh key={`m${i}`} position={[m.x, 0, m.z]} rotation={[0, m.rot, 0]} scale={[1, m.flat, 1]} castShadow receiveShadow>
+          <sphereGeometry args={[m.r, 12, 7, 0, Math.PI * 2, 0, Math.PI / 2]} />
+          <meshStandardMaterial color={m.light ? '#9cc255' : '#84ac4a'} roughness={0.9} metalness={0} flatShading />
+        </mesh>
+      ))}
+      {tufts.map((g, i) => (
+        <mesh key={`g${i}`} position={[g.x, g.h * 0.5, g.z]} rotation={[g.tilt, 0, g.tilt]}>
+          <coneGeometry args={[size * 0.05, g.h, 4]} />
+          <meshStandardMaterial color={g.light ? '#a9d65f' : '#8bbf4a'} roughness={0.85} flatShading />
+        </mesh>
+      ))}
+      {rocks.map((r, i) => (
+        <mesh key={`r${i}`} position={[r.x, r.y * r.s, r.z]} rotation={[r.rx, r.ry, 0]} castShadow>
+          <dodecahedronGeometry args={[size * 0.15 * r.s, 0]} />
+          <meshStandardMaterial color="#a8a49c" roughness={0.9} metalness={0.04} flatShading />
+        </mesh>
+      ))}
+    </group>
+  );
+}
+
+function MountainDeco({ size, seed=1 }: { size: number; seed?: number }) {
+  const rng = useMemo(()=>seededRand(seed),[seed]);
+  // A main peak + two shoulders, each with a darker strata band and a snow cap.
+  const peaks = useMemo(() => [
+    { x: 0,           z: 0,          r: size * 1.05, h: size * 1.55 * (0.9 + rng() * 0.5), main: true },
+    { x: -size * 0.7, z: size * 0.42, r: size * 0.62, h: size * 0.9 * (0.8 + rng() * 0.4), main: false },
+    { x: size * 0.78, z: -size * 0.5, r: size * 0.56, h: size * 0.78 * (0.8 + rng() * 0.4), main: false },
+  ], [rng, size]);
+  const rocks = useMemo(() => Array.from({ length: 3 }, () => ({
+    x: (rng() - 0.5) * size * 1.5, z: (rng() - 0.5) * size * 1.5, s: 0.3 + rng() * 0.4, rx: rng() * 0.5, ry: rng() * Math.PI,
+  })), [rng, size]);
+  return (
+    <group>
+      {peaks.map((p, i) => (
+        <group key={i} position={[p.x, 0, p.z]}>
+          {/* Rock body */}
+          <mesh position={[0, p.h * 0.5, 0]} castShadow receiveShadow>
+            <coneGeometry args={[p.r, p.h, 6]} />
+            <meshStandardMaterial color={p.main ? '#8b959b' : '#7e878c'} roughness={0.92} metalness={0.03} flatShading />
+          </mesh>
+          {/* Darker strata band (rotated so facets differ from the body) */}
+          <mesh position={[0, p.h * 0.3, 0]} rotation={[0, 0.4, 0]}>
+            <coneGeometry args={[p.r * 0.9, p.h * 0.42, 6]} />
+            <meshStandardMaterial color="#69726f" roughness={0.95} flatShading />
+          </mesh>
+          {/* Snow cap — matches the peak's upper taper */}
+          <mesh position={[0, p.h * 0.84, 0]} castShadow>
+            <coneGeometry args={[p.r * 0.34, p.h * 0.34, 6]} />
+            <meshStandardMaterial color="#eef4f7" roughness={0.55} flatShading />
+          </mesh>
+        </group>
+      ))}
+      {/* Scattered boulders at the base */}
+      {rocks.map((r, i) => (
+        <mesh key={`rk${i}`} position={[r.x, size * 0.12 * r.s, r.z]} rotation={[r.rx, r.ry, 0]} castShadow>
+          <dodecahedronGeometry args={[size * 0.18 * r.s, 0]} />
+          <meshStandardMaterial color="#7c8489" roughness={0.9} metalness={0.03} flatShading />
+        </mesh>
+      ))}
     </group>
   );
 }
@@ -498,25 +714,39 @@ function WaterWaves({ size }: { size: number }) {
     animate(ring3, Math.PI * 1.3);
   });
   const ap = hexApothem(size);
+  const surfRef = React.useRef<THREE.Mesh>(null);
+  useFrame(({ clock }) => {
+    if (surfRef.current) surfRef.current.position.y = 0.12 + Math.sin(clock.getElapsedTime() * 1.3) * 0.03; // gentle swell
+  });
   return (
     <group>
-      {/* Static base surface */}
-      <mesh rotation={[-Math.PI/2,0,0]} position={[0, 0.06, 0]} receiveShadow>
+      {/* Deep-water floor — darker, slightly recessed to give the tile depth */}
+      <mesh rotation={[-Math.PI/2,0,0]} position={[0, -0.04, 0]} receiveShadow>
         <circleGeometry args={[ap * 0.98, 6]} />
-        <meshStandardMaterial color="#4ab8e8" roughness={0.2} metalness={0.25} />
+        <meshStandardMaterial color="#1e6f9c" roughness={0.55} metalness={0.2} />
+      </mesh>
+      {/* Reflective translucent surface (gently swells up/down) */}
+      <mesh ref={surfRef} rotation={[-Math.PI/2,0,0]} position={[0, 0.12, 0]}>
+        <circleGeometry args={[ap * 0.9, 6]} />
+        <meshStandardMaterial color="#4ab8e8" transparent opacity={0.82} roughness={0.12} metalness={0.55} />
+      </mesh>
+      {/* Foam shoreline ring hugging the hex edge */}
+      <mesh rotation={[-Math.PI/2,0,0]} position={[0, 0.13, 0]}>
+        <ringGeometry args={[ap * 0.88, ap * 0.99, 6]} />
+        <meshStandardMaterial color="#d6f2ff" roughness={0.7} transparent opacity={0.85} />
       </mesh>
       {/* Animated ripple rings */}
-      <mesh ref={ring1} rotation={[-Math.PI/2,0,0]} position={[0, 0.12, 0]}>
-        <ringGeometry args={[ap * 0.18, ap * 0.32, 24]} />
-        <meshBasicMaterial color="#a8dff7" transparent opacity={0.5} depthWrite={false} />
+      <mesh ref={ring1} rotation={[-Math.PI/2,0,0]} position={[0, 0.15, 0]}>
+        <ringGeometry args={[ap * 0.18, ap * 0.30, 24]} />
+        <meshBasicMaterial color="#bfeaff" transparent opacity={0.45} depthWrite={false} />
       </mesh>
-      <mesh ref={ring2} rotation={[-Math.PI/2,0,0]} position={[0, 0.13, 0]}>
-        <ringGeometry args={[ap * 0.36, ap * 0.52, 24]} />
-        <meshBasicMaterial color="#a8dff7" transparent opacity={0.4} depthWrite={false} />
+      <mesh ref={ring2} rotation={[-Math.PI/2,0,0]} position={[0, 0.16, 0]}>
+        <ringGeometry args={[ap * 0.36, ap * 0.50, 24]} />
+        <meshBasicMaterial color="#bfeaff" transparent opacity={0.35} depthWrite={false} />
       </mesh>
-      <mesh ref={ring3} rotation={[-Math.PI/2,0,0]} position={[0, 0.14, 0]}>
-        <ringGeometry args={[ap * 0.56, ap * 0.72, 24]} />
-        <meshBasicMaterial color="#c4edfb" transparent opacity={0.3} depthWrite={false} />
+      <mesh ref={ring3} rotation={[-Math.PI/2,0,0]} position={[0, 0.17, 0]}>
+        <ringGeometry args={[ap * 0.56, ap * 0.70, 24]} />
+        <meshBasicMaterial color="#e2f6ff" transparent opacity={0.25} depthWrite={false} />
       </mesh>
     </group>
   );
@@ -743,6 +973,20 @@ function CollectibleMushroom({ size }: { size: number }) {
           </mesh>
         );
       })}
+      {/* Companion mushrooms — a small cluster reads richer than a lone cap */}
+      {[{ x: S * 0.3, z: S * 0.12, s: 0.55 }, { x: -S * 0.26, z: -S * 0.16, s: 0.42 }].map((m, i) => (
+        <group key={`mini-${i}`} position={[m.x, 0, m.z]} renderOrder={25}>
+          <mesh position={[0, S * 0.12 * m.s, 0]}><cylinderGeometry args={[S * 0.04 * m.s, S * 0.055 * m.s, S * 0.24 * m.s, 6]} /><meshStandardMaterial color="#aaddff" emissive="#66bbff" emissiveIntensity={0.5} roughness={0.4} metalness={0.1} /></mesh>
+          <mesh position={[0, S * 0.28 * m.s, 0]}><sphereGeometry args={[S * 0.15 * m.s, 8, 6, 0, Math.PI * 2, 0, Math.PI * 0.6]} /><meshStandardMaterial color="#0066ff" emissive="#0044cc" emissiveIntensity={0.7} roughness={0.3} metalness={0.2} /></mesh>
+        </group>
+      ))}
+      {/* Glowing spores drifting up */}
+      {[0, 1, 2].map(i => (
+        <mesh key={`spore-${i}`} position={[Math.cos(i * 2.1) * S * 0.2, S * (0.6 + i * 0.14), Math.sin(i * 2.1) * S * 0.2]}>
+          <sphereGeometry args={[S * 0.025, 5, 4]} />
+          <meshBasicMaterial color="#bfe9ff" transparent opacity={0.7} />
+        </mesh>
+      ))}
     </group>
   );
 }
@@ -750,55 +994,52 @@ function CollectibleMushroom({ size }: { size: number }) {
 function DesertDunes({ size, seed = 1 }: { size: number; seed?: number }) {
   const rng = useMemo(() => seededRand(seed), [seed]);
   const ap = hexApothem(size);
-  const ring1 = React.useRef<THREE.Mesh>(null);
-  const ring2 = React.useRef<THREE.Mesh>(null);
-  const ring3 = React.useRef<THREE.Mesh>(null);
-  useFrame(({ clock }) => {
-    const t = clock.getElapsedTime();
-    // Same pulsing pattern as WaterWaves — scale + opacity, offset phases
-    const animate = (ref: React.RefObject<THREE.Mesh | null>, phase: number) => {
-      if (!ref.current) return;
-      const s = 0.55 + 0.45 * Math.abs(Math.sin(t * 0.55 + phase));
-      ref.current.scale.setScalar(s);
-      (ref.current.material as THREE.MeshBasicMaterial).opacity =
-        0.12 + 0.38 * (1 - Math.abs(Math.sin(t * 0.55 + phase)));
-    };
-    animate(ring1, 0);
-    animate(ring2, Math.PI * 0.65);
-    animate(ring3, Math.PI * 1.3);
-  });
-  // Only ~60% of tiles get 3D crescent dune arcs
-  const hasDunes = rng() < 0.6;
-  const duneArcs = useMemo(() => !hasDunes ? [] : [
-    { x: (rng() - 0.5) * ap * 0.5, z: -ap * 0.28, rotY: rng() * Math.PI * 2, r: ap * 0.38, tube: ap * 0.052, arc: Math.PI * 0.70 },
-    { x: (rng() - 0.5) * ap * 0.4, z:  ap * 0.06, rotY: rng() * Math.PI * 2, r: ap * 0.28, tube: ap * 0.046, arc: Math.PI * 0.62 },
-    { x: (rng() - 0.5) * ap * 0.3, z:  ap * 0.30, rotY: rng() * Math.PI * 2, r: ap * 0.20, tube: ap * 0.040, arc: Math.PI * 0.56 },
-  ], [hasDunes, rng, ap]);
+  // Desert reads as SAND: low, wide, smooth wind-swept dunes (much flatter than the
+  // grassy hill knolls), sandy-coloured to match the tile, with ripple lines and small
+  // sand pebbles — no grass, no tall mounds.
+  const dunes = useMemo(() => {
+    const n = 2 + Math.floor(rng() * 2); // 2–3 dunes
+    const arr: Array<{ x:number; z:number; r:number; flat:number; rot:number; light:boolean }> = [];
+    for (let i = 0; i < n; i++) {
+      const ang = rng() * Math.PI * 2;
+      const rad = rng() * ap * 0.4;
+      const r = ap * (0.42 + rng() * 0.34);               // wider
+      arr.push({ x: Math.cos(ang) * rad, z: Math.sin(ang) * rad, r, flat: 0.12 + rng() * 0.1, rot: rng() * Math.PI, light: i % 2 === 0 }); // much flatter
+    }
+    return arr;
+  }, [rng, ap]);
+  const ripples = useMemo(() => Array.from({ length: 4 }, () => ({
+    x: (rng() - 0.5) * ap * 0.75, z: (rng() - 0.5) * ap * 0.75, r: ap * (0.12 + rng() * 0.2), rot: rng() * Math.PI * 2,
+  })), [rng, ap]);
+  const pebbles = useMemo(() => Array.from({ length: 2 + Math.floor(rng() * 2) }, () => ({
+    x: (rng() - 0.5) * ap * 1.1, z: (rng() - 0.5) * ap * 1.1, s: 0.3 + rng() * 0.4, rot: rng() * Math.PI,
+  })), [rng, ap]);
   return (
     <group>
-      {/* Sandy base — hexagonal (6 segments matches tile shape) */}
-      <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, 0.06, 0]}>
+      {/* Sandy base — matches the desert tile colour */}
+      <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, 0.06, 0]} receiveShadow>
         <circleGeometry args={[ap * 0.98, 6]} />
-        <meshStandardMaterial color="#d9a840" roughness={0.95} metalness={0} />
+        <meshStandardMaterial color="#f7d08a" roughness={1} metalness={0} flatShading />
       </mesh>
-      {/* Hex ring waves — ringGeometry with 6 theta segments = hexagonal outline */}
-      <mesh ref={ring1} rotation={[-Math.PI / 2, 0, 0]} position={[0, 0.12, 0]}>
-        <ringGeometry args={[ap * 0.18, ap * 0.32, 6]} />
-        <meshBasicMaterial color="#f0c040" transparent opacity={0.5} depthWrite={false} />
-      </mesh>
-      <mesh ref={ring2} rotation={[-Math.PI / 2, 0, 0]} position={[0, 0.13, 0]}>
-        <ringGeometry args={[ap * 0.36, ap * 0.52, 6]} />
-        <meshBasicMaterial color="#e8b030" transparent opacity={0.4} depthWrite={false} />
-      </mesh>
-      <mesh ref={ring3} rotation={[-Math.PI / 2, 0, 0]} position={[0, 0.14, 0]}>
-        <ringGeometry args={[ap * 0.56, ap * 0.72, 6]} />
-        <meshBasicMaterial color="#f5cc55" transparent opacity={0.3} depthWrite={false} />
-      </mesh>
-      {/* Pokemon-style crescent dune arcs on select tiles */}
-      {duneArcs.map((d, i) => (
-        <mesh key={`arc${i}`} position={[d.x, 0.10, d.z]} rotation={[-Math.PI / 2, 0, d.rotY]}>
-          <torusGeometry args={[d.r, d.tube, 3, 16, d.arc]} />
-          <meshStandardMaterial color={i % 2 === 0 ? '#b07820' : '#9a6818'} roughness={0.92} metalness={0} />
+      {/* Low, wide dune mounds */}
+      {dunes.map((d, i) => (
+        <mesh key={`dune${i}`} position={[d.x, 0.06, d.z]} rotation={[0, d.rot, 0]} scale={[1.35, d.flat, 1]} castShadow>
+          <sphereGeometry args={[d.r, 14, 6, 0, Math.PI * 2, 0, Math.PI / 2]} />
+          <meshStandardMaterial color={d.light ? '#f2c877' : '#e3b45e'} roughness={1} metalness={0} flatShading />
+        </mesh>
+      ))}
+      {/* Wind-ripple arcs */}
+      {ripples.map((p, i) => (
+        <mesh key={`rip${i}`} rotation={[-Math.PI / 2, 0, p.rot]} position={[p.x, 0.11, p.z]}>
+          <ringGeometry args={[p.r, p.r + ap * 0.025, 16, 1, 0, Math.PI * 0.85]} />
+          <meshBasicMaterial color="#d9a94e" transparent opacity={0.55} depthWrite={false} />
+        </mesh>
+      ))}
+      {/* Small sand pebbles (sandstone-coloured, not grey rock) */}
+      {pebbles.map((p, i) => (
+        <mesh key={`peb${i}`} position={[p.x, 0.08 * p.s, p.z]} rotation={[p.rot, p.rot * 1.3, 0]} castShadow>
+          <dodecahedronGeometry args={[size * 0.07 * p.s, 0]} />
+          <meshStandardMaterial color="#cda15c" roughness={0.95} metalness={0} flatShading />
         </mesh>
       ))}
     </group>
@@ -1224,6 +1465,22 @@ function IsometricPet({ ps, isMoving }: { ps: number; isMoving: boolean }) {
         <sphereGeometry args={[ps * 0.72, 16, 12]} />
         <meshStandardMaterial color="#f5c97a" roughness={0.6} />
       </mesh>
+      {/* Collar */}
+      <mesh position={[0, ps * 1.02, 0]} rotation={[Math.PI / 2, 0, 0]} frustumCulled={false}>
+        <torusGeometry args={[ps * 0.5, ps * 0.07, 6, 16]} />
+        <meshStandardMaterial color="#c0392b" roughness={0.5} metalness={0.2} />
+      </mesh>
+      <mesh position={[0, ps * 0.86, ps * 0.5]} frustumCulled={false}>
+        <sphereGeometry args={[ps * 0.1, 8, 6]} />
+        <meshStandardMaterial color="#ffd54a" roughness={0.3} metalness={0.6} />
+      </mesh>
+      {/* Whiskers — near-horizontal, splayed out from the muzzle */}
+      {[[ps * 0.3, -1.4, 0.12], [ps * 0.3, -1.55, -0.05], [-ps * 0.3, 1.4, 0.12], [-ps * 0.3, 1.55, -0.05]].map((w, i) => (
+        <mesh key={`wh${i}`} position={[w[0], ps * (1.42 + w[2]), ps * 0.58]} rotation={[0, 0, w[1]]} frustumCulled={false}>
+          <cylinderGeometry args={[ps * 0.012, ps * 0.012, ps * 0.42, 3]} />
+          <meshBasicMaterial color="#fff8e8" />
+        </mesh>
+      ))}
       {/* Muzzle */}
       <mesh position={[0, ps * 1.42, ps * 0.56]} frustumCulled={false}>
         <sphereGeometry args={[ps * 0.28, 10, 8]} />
@@ -1327,8 +1584,11 @@ export default function SoloMissionMap3D({
   onOpenSkillTree,
   onHealHP,
   onRestoreEP,
+  onDamageHP,
+  heroAttack = 8,
+  combatStats,
   heroAvatar,
-}: { 
+}: {
   onExit?: () => void; 
   onMapUpdate?: (data: MinimapData) => void; 
   abilitySlots?: Ability[]; 
@@ -1347,6 +1607,11 @@ export default function SoloMissionMap3D({
   onOpenSkillTree?: () => void;
   onHealHP?: (amount: number) => void;
   onRestoreEP?: (amount: number) => void;
+  onDamageHP?: (amount: number) => void;
+  /** Hero attack stat — creep-camp combat damage per tick. */
+  heroAttack?: number;
+  /** Combat stats (atk/def/spd) shown in the in-game menu overview. */
+  combatStats?: { atk: number; def: number; spd: number };
   /** Active loadout passed from App — used as the source of truth for avatar data
    *  so changes in the configurator reflect immediately without a page reload. */
   heroAvatar?: CharacterLoadout | null;
@@ -1476,16 +1741,49 @@ export default function SoloMissionMap3D({
 
   // Destructure for convenience (avoids updating all downstream call sites)
   const {
-    collectibleFlowers, collectibleMushrooms,
-    nearbyFlower, nearbyMushroom,
-    collectingFlower, collectingMushroom, collectingProgress,
-    nearbyFlowerRef, nearbyMushroomRef, collectingFlowerRef, collectingMushroomRef, collectTimerRef,
+    collectibleFlowers, collectibleMushrooms, collectibleResources,
+    nearbyFlower, nearbyMushroom, nearbyResource,
+    collectingFlower, collectingMushroom, collectingResource, collectingProgress,
+    nearbyFlowerRef, nearbyMushroomRef, nearbyResourceRef, collectingFlowerRef, collectingMushroomRef, collectTimerRef,
     localHeroInventory, setLocalHeroInventory,
     localPetInventory, setLocalPetInventory,
     itemSlots, setItemSlots,
     handleCollect,
     handleItemUse,
   } = collectibles;
+
+  // ── Creep camps ─────────────────────────────────────────────────────────────
+  // Award hero XP (preserving skill data) — used by creep-camp clears.
+  const profileForXpRef = React.useRef(profile);
+  profileForXpRef.current = profile;
+  const awardHeroXp = React.useCallback((amount: number) => {
+    const prof = profileForXpRef.current;
+    const heroXp = prof?.progress?.hero?.xp ?? 0;
+    const heroLevel = prof?.progress?.hero?.level ?? 1;
+    const newXp = heroXp + amount;
+    const newLevel = Math.max(heroLevel, getLevelFromXp(newXp));
+    saveProgress({
+      hero: {
+        traits: prof?.progress?.hero?.traits ?? [],
+        unlockedSkillIds: prof?.progress?.hero?.unlockedSkillIds ?? [],
+        unlockOrder: prof?.progress?.hero?.unlockOrder ?? [],
+        ...prof?.progress?.hero,
+        xp: newXp,
+        level: newLevel,
+      },
+    });
+  }, [saveProgress]);
+
+  const { camps: creepCamps, inCombat: creepCombat } = useCreeps({
+    tiles,
+    heroQ: hero.pos.q,
+    heroR: hero.pos.r,
+    centerQ: centerAxial.q,
+    centerR: centerAxial.r,
+    heroAttack,
+    onHeroDamage: (amt) => onDamageHP?.(amt),
+    awardXp: awardHeroXp,
+  });
 
   // Ability slots (QWER) — still managed locally as they are tightly coupled
   // to the in-map keydown handler; skill-tree abilities come in via externalAbilities prop.
@@ -1495,26 +1793,72 @@ export default function SoloMissionMap3D({
     { id: 'shield', icon: '🛡️', key: 'E', cooldown: 0, maxCooldown: 8 },
     { id: 'heal', icon: '💚', key: 'R', cooldown: 0, maxCooldown: 10 },
   ]);
-  // Stable ref so the keydown closure always reads current slots without going in the dep array
-  const abilitySlotsRef = React.useRef(abilitySlots);
-  abilitySlotsRef.current = abilitySlots;
+  // Defensive ability set (shown/used in Defense mode). Skill-tree defensive loadout
+  // takes precedence when present.
+  const [defenseSlots, setDefenseSlots] = useState<Ability[]>(externalDefense && externalDefense.length ? externalDefense : [
+    { id: 'shield', icon: '🛡️', key: 'Q', cooldown: 0, maxCooldown: 8 },
+    { id: 'heal',   icon: '💚', key: 'W', cooldown: 0, maxCooldown: 10 },
+    { id: 'dash',   icon: '🦶', key: 'E', cooldown: 0, maxCooldown: 5 },
+    { id: 'ward',   icon: '✨', key: 'R', cooldown: 0, maxCooldown: 12 },
+  ]);
+  // Attack/Defense mode — determines which ability set QWER and the HUD use.
+  const [abilityMode, setAbilityMode] = useState<'offense' | 'defense'>('offense');
 
-  // Update abilities when external ones change (from skilltree)
+  // Active set derived from mode; refs so the keydown closure reads current values.
+  const activeSlots = abilityMode === 'defense' ? defenseSlots : abilitySlots;
+  const setActiveSlots = abilityMode === 'defense' ? setDefenseSlots : setAbilitySlots;
+  const abilitySlotsRef = React.useRef(activeSlots);
+  abilitySlotsRef.current = activeSlots;
+  const setActiveSlotsRef = React.useRef(setActiveSlots);
+  setActiveSlotsRef.current = setActiveSlots;
+
+  // Update offensive abilities when external ones change (from skilltree)
   React.useEffect(() => {
     if (externalAbilities && externalAbilities.length > 0) {
       setAbilitySlots(externalAbilities);
     }
   }, [externalAbilities]);
+  React.useEffect(() => {
+    if (externalDefense && externalDefense.length > 0) {
+      setDefenseSlots(externalDefense);
+    }
+  }, [externalDefense]);
+
+  // ── Inventory transfer between hero and pet ─────────────────────────────────
+  const transferItem = React.useCallback((type: string, dir: 'toPet' | 'toHero') => {
+    const src = dir === 'toPet' ? localHeroInventory : localPetInventory;
+    const item = src.find(i => i.type === type && i.quantity > 0);
+    if (!item) return;
+    const dec = (prev: typeof src) => prev.map(i => i.type === type ? { ...i, quantity: i.quantity - 1 } : i).filter(i => i.quantity > 0);
+    const inc = (prev: typeof src) => {
+      const ex = prev.find(i => i.type === type);
+      return ex ? prev.map(i => i.type === type ? { ...i, quantity: i.quantity + 1 } : i)
+                : [...prev, { id: `${type}-${Date.now()}`, type, quantity: 1, effect: item.effect, value: item.value, icon: (item as any).icon }];
+    };
+    if (dir === 'toPet') { setLocalHeroInventory(dec); setLocalPetInventory(inc); }
+    else { setLocalPetInventory(dec); setLocalHeroInventory(inc); }
+  }, [localHeroInventory, localPetInventory, setLocalHeroInventory, setLocalPetInventory]);
+
+  // Persist both inventories (debounced) so transfers/pickups survive reloads.
+  React.useEffect(() => {
+    const h = setTimeout(() => {
+      saveProgress({ heroInventory: localHeroInventory as any, petInventory: localPetInventory as any });
+    }, 800);
+    return () => clearTimeout(h);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [localHeroInventory, localPetInventory]);
 
   // Ability cooldown countdown (1 second intervals)
   React.useEffect(() => {
+    const tick = (prev: Ability[]) => {
+      if (!prev.some(a => (a.cooldown ?? 0) > 0)) return prev; // preserve ref when nothing to tick
+      return prev.map(ability =>
+        (ability.cooldown ?? 0) > 0 ? { ...ability, cooldown: Math.max(0, (ability.cooldown ?? 0) - 1) } : ability
+      );
+    };
     const interval = setInterval(() => {
-      setAbilitySlots(prev => {
-        if (!prev.some(a => (a.cooldown ?? 0) > 0)) return prev; // preserve reference when nothing to tick
-        return prev.map(ability =>
-          (ability.cooldown ?? 0) > 0 ? { ...ability, cooldown: Math.max(0, (ability.cooldown ?? 0) - 1) } : ability
-        );
-      });
+      setAbilitySlots(tick);   // offensive cooldowns
+      setDefenseSlots(tick);   // defensive cooldowns
     }, 1000);
     return () => clearInterval(interval);
   }, []);
@@ -2015,25 +2359,28 @@ export default function SoloMissionMap3D({
         return;
       }
       
-      // ─── ABILITY ACTIVATION (QWER) ────────────────────────────────────
-      const abilityMap: Record<string, string> = {
-        q: 'q',
-        w: 'w',
-        e: 'e',
-        r: 'r',
-      };
-      
+      // ─── ATTACK/DEFENSE MODE TOGGLE (Tab) ─────────────────────────────
+      if (k === 'tab') {
+        e.preventDefault();
+        setAbilityMode(m => (m === 'offense' ? 'defense' : 'offense'));
+        return;
+      }
+
+      // ─── ABILITY ACTIVATION (QWER) — uses the ACTIVE mode's ability set ─
+      const abilityMap: Record<string, string> = { q: 'q', w: 'w', e: 'e', r: 'r' };
       if (abilityMap[k]) {
         if (e.repeat) return;
         const slotKey = abilityMap[k].toUpperCase();
         const ability = abilitySlotsRef.current.find(a => a.key === slotKey);
         if (ability && ability.cooldown === 0) {
-          console.log(`[Ability] Activated ${ability.id} (${ability.icon})`);
-          // Trigger cooldown
-          setAbilitySlots(prev => prev.map(a => 
+          console.log(`[Ability] Activated ${ability.id} (${ability.icon}) [${abilitySlotsRef.current === defenseSlots ? 'DEF' : 'ATK'}]`);
+          // Trigger cooldown on the active set (offensive or defensive).
+          setActiveSlotsRef.current(prev => prev.map(a =>
             a.key === slotKey ? { ...a, cooldown: a.maxCooldown } : a
           ));
-          // TODO: Apply ability effect (damage, heal, buff, etc.)
+          // Defensive abilities apply a supportive effect; offensive damage the engaged camp.
+          if (ability.id === 'heal') onHealHP?.(25);
+          else if (ability.id === 'ward' || ability.id === 'shield') onRestoreEP?.(15);
         } else if (ability) {
           console.log(`[Ability] ${ability.id} on cooldown: ${ability.cooldown}s remaining`);
         }
@@ -2078,6 +2425,7 @@ export default function SoloMissionMap3D({
     recenterSignal={recenterSignal}
     nearbyFlowerRef={nearbyFlowerRef}
     nearbyMushroomRef={nearbyMushroomRef}
+    nearbyResourceRef={nearbyResourceRef}
     collectingFlowerRef={collectingFlowerRef}
     collectingMushroomRef={collectingMushroomRef}
     handleCollect={handleCollect}
@@ -2138,7 +2486,7 @@ export default function SoloMissionMap3D({
                         <group position={[0, tileTop, 0]}><MountainDeco size={hexSize} seed={t.q * 31 + t.r * 17} /></group>
                       )}
                       {(inVision || explored) && t.type === 'hills' && (
-                        <group position={[0, tileTop, 0]}><RockScatter size={hexSize} seed={t.q * 31 + t.r * 17} count={3} /></group>
+                        <group position={[0, tileTop, 0]}><HillsDeco size={hexSize} seed={t.q * 31 + t.r * 17} /></group>
                       )}
                       {(inVision || explored) && t.type === 'water' && (
                         <group position={[0, tileTop, 0]}><WaterWaves size={hexSize} /></group>
@@ -2148,6 +2496,11 @@ export default function SoloMissionMap3D({
                       )}
                       {(inVision || explored) && t.type === 'desert' && (
                         <group position={[0, tileTop, 0]} renderOrder={5}><DesertDunes size={hexSize} seed={t.q * 41 + t.r * 19} /></group>
+                      )}
+                      {/* Gatherable resource node (ore / energy / bio) — removed from the
+                          map on collect, so drive it off the collectible map, not t.resource. */}
+                      {(inVision || explored) && collectibleResources.has(key) && (
+                        <group position={[0, tileTop, 0]} renderOrder={22}><ResourceProp type={collectibleResources.get(key)!} size={hexSize} seed={t.q * 29 + t.r * 23} /></group>
                       )}
                       {/* Collectible healing flowers (plains only) */}
                       {inVision && collectibleFlowers.has(key) && (
@@ -2228,6 +2581,17 @@ export default function SoloMissionMap3D({
                     {/* Name label */}
                     <Text position={[0, ps * 3.1, 0]} fontSize={ps * 0.55} color="#fff" anchorX="center" anchorY="middle">Pet</Text>
                   </group> ); })()}
+                {/* Creep camps — rendered near the hero, hidden once cleared */}
+                {Array.from(creepCamps.values()).map(camp => {
+                  if (camp.cleared) return null;
+                  if (axialDistance({ q: camp.q, r: camp.r }, hero.pos) > RENDER_RADIUS) return null;
+                  const cw = axialToWorld({ q: camp.q, r: camp.r }, hexSize);
+                  return (
+                    <group key={`camp-${camp.key}`} position={[cw.x, heightFor({ q: camp.q, r: camp.r, type: 'plains', char: 'P', resource: null }), cw.z]} frustumCulled={false}>
+                      <CreepCampMesh camp={camp} size={hexSize} />
+                    </group>
+                  );
+                })}
                 {/* Boundary reference planes */}
                 <group>{boundaryPlanes}</group>
               </group>
@@ -2273,18 +2637,45 @@ export default function SoloMissionMap3D({
                 Explore: {exploredCount}/{explorationGoal} {explorationComplete ? '✓' : ''}
               </div>
               
-              {/* Nearby collectible prompt (flower or mushroom) */}
-              {(nearbyFlower || nearbyMushroom) && (
+              {/* Terrain / resource tooltip on hover */}
+              {hover && (
+                <div className="fixed top-16 left-3 z-40 px-3 py-2 rounded-xl bg-[#0c1219]/92 ring-1 ring-white/12 text-xs pointer-events-none shadow-lg">
+                  <div className="font-semibold capitalize flex items-center gap-1.5">
+                    <span>{TERRAIN_ICON[hover.type] || '⬡'}</span>{hover.type}
+                  </div>
+                  {hover.resource && (
+                    <div className="mt-0.5 text-emerald-300 flex items-center gap-1">
+                      {RESOURCE_DEFS[hover.resource as keyof typeof RESOURCE_DEFS]?.icon} {RESOURCE_DEFS[hover.resource as keyof typeof RESOURCE_DEFS]?.label} resource
+                    </div>
+                  )}
+                  <div className="mt-0.5 opacity-40 text-[10px]">{hover.q}, {hover.r}</div>
+                </div>
+              )}
+
+              {/* Creep combat indicator */}
+              {creepCombat && (
+                <div className="fixed top-16 left-1/2 -translate-x-1/2 z-40 animate-pulse">
+                  <div className="px-4 py-2 rounded-xl bg-rose-900/80 border border-rose-400/60 text-sm font-bold text-rose-100 backdrop-blur-sm shadow-lg flex items-center gap-2">
+                    ⚔️ In Combat — clear the camp for XP!
+                  </div>
+                </div>
+              )}
+
+              {/* Nearby collectible prompt (flower / mushroom / resource node) */}
+              {(nearbyFlower || nearbyMushroom || nearbyResource) && (
                 <div className="fixed bottom-56 left-1/2 -translate-x-1/2 animate-bounce">
                   <div className="relative px-6 py-3 rounded-xl bg-emerald-900/80 border border-emerald-400/60 text-sm font-semibold text-emerald-100 backdrop-blur-sm shadow-lg overflow-hidden">
-                    {(collectingFlower || collectingMushroom) && (
+                    {(collectingFlower || collectingMushroom || collectingResource) && (
                       <div className="absolute inset-0 rounded-xl pointer-events-none" style={{
                         background: `conic-gradient(#10b981 ${collectingProgress * 360}deg, transparent 0)`,
                       }} />
                     )}
                     <div className="relative z-10 flex items-center gap-2">
-                      {nearbyFlower ? '🌸 Flower' : '🍃 Mushroom'} Press <span className="px-1.5 py-0.5 rounded bg-emerald-700 font-bold">C</span> to Collect
-                      {(collectingFlower || collectingMushroom) && <span className="ml-1 text-xs text-emerald-300">{Math.round(collectingProgress * 100)}%</span>}
+                      {nearbyFlower ? '🌸 Flower'
+                        : nearbyMushroom ? '🍃 Mushroom'
+                        : nearbyResource ? `${RESOURCE_DEFS[nearbyResource.type].icon} ${RESOURCE_DEFS[nearbyResource.type].label}`
+                        : ''} Press <span className="px-1.5 py-0.5 rounded bg-emerald-700 font-bold">C</span> to Collect
+                      {(collectingFlower || collectingMushroom || collectingResource) && <span className="ml-1 text-xs text-emerald-300">{Math.round(collectingProgress * 100)}%</span>}
                     </div>
                   </div>
                 </div>
@@ -2319,7 +2710,12 @@ export default function SoloMissionMap3D({
                   icon: '🐾',
                 }}
                 abilities={abilitySlots}
-                defensiveAbilities={externalDefense || []}
+                defensiveAbilities={defenseSlots}
+                abilityMode={abilityMode}
+                onSetAbilityMode={setAbilityMode}
+                onTransferToPet={(type: string) => transferItem(type, 'toPet')}
+                onTransferToHero={(type: string) => transferItem(type, 'toHero')}
+                heroStats={combatStats}
                 items={itemSlots}
                 resources={resources || []}
                 skillTokens={skillTokens || 0}
@@ -2389,7 +2785,7 @@ function ChunkDebugTiles({ heroPos, hexSize }: { heroPos: Axial; hexSize: number
 // Custom camera controller: edge pan & drag (game mode) with optional follow axial coord
 function MapCameraController({
   bounds, gameMode, heroWorld, recenterSignal,
-  nearbyFlowerRef, nearbyMushroomRef, collectingFlowerRef, collectingMushroomRef,
+  nearbyFlowerRef, nearbyMushroomRef, nearbyResourceRef, collectingFlowerRef, collectingMushroomRef,
   handleCollect,
   abilitySlots, setAbilitySlots,
 }: {
@@ -2399,10 +2795,11 @@ function MapCameraController({
   recenterSignal?: number;
   nearbyFlowerRef: React.MutableRefObject<string | null>;
   nearbyMushroomRef: React.MutableRefObject<string | null>;
+  nearbyResourceRef: React.MutableRefObject<{ key: string; type: 'ore' | 'energy' | 'bio' } | null>;
   collectingFlowerRef: React.MutableRefObject<string | null>;
   collectingMushroomRef: React.MutableRefObject<string | null>;
   /** Delegated to useCollectibles — starts the 1200 ms collection animation. */
-  handleCollect: (flowerKey: string | null, mushroomKey: string | null) => void;
+  handleCollect: (flowerKey: string | null, mushroomKey: string | null, resource?: { key: string; type: 'ore' | 'energy' | 'bio' } | null) => void;
   abilitySlots: Ability[];
   setAbilitySlots: React.Dispatch<React.SetStateAction<Ability[]>>;
 }) {
@@ -2532,10 +2929,10 @@ function MapCameraController({
           keysPressed.current.ArrowDown = true;
           keysPressed.current.PageDown = true;
         }
-        // 'C' key to collect nearby flower (plains) or mushroom (forest)
+        // 'C' key to collect a nearby flower, mushroom, or resource node (ore/energy/bio)
         // Delegated to useCollectibles hook via handleCollect ref
         if (e.key.toLowerCase() === 'c' && !collectingFlowerRef.current && !collectingMushroomRef.current) {
-          handleCollectRef.current(nearbyFlowerRef.current, nearbyMushroomRef.current);
+          handleCollectRef.current(nearbyFlowerRef.current, nearbyMushroomRef.current, nearbyResourceRef.current);
         }
       } catch (err) {
         console.error('[KeybindError]', err);

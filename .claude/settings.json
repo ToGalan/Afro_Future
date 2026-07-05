@@ -8,7 +8,8 @@
       "Bash(echo \"exit: $?\")",
       "Bash(echo \"typecheck: $?\")",
       "Bash(node -e \"console.log\\(require\\('./node_modules/three/package.json'\\).version\\)\")",
-      "Bash(grep -n \"rotation={\\\\[0, Math.PI, 0\\\\]}\" src/components/GameAvatarMesh.tsx)"
+      "Bash(grep -n \"rotation={\\\\[0, Math.PI, 0\\\\]}\" src/components/GameAvatarMesh.tsx)",
+      "Bash(grep -viE \"//|resources\\\\[\")"
     ]
   }
 }

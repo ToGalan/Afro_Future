@@ -1,5 +1,5 @@
 import { create } from 'zustand';
-import { makeTree, deriveTraits } from './skillData';
+import { makeTree, deriveTraits, sumSkillStats } from './skillData';
 
 export interface AbilityLoadout {
   offensive: (string | null)[];  // 4 slots for Q/W/E/R
@@ -31,39 +31,22 @@ export interface SkillState {
   setAbilitySlot: (category: 'offensive' | 'defensive', slot: number, skillId: string | null) => void;
 }
 
+const TREE = makeTree();
+// Stats now come from each node's explicit `stats` (defined in skillData), not substrings.
 function deriveStats(unlocked: string[]): { attack:number; defense:number; utility:number } {
-  // Simple mapping heuristics by substring (can refine later)
-  let attack=0, defense=0, utility=0;
-  unlocked.forEach(id => {
-    if (id.includes('combat') || id.includes('weapon')) attack += 2;
-    if (id.includes('defense') || id.includes('shield')) defense += 2;
-    if (id.includes('support') || id.includes('leadership') || id.includes('mobility')) utility += 2;
-    if (id.includes('terraform') || id.includes('technologist')) utility += 1;
-  });
-  return { attack, defense, utility };
+  return sumSkillStats(unlocked, TREE);
 }
 
-const TREE = makeTree();
 const INIT_UNLOCKED = ['root'];
-const INIT_STATS = (function(){
-  // mirror deriveStats for initial unlocked state
-  let attack=0, defense=0, utility=0;
-  INIT_UNLOCKED.forEach(id => {
-    if (id.includes('combat') || id.includes('weapon')) attack += 2;
-    if (id.includes('defense') || id.includes('shield')) defense += 2;
-    if (id.includes('support') || id.includes('leadership') || id.includes('mobility')) utility += 2;
-    if (id.includes('terraform') || id.includes('technologist')) utility += 1;
-  });
-  return { attack, defense, utility };
-})();
+const INIT_STATS = deriveStats(INIT_UNLOCKED);
 const INIT_TRAITS = deriveTraits(INIT_UNLOCKED, TREE);
 
 export const useSkillStore = create<SkillState>((set, get) => ({
   level: 1,
   unlocked: INIT_UNLOCKED,
   spent: 0,
-  basePoints: 12,
-  bonusPer5: 3,
+  basePoints: 3,   // starting points at level 1
+  bonusPer5: 2,    // extra points every 5th level (on top of 1/level)
   unlockOrder: [],
   attack: INIT_STATS.attack,
   defense: INIT_STATS.defense,
@@ -134,7 +117,10 @@ export const useSkillStore = create<SkillState>((set, get) => ({
   reset: () => set({ level: 1, unlocked: ['root'], unlockOrder: [], spent: 0, attack:0, defense:0, utility:0, traitTags: [], primaryBranch: undefined, primaryType: undefined, abilityLoadout: { offensive: [null,null,null,null], defensive: [null,null,null,null] } }),
 }));
 
+// Scaling economy: 3 base + 1 per level + a bonus every 5th level. Ties directly to
+// the XP economy — gaining XP levels you up, which grants points to spend here.
 export function availablePoints(state: SkillState) {
-  const bonusBlocks = Math.floor((Math.max(1,state.level)-1)/5);
-  return state.basePoints + bonusBlocks * state.bonusPer5 - state.spent;
+  const lvl = Math.max(1, state.level);
+  const bonusBlocks = Math.floor((lvl - 1) / 5);
+  return state.basePoints + (lvl - 1) + bonusBlocks * state.bonusPer5 - state.spent;
 }
