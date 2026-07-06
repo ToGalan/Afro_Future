@@ -2,6 +2,8 @@
 import { usePlayerProfile } from './hooks/usePlayerProfile';
 import { useSkillStore, availablePoints } from './store/skillStore';
 import { computeEffectiveStats, STAT_META } from './services/playerStats';
+import { getTotalXpForLevel, getXpForNextLevel } from './services/playerExpEconomy';
+import { abilitiesForFaction, factionAbilityBonus, type FactionAbility } from './services/factionAbilities';
 import { makeTree } from './store/skillData';
 import { GROUP_ORDER, getVariantsByGroup } from './assets/threeParts';
 import { buildAvatarConfig } from './services/avatarConfig';
@@ -714,7 +716,7 @@ function SkillsModal({ loadout, onClose }: { loadout: CharacterLoadout; onClose:
           title="Close (Esc)"
         >✕</button>
 
-        {/* Left: Skill Tree */}
+        {/* Left: Skill Tree (circular web) */}
         <div className="flex-1 min-w-0 overflow-hidden">
           <Suspense fallback={<div className="w-full h-full flex items-center justify-center text-gray-400 text-sm">Loading skill tree…</div>}>
             <SnowflakeSkillTree initialLevel={loadout.level} />
@@ -886,6 +888,7 @@ function MissionScreen({ onExit, onOpenSkillTree, activeLoadout }: { onExit: () 
     idToken,
     faction: (activeLoadoutRaw as any)?.faction ?? (profile as any)?.progress?.faction,
     archetype: (activeLoadoutRaw as any)?.archetype,
+    factionAbilities: (profile as any)?.progress?.factionAbilities,
   });
   const {
     skillState,
@@ -983,15 +986,23 @@ function MissionScreen({ onExit, onOpenSkillTree, activeLoadout }: { onExit: () 
           onMapUpdate={onMapUpdate} 
           abilitySlots={abilities} 
           defenseSlots={defensiveAbilities}
-          heroVitals={{
-            hp: { current: Math.floor(heroVitals.hp), max: HP_MAX },
-            ep: { current: Math.floor(heroVitals.ep), max: EP_MAX },
-            xp: { current: Math.floor(profile?.progress?.hero?.xp ?? 0), max: XP_MAX },
-            level: skillState.level,
-            name: loadout.name,
-            portraitUrl: loadout.portraitUrl,
-            buffs: heroBuffs,
-          }}
+          heroVitals={(() => {
+            // XP shown around the player card is progress WITHIN the current level, not
+            // the lifetime total (which would overflow the ring/bar).
+            const totalXp = Math.floor(profile?.progress?.hero?.xp ?? 0);
+            const heroLvl = profile?.progress?.hero?.level ?? skillState.level;
+            const xpIntoLevel = Math.max(0, totalXp - getTotalXpForLevel(heroLvl));
+            const xpForLevel = Math.max(1, getXpForNextLevel(heroLvl));
+            return {
+              hp: { current: Math.floor(heroVitals.hp), max: HP_MAX },
+              ep: { current: Math.floor(heroVitals.ep), max: EP_MAX },
+              xp: { current: Math.min(xpIntoLevel, xpForLevel), max: xpForLevel },
+              level: heroLvl,
+              name: loadout.name,
+              portraitUrl: loadout.portraitUrl,
+              buffs: heroBuffs,
+            };
+          })()}
           petData={pet}
           resources={resources}
           skillTokens={available}
@@ -1637,7 +1648,7 @@ function LeftPlayerPanel({ className = '', playerName, accountLevel, loadout, he
   const defense = useSkillStore(s=>s.defense);
   const utility = useSkillStore(s=>s.utility);
   // Hero XP from Firestore profile
-  const { profile: playerProfile } = usePlayerProfile();
+  const { profile: playerProfile, saveProgress: savePlayerProgress } = usePlayerProfile();
   // Removed Attack/Defense/Utility stat cards per UI cleanup request.
   const primaryBranchRaw = useSkillStore(s=>s.primaryBranch);
   const primaryTypeRaw = useSkillStore(s=>s.primaryType);
@@ -1652,10 +1663,18 @@ function LeftPlayerPanel({ className = '', playerName, accountLevel, loadout, he
   const primaryType = primaryTypeRaw && primaryTypeRaw.toLowerCase() === 'root' ? undefined : primaryTypeRaw;
   // Effective stats: faction/character base + level growth + skill-tree modifiers.
   const attack = useSkillStore(s=>s.attack);
+  const unlockedFactionAbilities: string[] = (playerProfile as any)?.progress?.factionAbilities ?? [];
+  const factionPoints: number = (playerProfile as any)?.progress?.factionPoints ?? 0;
+  const effectiveLevel = Math.max(loadout.level ?? 1, playerProfile?.progress?.hero?.level ?? 1);
   const stats = React.useMemo(
-    () => computeEffectiveStats((loadout as any)?.faction, (loadout as any)?.archetype, { level: skillLevel, attack, defense, utility }),
-    [(loadout as any)?.faction, (loadout as any)?.archetype, skillLevel, attack, defense, utility],
+    () => computeEffectiveStats((loadout as any)?.faction, (loadout as any)?.archetype, { level: skillLevel, attack, defense, utility }, factionAbilityBonus(unlockedFactionAbilities)),
+    [(loadout as any)?.faction, (loadout as any)?.archetype, skillLevel, attack, defense, utility, unlockedFactionAbilities.join(',')],
   );
+  const unlockFactionAbility = (a: FactionAbility) => {
+    if (unlockedFactionAbilities.includes(a.id)) return;
+    if (effectiveLevel < a.reqLevel || factionPoints < a.cost) return;
+    savePlayerProgress({ factionPoints: factionPoints - a.cost, factionAbilities: [...unlockedFactionAbilities, a.id] } as any);
+  };
   const HP = stats.total.hp;
   const EP = stats.total.ep;
   const [shareOpen, setShareOpen] = React.useState(false);
@@ -1730,7 +1749,7 @@ function LeftPlayerPanel({ className = '', playerName, accountLevel, loadout, he
     if(href) window.open(href, '_blank','noopener,noreferrer');
   }
   return (
-    <aside className={`col-start-1 h-full min-h-0 ${className} bg-[#0f1218] border-r border-black/40 shadow-inner flex flex-col overflow-hidden`}>      
+    <aside className={`col-start-1 h-full min-h-0 ${className} bg-[#0f1218] border-r border-black/40 shadow-inner flex flex-col overflow-y-auto overflow-x-hidden no-scrollbar`}>
       <div className="px-4 py-4 border-b border-white/10 flex flex-col items-center shrink-0 relative">
         {/* Character Portrait and Info */}
         <div className="w-full max-w-[260px] aspect-[4/3] rounded-3xl border border-white/10 bg-[#12171f] overflow-hidden relative flex flex-col items-center justify-center">
@@ -1803,6 +1822,38 @@ function LeftPlayerPanel({ className = '', playerName, accountLevel, loadout, he
                   <span className="text-xs leading-none" title={m.label}>{m.icon}</span>
                   <span className="font-bold tabular-nums mt-0.5">{total}</span>
                   {bonus > 0 && <span className="text-emerald-300 text-[8px] leading-none">+{bonus}</span>}
+                </div>
+              );
+            })}
+          </div>
+        </div>
+        {/* Faction abilities — unlock with Faction Points at the required level (GDD) */}
+        <div className="mt-3 w-full rounded-2xl border border-white/10 bg-gradient-to-br from-fuchsia-500/10 to-indigo-500/10 p-3 text-[10px]">
+          <div className="flex justify-between mb-2">
+            <span className="opacity-70 uppercase tracking-wide">Faction Abilities</span>
+            <span className="font-semibold text-fuchsia-300">◈ {factionPoints} FP</span>
+          </div>
+          <div className="flex flex-col gap-1.5">
+            {abilitiesForFaction(loadout.faction).map(a => {
+              const owned = unlockedFactionAbilities.includes(a.id);
+              const canUnlock = !owned && effectiveLevel >= a.reqLevel && factionPoints >= a.cost;
+              return (
+                <div key={a.id} className={`flex items-center gap-2 rounded-lg border p-1.5 ${owned ? 'border-emerald-500/40 bg-emerald-500/10' : 'border-white/10 bg-white/5'}`}>
+                  <span className="text-sm leading-none">{a.icon}</span>
+                  <div className="flex-1 min-w-0">
+                    <div className="font-semibold truncate">{a.name}</div>
+                    <div className="opacity-60 leading-tight">{a.description}</div>
+                  </div>
+                  {owned ? (
+                    <span className="text-emerald-300 font-semibold shrink-0">Owned</span>
+                  ) : (
+                    <button
+                      disabled={!canUnlock}
+                      onClick={() => unlockFactionAbility(a)}
+                      className={`shrink-0 px-2 py-1 rounded text-[10px] font-semibold transition ${canUnlock ? 'bg-fuchsia-600/40 hover:bg-fuchsia-600/60 border border-fuchsia-400/40' : 'bg-white/5 border border-white/10 opacity-50 cursor-not-allowed'}`}
+                      title={effectiveLevel < a.reqLevel ? `Requires level ${a.reqLevel}` : factionPoints < a.cost ? `Costs ${a.cost} FP` : 'Unlock'}
+                    >{effectiveLevel < a.reqLevel ? `Lv ${a.reqLevel}` : `${a.cost} FP`}</button>
+                  )}
                 </div>
               );
             })}

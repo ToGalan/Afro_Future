@@ -6,6 +6,9 @@ export interface PlayerProgress {
   faction?: string;
   archetype?: string;
   level?: number;
+  factionPoints?: number;        // faction currency (GDD) — earned from faction activities
+  factionAbilities?: string[];   // unlocked faction-ability ids
+  shards?: number;               // soft currency
   hero?: {
     level: number;
     xp: number;               // accumulated XP for leveling (starts at 0)

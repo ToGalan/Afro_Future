@@ -8,13 +8,13 @@ export interface AbilityLoadout {
 
 export interface SkillState {
   level: number;
-  unlocked: string[]; // node ids
+  unlocked: string[]; // grid skill ids
   spent: number;
-  basePoints: number; // starting pool (e.g. 12)
+  basePoints: number; // starting pool
   bonusPer5: number;  // bonus every 5 levels
   unlock: (id: string) => void;
   respec: () => void;
-  unlockOrder: string[]; // chronological order (excluding root)
+  unlockOrder: string[]; // chronological order
   setLevel: (lvl: number) => void;
   reset: () => void;
   // Server sync: replace core fields and recompute derived
@@ -32,8 +32,8 @@ export interface SkillState {
 }
 
 const TREE = makeTree();
-// Stats now come from each node's explicit `stats` (defined in skillData), not substrings.
-function deriveStats(unlocked: string[]): { attack:number; defense:number; utility:number } {
+// Stats come from each node's explicit `stats` (defined in skillData).
+function deriveStats(unlocked: string[]): { attack: number; defense: number; utility: number } {
   return sumSkillStats(unlocked, TREE);
 }
 
@@ -41,7 +41,7 @@ const INIT_UNLOCKED = ['root'];
 const INIT_STATS = deriveStats(INIT_UNLOCKED);
 const INIT_TRAITS = deriveTraits(INIT_UNLOCKED, TREE);
 
-export const useSkillStore = create<SkillState>((set, get) => ({
+export const useSkillStore = create<SkillState>((set) => ({
   level: 1,
   unlocked: INIT_UNLOCKED,
   spent: 0,
@@ -86,35 +86,23 @@ export const useSkillStore = create<SkillState>((set, get) => ({
     } as Partial<SkillState> as SkillState;
   }),
   unlock: (id: string) => set(state => {
-    if (state.unlocked.includes(id)) {
-      console.debug('[skillStore.unlock] already unlocked', { id });
-      return state;
-    }
-    // guard: must have available points
-    const avail = availablePoints(state);
-    if (avail <= 0) {
-      console.debug('[skillStore.unlock] no available points', { id, avail, spent: state.spent, basePoints: state.basePoints, level: state.level });
-      return state;
-    }
-    console.debug('[skillStore.unlock] unlocking', { id, beforeUnlockedCount: state.unlocked.length, availBefore: avail });
+    if (state.unlocked.includes(id)) return state;
+    if (availablePoints(state) <= 0) { console.debug('[skillStore.unlock] no points', { id }); return state; }
     const nextUnlocked = [...state.unlocked, id];
     const nextOrder = [...state.unlockOrder, id];
     const stats = deriveStats(nextUnlocked);
     const traits = deriveTraits(nextUnlocked, TREE);
-    const newState = { unlocked: nextUnlocked, unlockOrder: nextOrder, spent: state.spent + 1, ...stats, primaryBranch: traits.topBranch, primaryType: traits.topType, traitTags: traits.tags } as const;
-    console.debug('[skillStore.unlock] success', { id, afterUnlockedCount: newState.unlocked.length, spent: newState.spent });
-    return newState;
+    return { unlocked: nextUnlocked, unlockOrder: nextOrder, spent: state.spent + 1, ...stats, primaryBranch: traits.topBranch, primaryType: traits.topType, traitTags: traits.tags } as Partial<SkillState> as SkillState;
   }),
   respec: () => set(state => {
     if (!state.unlockOrder.length) return state;
-    // Keep root only; optionally keep level and basePoints untouched.
     const resetUnlocked = ['root'];
     const stats = deriveStats(resetUnlocked);
     const traits = deriveTraits(resetUnlocked, TREE);
-    return { unlocked: resetUnlocked, unlockOrder: [], spent: 0, ...stats, primaryBranch: traits.topBranch, primaryType: traits.topType, traitTags: traits.tags, abilityLoadout: { offensive: [null,null,null,null], defensive: [null,null,null,null] } };
+    return { unlocked: resetUnlocked, unlockOrder: [], spent: 0, ...stats, primaryBranch: traits.topBranch, primaryType: traits.topType, traitTags: traits.tags, abilityLoadout: { offensive: [null, null, null, null], defensive: [null, null, null, null] } } as Partial<SkillState> as SkillState;
   }),
-  setLevel: (lvl: number) => set(state => ({ level: Math.max(1,lvl) })),
-  reset: () => set({ level: 1, unlocked: ['root'], unlockOrder: [], spent: 0, attack:0, defense:0, utility:0, traitTags: [], primaryBranch: undefined, primaryType: undefined, abilityLoadout: { offensive: [null,null,null,null], defensive: [null,null,null,null] } }),
+  setLevel: (lvl: number) => set(() => ({ level: Math.max(1, lvl) })),
+  reset: () => set({ level: 1, unlocked: ['root'], unlockOrder: [], spent: 0, attack: 0, defense: 0, utility: 0, traitTags: [], primaryBranch: undefined, primaryType: undefined, abilityLoadout: { offensive: [null, null, null, null], defensive: [null, null, null, null] } }),
 }));
 
 // Scaling economy: 3 base + 1 per level + a bonus every 5th level. Ties directly to

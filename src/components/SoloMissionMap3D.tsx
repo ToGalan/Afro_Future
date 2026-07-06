@@ -10,7 +10,8 @@ import { OrbitControls, Text, Sky, ContactShadows } from '@react-three/drei';
 import { GameAvatar, type AvatarColors } from './GameAvatarMesh';
 import { resolveHeroModel } from '../config/heroModels';
 import { useCreeps, type CreepCamp } from '../hooks/useCreeps';
-import { getLevelFromXp } from '../services/playerExpEconomy';
+import { useOutposts } from '../hooks/useOutposts';
+import { getLevelFromXp, getTotalXpForLevel, getXpForNextLevel } from '../services/playerExpEconomy';
 import { IsometricCharacter } from './IsometricCharacter';
 import type { Archetype, CharacterLoadout } from '../types/loadout';
 import { GameHUD, type MinimapData, type Ability, type Item } from './gameHUD';
@@ -388,7 +389,76 @@ function CreepCampMesh({ camp, size }: { camp: CreepCamp; size: number }) {
           </group>
         );
       })}
-      <Text position={[0, cs * 2.7, 0]} fontSize={size * 0.3} color="#ff9a9a" anchorX="center" anchorY="middle" outlineWidth={size * 0.02} outlineColor="#000">Lv {camp.level}</Text>
+      <Text position={[0, cs * 2.7, 0]} fontSize={size * 0.3} color="#ff9a9a" anchorX="center" anchorY="middle" outlineWidth={size * 0.02} outlineColor="#000">Lv {camp.level}  ⚔️{camp.dmgPerCreep}</Text>
+    </group>
+  );
+}
+
+/** Floating combat number that rises and is removed after ~1s (damage counter). */
+function FloatingCombatText({ text, color, onDone }: { text: string; color: string; onDone: () => void }) {
+  const ref = React.useRef<THREE.Group>(null);
+  const t0 = React.useRef(performance.now());
+  useFrame(() => {
+    const g = ref.current; if (!g) return;
+    const dt = (performance.now() - t0.current) / 1000;
+    g.position.y = 3 + dt * 2.4;
+    const s = 1 + Math.min(0.4, dt * 0.6);
+    g.scale.setScalar(s);
+    if (dt > 1.0) onDone();
+  });
+  return (
+    <group ref={ref} position={[0, 3, 0]}>
+      <Text fontSize={1.5} color={color} anchorX="center" anchorY="middle" outlineWidth={0.08} outlineColor="#000">{text}</Text>
+    </group>
+  );
+}
+
+/** Player base / command center — the hub the pet fetches from and terraforming ties to. */
+function CommandCenter({ size, color = '#3aa37a' }: { size: number; color?: string }) {
+  const glowRef = React.useRef<THREE.Mesh>(null);
+  useFrame(({ clock }) => { if (glowRef.current) glowRef.current.rotation.y = clock.getElapsedTime() * 0.5; });
+  const S = size;
+  return (
+    <group>
+      <mesh position={[0, S * 0.15, 0]} rotation={[0, Math.PI / 6, 0]} castShadow receiveShadow><cylinderGeometry args={[S * 0.9, S * 1.05, S * 0.3, 6]} /><meshStandardMaterial color="#2a3038" roughness={0.85} flatShading /></mesh>
+      <mesh position={[0, S * 0.7, 0]} castShadow><cylinderGeometry args={[S * 0.45, S * 0.62, S * 0.8, 6]} /><meshStandardMaterial color="#454e57" roughness={0.6} metalness={0.2} flatShading /></mesh>
+      <mesh position={[0, S * 1.2, 0]} castShadow><coneGeometry args={[S * 0.52, S * 0.5, 6]} /><meshStandardMaterial color={color} roughness={0.5} metalness={0.3} flatShading /></mesh>
+      <mesh ref={glowRef} position={[0, S * 0.72, 0]}><icosahedronGeometry args={[S * 0.24, 0]} /><meshStandardMaterial color={color} emissive={color} emissiveIntensity={1.2} flatShading /></mesh>
+      <mesh position={[0, S * 1.72, 0]}><cylinderGeometry args={[S * 0.03, S * 0.03, S * 0.5, 4]} /><meshStandardMaterial color="#888" metalness={0.5} /></mesh>
+      <mesh position={[0, S * 1.98, 0]}><sphereGeometry args={[S * 0.08, 6, 6]} /><meshBasicMaterial color="#ff5555" /></mesh>
+      <Text position={[0, S * 2.35, 0]} fontSize={S * 0.42} color="#cfe8ff" anchorX="center" anchorY="middle" outlineWidth={S * 0.03} outlineColor="#000">BASE</Text>
+    </group>
+  );
+}
+
+/** Terraforming device — a progress ring that fills as you invest gathered resources. */
+function Terraformer({ size, progress, done }: { size: number; progress: number; done: boolean }) {
+  const ringRef = React.useRef<THREE.Mesh>(null);
+  useFrame(({ clock }) => { if (ringRef.current) ringRef.current.rotation.z = clock.getElapsedTime() * 0.6; });
+  const S = size;
+  const col = done ? '#4caf50' : '#c99a4a';
+  return (
+    <group>
+      <mesh position={[0, S * 0.4, 0]} castShadow><cylinderGeometry args={[S * 0.2, S * 0.32, S * 0.8, 6]} /><meshStandardMaterial color="#4a4e57" roughness={0.6} metalness={0.3} flatShading /></mesh>
+      <mesh position={[0, S * 0.95, 0]}><icosahedronGeometry args={[S * 0.28, 0]} /><meshStandardMaterial color={col} emissive={col} emissiveIntensity={done ? 1.4 : 0.7} flatShading /></mesh>
+      <mesh ref={ringRef} position={[0, S * 0.95, 0]} rotation={[-Math.PI / 2, 0, 0]}><ringGeometry args={[S * 0.42, S * 0.52, 40, 1, 0, Math.PI * 2 * Math.max(0.02, progress / 100)]} /><meshBasicMaterial color={done ? '#4caf50' : '#8fd66b'} side={THREE.DoubleSide} /></mesh>
+      <Text position={[0, S * 1.6, 0]} fontSize={S * 0.34} color={done ? '#8fe38f' : '#e6c98a'} anchorX="center" anchorY="middle" outlineWidth={S * 0.03} outlineColor="#000">{done ? 'Terraformed ✓' : `Terraform ${Math.round(progress)}%`}</Text>
+    </group>
+  );
+}
+
+/** Capturable outpost flag — grey when neutral, faction-colored when owned. */
+function OutpostMarker({ size, owned, color }: { size: number; owned: boolean; color: string }) {
+  const flagRef = React.useRef<THREE.Mesh>(null);
+  useFrame(({ clock }) => { if (flagRef.current) flagRef.current.rotation.z = Math.sin(clock.getElapsedTime() * 2) * 0.08; });
+  const S = size;
+  const banner = owned ? color : '#8a8f96';
+  return (
+    <group>
+      <mesh position={[0, S * 0.08, 0]} rotation={[0, Math.PI / 6, 0]}><cylinderGeometry args={[S * 0.55, S * 0.62, S * 0.16, 6]} /><meshStandardMaterial color="#33383f" roughness={0.85} flatShading /></mesh>
+      <mesh position={[0, S * 0.9, 0]} castShadow><cylinderGeometry args={[S * 0.04, S * 0.05, S * 1.6, 6]} /><meshStandardMaterial color="#555" metalness={0.4} /></mesh>
+      <mesh ref={flagRef} position={[S * 0.26, S * 1.45, 0]}><boxGeometry args={[S * 0.5, S * 0.34, S * 0.02]} /><meshStandardMaterial color={banner} emissive={owned ? color : '#000'} emissiveIntensity={owned ? 0.4 : 0} roughness={0.6} side={THREE.DoubleSide} /></mesh>
+      <Text position={[0, S * 1.9, 0]} fontSize={S * 0.3} color={owned ? '#bfead0' : '#cfd4da'} anchorX="center" anchorY="middle" outlineWidth={S * 0.03} outlineColor="#000">{owned ? 'Outpost ✓' : 'Outpost'}</Text>
     </group>
   );
 }
@@ -1565,7 +1635,89 @@ function IsometricPet({ ps, isMoving }: { ps: number; isMoving: boolean }) {
   );
 }
 
-export default function SoloMissionMap3D({ 
+/** Cyber-Dog companion (strength/recon) — sturdier build, long snout, floppy ears. */
+function IsometricDog({ ps, isMoving }: { ps: number; isMoving: boolean }) {
+  const flRef = React.useRef<THREE.Mesh>(null);
+  const frRef = React.useRef<THREE.Mesh>(null);
+  const blRef = React.useRef<THREE.Mesh>(null);
+  const brRef = React.useRef<THREE.Mesh>(null);
+  const tailRef = React.useRef<THREE.Mesh>(null);
+  const timeRef = React.useRef(0);
+  const flBase = [-ps * 0.34, ps * 0.42, ps * 0.34] as const;
+  const frBase = [ps * 0.34, ps * 0.42, ps * 0.34] as const;
+  const blBase = [-ps * 0.38, ps * 0.42, -ps * 0.3] as const;
+  const brBase = [ps * 0.38, ps * 0.42, -ps * 0.3] as const;
+  const FUR = '#8a6a4a'; const FUR2 = '#6f5238'; const BELLY = '#c9ad86';
+  useFrame((_, delta) => {
+    timeRef.current += delta; const t = timeRef.current;
+    if (isMoving) {
+      const phase = t * 10; const swing = Math.sin(phase) * ps * 0.2;
+      if (flRef.current) flRef.current.position.z = flBase[2] + swing;
+      if (brRef.current) brRef.current.position.z = brBase[2] + swing;
+      if (frRef.current) frRef.current.position.z = frBase[2] - swing;
+      if (blRef.current) blRef.current.position.z = blBase[2] - swing;
+      if (tailRef.current) tailRef.current.rotation.z = 0.2 + Math.sin(phase * 1.4) * 0.5;
+    } else {
+      if (flRef.current) flRef.current.position.z = flBase[2];
+      if (frRef.current) frRef.current.position.z = frBase[2];
+      if (blRef.current) blRef.current.position.z = blBase[2];
+      if (brRef.current) brRef.current.position.z = brBase[2];
+      if (tailRef.current) tailRef.current.rotation.z = 0.2 + Math.sin(t * 3) * 0.15; // idle wag
+    }
+  });
+  return (
+    <group frustumCulled={false}>
+      {/* Drop shadow */}
+      <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, 0.01, 0]} frustumCulled={false}>
+        <circleGeometry args={[ps * 0.95, 20]} /><meshBasicMaterial color="#000" transparent opacity={0.18} depthWrite={false} />
+      </mesh>
+      {/* Body (longer, sturdier than the cat) */}
+      <mesh position={[0, ps * 0.82, -ps * 0.05]} scale={[1, 0.85, 1.25]} castShadow frustumCulled={false}>
+        <sphereGeometry args={[ps * 0.66, 14, 10]} /><meshStandardMaterial color={FUR} roughness={0.65} />
+      </mesh>
+      <mesh position={[0, ps * 0.72, ps * 0.5]} frustumCulled={false}>
+        <sphereGeometry args={[ps * 0.34, 10, 8]} /><meshStandardMaterial color={BELLY} roughness={0.7} />
+      </mesh>
+      {/* Head */}
+      <mesh position={[0, ps * 1.45, ps * 0.35]} castShadow frustumCulled={false}>
+        <sphereGeometry args={[ps * 0.6, 16, 12]} /><meshStandardMaterial color={FUR} roughness={0.65} />
+      </mesh>
+      {/* Long snout */}
+      <mesh position={[0, ps * 1.3, ps * 0.95]} scale={[1, 0.8, 1.4]} castShadow frustumCulled={false}>
+        <sphereGeometry args={[ps * 0.26, 10, 8]} /><meshStandardMaterial color={BELLY} roughness={0.7} />
+      </mesh>
+      {/* Nose */}
+      <mesh position={[0, ps * 1.34, ps * 1.28]} frustumCulled={false}>
+        <sphereGeometry args={[ps * 0.1, 8, 6]} /><meshStandardMaterial color="#1a1a1a" roughness={0.3} />
+      </mesh>
+      {/* Eyes */}
+      <mesh position={[-ps * 0.24, ps * 1.6, ps * 0.85]} frustumCulled={false}><sphereGeometry args={[ps * 0.11, 8, 6]} /><meshStandardMaterial color="#1a1a2e" /></mesh>
+      <mesh position={[ps * 0.24, ps * 1.6, ps * 0.85]} frustumCulled={false}><sphereGeometry args={[ps * 0.11, 8, 6]} /><meshStandardMaterial color="#1a1a2e" /></mesh>
+      {/* Floppy ears (hang down along the head) */}
+      <mesh position={[-ps * 0.5, ps * 1.5, ps * 0.1]} rotation={[0.2, 0, 0.35]} scale={[0.5, 1, 0.7]} frustumCulled={false}>
+        <sphereGeometry args={[ps * 0.3, 8, 8]} /><meshStandardMaterial color={FUR2} roughness={0.7} />
+      </mesh>
+      <mesh position={[ps * 0.5, ps * 1.5, ps * 0.1]} rotation={[0.2, 0, -0.35]} scale={[0.5, 1, 0.7]} frustumCulled={false}>
+        <sphereGeometry args={[ps * 0.3, 8, 8]} /><meshStandardMaterial color={FUR2} roughness={0.7} />
+      </mesh>
+      {/* Cybernetic collar */}
+      <mesh position={[0, ps * 1.02, ps * 0.2]} rotation={[Math.PI / 2, 0, 0]} frustumCulled={false}>
+        <torusGeometry args={[ps * 0.48, ps * 0.07, 6, 16]} /><meshStandardMaterial color="#2b8fd6" emissive="#1668a8" emissiveIntensity={0.5} roughness={0.4} metalness={0.5} />
+      </mesh>
+      {/* Legs */}
+      {[flRef, frRef, blRef, brRef].map((r, i) => {
+        const base = [flBase, frBase, blBase, brBase][i];
+        return <mesh key={i} ref={r} position={[base[0], base[1], base[2]]} castShadow frustumCulled={false}><cylinderGeometry args={[ps * 0.14, ps * 0.15, ps * 0.5, 8]} /><meshStandardMaterial color={FUR2} roughness={0.65} /></mesh>;
+      })}
+      {/* Tail (up, wags) */}
+      <mesh ref={tailRef} position={[0, ps * 1.0, -ps * 0.6]} rotation={[-0.6, 0, 0.2]} frustumCulled={false}>
+        <cylinderGeometry args={[ps * 0.06, ps * 0.12, ps * 0.7, 8]} /><meshStandardMaterial color={FUR} roughness={0.6} />
+      </mesh>
+    </group>
+  );
+}
+
+export default function SoloMissionMap3D({
   onExit, 
   onMapUpdate, 
   abilitySlots: externalAbilities, 
@@ -1774,33 +1926,106 @@ export default function SoloMissionMap3D({
     });
   }, [saveProgress]);
 
-  const { camps: creepCamps, inCombat: creepCombat } = useCreeps({
+  // Floating combat numbers (damage counters).
+  const [combatTexts, setCombatTexts] = React.useState<Array<{ id: number; x: number; z: number; text: string; color: string }>>([]);
+  const nextTextId = React.useRef(0);
+  const spawnCombatText = React.useCallback((x: number, z: number, text: string, color: string) => {
+    const id = nextTextId.current++;
+    setCombatTexts(prev => [...prev.slice(-14), { id, x, z, text, color }]);
+  }, []);
+
+  // Award Faction Points (persisted) — earned from faction activities (creep clears, resources).
+  const awardFactionPoints = React.useCallback((amount: number) => {
+    const cur = profileForXpRef.current?.progress?.factionPoints ?? 0;
+    saveProgress({ factionPoints: cur + amount } as any);
+  }, [saveProgress]);
+
+  // ── Pet type & roles (GDD): Dog = strength/combat assist, Cat = stealth/recon ──
+  const petType: string = (heroAvatar as any)?.pet?.type ?? profile?.progress?.pet?.type ?? 'CYBER_CAT';
+  const isDog = petType === 'CYBER_DOG';
+  const petLevel = petData?.level ?? profile?.progress?.pet?.level ?? 1;
+  const petCombatBonus = isDog ? 3 + petLevel * 2 : 0;         // Dog fights alongside you
+  const petVisionBonus = isDog ? 0 : 1;                        // Cat scouts (+vision)
+
+  const { camps: creepCamps, nearbyCamp: nearbyCreepCamp, attackNearby: attackNearbyCamp } = useCreeps({
     tiles,
     heroQ: hero.pos.q,
     heroR: hero.pos.r,
     centerQ: centerAxial.q,
     centerR: centerAxial.r,
-    heroAttack,
+    heroAttack: heroAttack + petCombatBonus,
     onHeroDamage: (amt) => onDamageHP?.(amt),
     awardXp: awardHeroXp,
+    awardShards: awardFactionPoints, // camp clears grant Faction Points
+    onCombat: ({ campQ, campR, toCreep, toHero }) => {
+      if (toCreep > 0) { const cw = axialToWorld({ q: campQ, r: campR }, hexSize); spawnCombatText(cw.x, cw.z, `-${toCreep}`, '#ffd24a'); }
+      if (toHero > 0) { const hw = axialToWorld({ q: hero.pos.q, r: hero.pos.r }, hexSize); spawnCombatText(hw.x, hw.z, `-${toHero}`, '#ff5555'); } },
   });
+  // Stable ref so the keydown 'F' handler always calls the current attack action.
+  const attackNearbyRef = React.useRef(attackNearbyCamp);
+  attackNearbyRef.current = attackNearbyCamp;
+
+  // ── Base / Command Center & Terraforming ────────────────────────────────────
+  const baseAxial = centerAxial; // command center sits at the map centre (spawn hub)
+  const terraformAxial = useMemo(() => ({ q: centerAxial.q + 6, r: centerAxial.r - 4 }), [centerAxial]);
+  const [terraformProgress, setTerraformProgress] = React.useState(0);
+  const terraformDone = terraformProgress >= 100;
+  const nearTerraformer = axialDistance(hero.pos, terraformAxial) <= 1;
+
+  // Invest one gathered resource (ore/energy/bio) into the terraformer (plain fn so it
+  // always closes over the current hero position / inventory).
+  const investTerraform = () => {
+    if (!nearTerraformer) return;
+    let consumed = false;
+    setLocalHeroInventory(prev => {
+      const idx = prev.findIndex(i => (i.type === 'ore' || i.type === 'energy' || i.type === 'bio') && i.quantity > 0);
+      if (idx < 0) return prev;
+      consumed = true;
+      return prev.map((i, k) => (k === idx ? { ...i, quantity: i.quantity - 1 } : i)).filter(i => i.quantity > 0);
+    });
+    if (consumed) {
+      setTerraformProgress(p => {
+        const np = Math.min(100, p + 12);
+        if (np >= 100 && p < 100) { awardHeroXp(60); awardFactionPoints(5); console.log('[terraform] Region terraformed! +60 XP, +5 FP'); }
+        return np;
+      });
+    }
+  };
+
+  // ── Outposts / region control ────────────────────────────────────────────────
+  const { outposts, nearbyOutpost, captureNearby, control: outpostControl } = useOutposts({
+    tiles,
+    heroQ: hero.pos.q,
+    heroR: hero.pos.r,
+    centerQ: centerAxial.q,
+    centerR: centerAxial.r,
+    onCapture: (_region, regionCleared) => { awardFactionPoints(regionCleared ? 6 : 2); awardHeroXp(regionCleared ? 40 : 15); },
+  });
+  // Refs so the keydown handler always calls the current actions.
+  const investTerraformRef = React.useRef(investTerraform); investTerraformRef.current = investTerraform;
+  const captureNearbyRef = React.useRef(captureNearby); captureNearbyRef.current = captureNearby;
+
+  // Pet fetch (GDD): the companion periodically carries a supply from base to the field.
+  React.useEffect(() => {
+    const iv = setInterval(() => {
+      setLocalHeroInventory(prev => {
+        const ex = prev.find(i => i.type === 'flower');
+        return ex
+          ? prev.map(i => (i.type === 'flower' ? { ...i, quantity: i.quantity + 1 } : i))
+          : [...prev, { id: 'flower-fetch', type: 'flower', quantity: 1, effect: 'heal', value: 20, icon: '🌸' }];
+      });
+      console.log(`[pet] ${isDog ? 'Dog' : 'Cat'} fetched a healing flower from base`);
+    }, 30000);
+    return () => clearInterval(iv);
+  }, [setLocalHeroInventory, isDog]);
 
   // Ability slots (QWER) — still managed locally as they are tightly coupled
   // to the in-map keydown handler; skill-tree abilities come in via externalAbilities prop.
-  const [abilitySlots, setAbilitySlots] = useState<Ability[]>(externalAbilities || [
-    { id: 'slash', icon: '⚔️', key: 'Q', cooldown: 0, maxCooldown: 3 },
-    { id: 'fireball', icon: '🔥', key: 'W', cooldown: 0, maxCooldown: 5 },
-    { id: 'shield', icon: '🛡️', key: 'E', cooldown: 0, maxCooldown: 8 },
-    { id: 'heal', icon: '💚', key: 'R', cooldown: 0, maxCooldown: 10 },
-  ]);
-  // Defensive ability set (shown/used in Defense mode). Skill-tree defensive loadout
-  // takes precedence when present.
-  const [defenseSlots, setDefenseSlots] = useState<Ability[]>(externalDefense && externalDefense.length ? externalDefense : [
-    { id: 'shield', icon: '🛡️', key: 'Q', cooldown: 0, maxCooldown: 8 },
-    { id: 'heal',   icon: '💚', key: 'W', cooldown: 0, maxCooldown: 10 },
-    { id: 'dash',   icon: '🦶', key: 'E', cooldown: 0, maxCooldown: 5 },
-    { id: 'ward',   icon: '✨', key: 'R', cooldown: 0, maxCooldown: 12 },
-  ]);
+  // Abilities come ONLY from the skill tree (offensive loadout). Empty until the
+  // player assigns skills to ability slots — no hardcoded defaults.
+  const [abilitySlots, setAbilitySlots] = useState<Ability[]>(externalAbilities ? [...externalAbilities] : []);
+  // Defensive ability set (Defense mode) — also ONLY from the skill tree's defensive loadout.
+  const [defenseSlots, setDefenseSlots] = useState<Ability[]>(externalDefense ? [...externalDefense] : []);
   // Attack/Defense mode — determines which ability set QWER and the HUD use.
   const [abilityMode, setAbilityMode] = useState<'offense' | 'defense'>('offense');
 
@@ -1812,17 +2037,20 @@ export default function SoloMissionMap3D({
   const setActiveSlotsRef = React.useRef(setActiveSlots);
   setActiveSlotsRef.current = setActiveSlots;
 
-  // Update offensive abilities when external ones change (from skilltree)
-  React.useEffect(() => {
-    if (externalAbilities && externalAbilities.length > 0) {
-      setAbilitySlots(externalAbilities);
-    }
-  }, [externalAbilities]);
-  React.useEffect(() => {
-    if (externalDefense && externalDefense.length > 0) {
-      setDefenseSlots(externalDefense);
-    }
-  }, [externalDefense]);
+  // Activate an ability by id (shared by QWER keys and HUD clicks) — respects
+  // cooldown and applies defensive effects.
+  const activateAbility = React.useCallback((id: string) => {
+    const ability = abilitySlotsRef.current.find(a => a.id === id);
+    if (!ability || (ability.cooldown ?? 0) !== 0) return;
+    setActiveSlotsRef.current(prev => prev.map(a => a.id === id ? { ...a, cooldown: a.maxCooldown } : a));
+    if (id === 'heal') onHealHP?.(25);
+    else if (id === 'ward' || id === 'shield') onRestoreEP?.(15);
+  }, [onHealHP, onRestoreEP]);
+
+  // Always mirror the skill-tree loadout (including empty), so abilities appear only
+  // after they're selected in the skill tree and update the moment the loadout changes.
+  React.useEffect(() => { setAbilitySlots(externalAbilities ? [...externalAbilities] : []); }, [externalAbilities]);
+  React.useEffect(() => { setDefenseSlots(externalDefense ? [...externalDefense] : []); }, [externalDefense]);
 
   // ── Inventory transfer between hero and pet ─────────────────────────────────
   const transferItem = React.useCallback((type: string, dir: 'toPet' | 'toHero') => {
@@ -1915,7 +2143,7 @@ export default function SoloMissionMap3D({
 
   // (Patrol logic moved below tilesByKey for declaration order)
 
-  const heroVisible = useMemo(() => computeVisibleSet(tiles, hero.pos, hero.vision), [tiles, hero.pos.q, hero.pos.r, hero.vision]);
+  const heroVisible = useMemo(() => computeVisibleSet(tiles, hero.pos, hero.vision + petVisionBonus), [tiles, hero.pos.q, hero.pos.r, hero.vision, petVisionBonus]);
 
   // Primary render radius — covers active viewport around the hero.
   // Kept at 22 (≈1520 tiles) which is well under the ~43k that caused the fiber stack overflow.
@@ -2366,24 +2594,32 @@ export default function SoloMissionMap3D({
         return;
       }
 
+      // ─── ATTACK NEARBY CREEP CAMP (F) — a deliberate choice ────────────
+      if (k === 'f') {
+        if (e.repeat) return;
+        attackNearbyRef.current();
+        return;
+      }
+      // ─── TERRAFORM (T) — invest a resource at the terraformer ──────────
+      if (k === 't') {
+        if (e.repeat) return;
+        investTerraformRef.current();
+        return;
+      }
+      // ─── CAPTURE OUTPOST (G) ───────────────────────────────────────────
+      if (k === 'g') {
+        if (e.repeat) return;
+        captureNearbyRef.current();
+        return;
+      }
+
       // ─── ABILITY ACTIVATION (QWER) — uses the ACTIVE mode's ability set ─
       const abilityMap: Record<string, string> = { q: 'q', w: 'w', e: 'e', r: 'r' };
       if (abilityMap[k]) {
         if (e.repeat) return;
         const slotKey = abilityMap[k].toUpperCase();
         const ability = abilitySlotsRef.current.find(a => a.key === slotKey);
-        if (ability && ability.cooldown === 0) {
-          console.log(`[Ability] Activated ${ability.id} (${ability.icon}) [${abilitySlotsRef.current === defenseSlots ? 'DEF' : 'ATK'}]`);
-          // Trigger cooldown on the active set (offensive or defensive).
-          setActiveSlotsRef.current(prev => prev.map(a =>
-            a.key === slotKey ? { ...a, cooldown: a.maxCooldown } : a
-          ));
-          // Defensive abilities apply a supportive effect; offensive damage the engaged camp.
-          if (ability.id === 'heal') onHealHP?.(25);
-          else if (ability.id === 'ward' || ability.id === 'shield') onRestoreEP?.(15);
-        } else if (ability) {
-          console.log(`[Ability] ${ability.id} on cooldown: ${ability.cooldown}s remaining`);
-        }
+        if (ability) activateAbility(ability.id);
         return;
       }
       
@@ -2577,13 +2813,16 @@ export default function SoloMissionMap3D({
                 </group>
                 {(() => { const world = axialToWorld(pet.pos, hexSize); const ps = hexSize * 0.32; return (
                   <group key={pet.id} position={[world.x, 0.48, world.z]} rotation={[0, petFacingAngle, 0]} frustumCulled={false}>
-                    <IsometricPet ps={ps} isMoving={isPetMoving} />
-                    {/* Name label */}
-                    <Text position={[0, ps * 3.1, 0]} fontSize={ps * 0.55} color="#fff" anchorX="center" anchorY="middle">Pet</Text>
+                    {isDog ? <IsometricDog ps={ps} isMoving={isPetMoving} /> : <IsometricPet ps={ps} isMoving={isPetMoving} />}
+                    {/* Name label + role/attack counter */}
+                    <Text position={[0, ps * 3.1, 0]} fontSize={ps * 0.5} color="#fff" anchorX="center" anchorY="middle" outlineWidth={ps * 0.03} outlineColor="#000">{isDog ? `Dog  ⚔️${petCombatBonus}` : `Cat  👁️+${petVisionBonus}`}</Text>
                   </group> ); })()}
-                {/* Creep camps — rendered near the hero, hidden once cleared */}
+                {/* Creep camps — only on explored/visible tiles (hidden by fog of war),
+                    near the hero, and hidden once cleared. */}
                 {Array.from(creepCamps.values()).map(camp => {
                   if (camp.cleared) return null;
+                  const ckey = `${camp.q},${camp.r}`;
+                  if (!exploredRef.current.has(ckey) && !heroVisible.has(ckey)) return null; // fog of war
                   if (axialDistance({ q: camp.q, r: camp.r }, hero.pos) > RENDER_RADIUS) return null;
                   const cw = axialToWorld({ q: camp.q, r: camp.r }, hexSize);
                   return (
@@ -2592,6 +2831,37 @@ export default function SoloMissionMap3D({
                     </group>
                   );
                 })}
+                {/* Base / Command Center at spawn */}
+                {(() => { const bw = axialToWorld(baseAxial, hexSize); return (
+                  <group key="base" position={[bw.x, heightFor({ q: baseAxial.q, r: baseAxial.r, type: 'plains', char: 'P', resource: null }), bw.z]} frustumCulled={false}>
+                    <CommandCenter size={hexSize} color={heroColors.primary} />
+                  </group>
+                ); })()}
+                {/* Terraformer objective */}
+                {(() => { const tw = axialToWorld(terraformAxial, hexSize); return (
+                  <group key="terraformer" position={[tw.x, heightFor({ q: terraformAxial.q, r: terraformAxial.r, type: 'plains', char: 'P', resource: null }), tw.z]} frustumCulled={false}>
+                    <Terraformer size={hexSize} progress={terraformProgress} done={terraformDone} />
+                    {terraformDone && <GrassCluster size={hexSize} seed={terraformAxial.q * 7 + terraformAxial.r} />}
+                  </group>
+                ); })()}
+                {/* Outposts (fog-gated) */}
+                {Array.from(outposts.values()).map(o => {
+                  const okey = `${o.q},${o.r}`;
+                  if (!exploredRef.current.has(okey) && !heroVisible.has(okey)) return null;
+                  if (axialDistance({ q: o.q, r: o.r }, hero.pos) > RENDER_RADIUS) return null;
+                  const ow = axialToWorld({ q: o.q, r: o.r }, hexSize);
+                  return (
+                    <group key={`outpost-${o.key}`} position={[ow.x, heightFor({ q: o.q, r: o.r, type: 'plains', char: 'P', resource: null }), ow.z]} frustumCulled={false}>
+                      <OutpostMarker size={hexSize} owned={o.owner === 'player'} color={heroColors.primary} />
+                    </group>
+                  );
+                })}
+                {/* Floating combat numbers (damage counters) */}
+                {combatTexts.map(ct => (
+                  <group key={ct.id} position={[ct.x, 0, ct.z]}>
+                    <FloatingCombatText text={ct.text} color={ct.color} onDone={() => setCombatTexts(prev => prev.filter(p => p.id !== ct.id))} />
+                  </group>
+                ))}
                 {/* Boundary reference planes */}
                 <group>{boundaryPlanes}</group>
               </group>
@@ -2652,14 +2922,39 @@ export default function SoloMissionMap3D({
                 </div>
               )}
 
-              {/* Creep combat indicator */}
-              {creepCombat && (
-                <div className="fixed top-16 left-1/2 -translate-x-1/2 z-40 animate-pulse">
+              {/* Nearby creep camp — attacking is a deliberate choice (press F) */}
+              {nearbyCreepCamp && (
+                <div className="fixed top-16 left-1/2 -translate-x-1/2 z-40">
                   <div className="px-4 py-2 rounded-xl bg-rose-900/80 border border-rose-400/60 text-sm font-bold text-rose-100 backdrop-blur-sm shadow-lg flex items-center gap-2">
-                    ⚔️ In Combat — clear the camp for XP!
+                    ⚔️ Enemy Camp — Lv {nearbyCreepCamp.level} · {nearbyCreepCamp.creeps.filter(c => c.hp > 0).length} left
+                    <span className="ml-1 px-1.5 py-0.5 rounded bg-rose-700 font-bold">F</span> to attack
                   </div>
                 </div>
               )}
+
+              {/* Terraformer / outpost prompts */}
+              {(nearTerraformer && !terraformDone) && (
+                <div className="fixed top-28 left-1/2 -translate-x-1/2 z-40">
+                  <div className="px-4 py-2 rounded-xl bg-amber-900/80 border border-amber-400/60 text-sm font-bold text-amber-100 backdrop-blur-sm shadow-lg flex items-center gap-2">
+                    🌱 Terraformer {terraformProgress}% — <span className="px-1.5 py-0.5 rounded bg-amber-700 font-bold">T</span> to invest a resource
+                  </div>
+                </div>
+              )}
+              {nearbyOutpost && (
+                <div className="fixed top-28 left-1/2 -translate-x-1/2 z-40">
+                  <div className="px-4 py-2 rounded-xl bg-indigo-900/80 border border-indigo-400/60 text-sm font-bold text-indigo-100 backdrop-blur-sm shadow-lg flex items-center gap-2">
+                    🚩 Neutral Outpost — <span className="px-1.5 py-0.5 rounded bg-indigo-700 font-bold">G</span> to capture
+                  </div>
+                </div>
+              )}
+
+              {/* Objectives panel (top-left) */}
+              <div className="fixed top-32 left-3 z-30 px-3 py-2 rounded-xl bg-[#0c1219]/85 ring-1 ring-white/10 text-[11px] pointer-events-none shadow-lg space-y-1">
+                <div className="uppercase tracking-wide opacity-50 text-[9px]">Objectives</div>
+                <div className="flex items-center gap-2"><span>🌱</span><span className="opacity-70">Terraform</span><span className="ml-auto font-semibold tabular-nums">{terraformDone ? '✓' : `${terraformProgress}%`}</span></div>
+                <div className="flex items-center gap-2"><span>🚩</span><span className="opacity-70">Outposts</span><span className="ml-auto font-semibold tabular-nums">{outpostControl.owned}/{outpostControl.total}</span></div>
+                <div className="flex items-center gap-2"><span>🗺️</span><span className="opacity-70">Regions</span><span className="ml-auto font-semibold tabular-nums">{outpostControl.regionsControlled}/{outpostControl.regionCount}</span></div>
+              </div>
 
               {/* Nearby collectible prompt (flower / mushroom / resource node) */}
               {(nearbyFlower || nearbyMushroom || nearbyResource) && (
@@ -2688,10 +2983,17 @@ export default function SoloMissionMap3D({
                 score={{ radiant: 0, dire: 0 }}
                 hero={heroVitals ? {
                   name: heroVitals.name,
-                  level: heroVitals.level,
+                  // Level + XP read from THIS component's live profile (the instance that
+                  // receives XP saves), so the ring/bar actually progress in real time.
+                  level: profile?.progress?.hero?.level ?? heroVitals.level,
                   hp: heroVitals.hp,
                   ep: heroVitals.ep,
-                  xp: heroVitals.xp,
+                  xp: (() => {
+                    const lvl = profile?.progress?.hero?.level ?? heroVitals.level;
+                    const total = Math.floor(profile?.progress?.hero?.xp ?? heroVitals.xp.current ?? 0);
+                    const forLvl = Math.max(1, getXpForNextLevel(lvl));
+                    return { current: Math.min(forLvl, Math.max(0, total - getTotalXpForLevel(lvl))), max: forLvl };
+                  })(),
                   portraitUrl: heroVitals.portraitUrl,
                   buffs: heroVitals.buffs,
                 } : {
@@ -2716,6 +3018,8 @@ export default function SoloMissionMap3D({
                 onTransferToPet={(type: string) => transferItem(type, 'toPet')}
                 onTransferToHero={(type: string) => transferItem(type, 'toHero')}
                 heroStats={combatStats}
+                onAbility={activateAbility}
+                onItem={(id: string) => { const idx = itemSlots.findIndex(s => s.id === id); if (idx >= 0) handleItemUse(idx); }}
                 items={itemSlots}
                 resources={resources || []}
                 skillTokens={skillTokens || 0}

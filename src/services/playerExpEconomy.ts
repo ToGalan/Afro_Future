@@ -36,9 +36,9 @@ export interface LevelReward {
 export const PLAYER_EXP_CONFIG: PlayerExpConfig = {
   baseXpPerLevel: 100,           // Starts at 100 XP per level
   scalingFactor: 1.15,            // 15% increase per level
-  softCapLevel: 30,              // Curve softens at level 30
+  softCapLevel: 25,              // Curve softens at level 25
   softCapMultiplier: 1.05,       // Only 5% growth after soft cap
-  maxLevel: 100,                 // Hard cap at level 100
+  maxLevel: 50,                  // Hard cap at level 50 (per GDD: levels 1–50)
 };
 
 /**

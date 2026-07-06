@@ -362,20 +362,21 @@ export const GameHUD: React.FC<GameHUDProps> = ({
                     : <div className="w-full h-full flex items-center justify-center text-2xl sm:text-4xl">👤</div>
                   }
                 </div>
-                {/* XP label above portrait */}
-                <div className="absolute -top-3.5 left-1/2 -translate-x-1/2 text-[9px] text-amber-400/70 whitespace-nowrap pointer-events-none tabular-nums hidden sm:block">
+                {/* XP label above portrait — always visible */}
+                <div className="absolute -top-3.5 left-1/2 -translate-x-1/2 text-[9px] text-amber-400/90 whitespace-nowrap pointer-events-none tabular-nums">
                   XP {hero.xp.current}/{hero.xp.max}
                 </div>
                 {/* Level badge below portrait */}
-                <div className="absolute -bottom-2 left-1/2 -translate-x-1/2 bg-amber-500 text-black text-[9px] font-bold px-1.5 py-px rounded-full z-20 whitespace-nowrap leading-none hidden sm:block">
+                <div className="absolute -bottom-2 left-1/2 -translate-x-1/2 bg-amber-500 text-black text-[9px] font-bold px-1.5 py-px rounded-full z-20 whitespace-nowrap leading-none">
                   Lv {hero.level}
                 </div>
               </div>
-              {/* HP / EP bars + abilities stacked */}
+              {/* HP / EP / XP bars + abilities stacked */}
               <div className="flex-1 min-w-0 flex flex-col gap-0.5 h-full justify-center">
-                <span className="hud-name font-bold truncate leading-none mb-0.5">{hero.name}</span>
+                <span className="hud-name font-bold truncate leading-none mb-0.5">{hero.name} <span className="opacity-50 font-normal text-[10px]">Lv {hero.level}</span></span>
                 <Bar value={hero.hp.current} max={hero.hp.max} color="bg-rose-500" h="hud-bar-row" label={`${hero.hp.current}/${hero.hp.max} HP`} />
                 <Bar value={hero.ep.current} max={hero.ep.max} color="bg-sky-400" h="hud-bar-row" label={`${hero.ep.current}/${hero.ep.max} EP`} />
+                <Bar value={hero.xp.current} max={hero.xp.max} color="bg-amber-500" h="hud-bar-row" label={`${hero.xp.current}/${hero.xp.max} XP`} />
                 {/* Abilities — centered below bars */}
                 <div className={`flex justify-center gap-1 mt-0.5 p-1 rounded-lg ring-1 transition-all ${
                   abilityMode === 'offense' ? 'ring-rose-500/60' : 'ring-sky-400/60'

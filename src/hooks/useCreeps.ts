@@ -42,14 +42,16 @@ interface UseCreepsOptions {
   onHeroDamage?: (amount: number) => void;
   awardXp?: (amount: number) => void;
   awardShards?: (amount: number) => void;
+  /** Fired each combat tick with damage dealt to the camp and taken by the hero. */
+  onCombat?: (info: { campQ: number; campR: number; toCreep: number; toHero: number; cleared: boolean }) => void;
 }
 
 export function useCreeps({
   tiles, heroQ, heroR, centerQ, centerR, heroAttack,
-  onHeroDamage, awardXp, awardShards,
+  onHeroDamage, awardXp, awardShards, onCombat,
 }: UseCreepsOptions) {
   const [camps, setCamps] = useState<Map<string, CreepCamp>>(new Map());
-  const [inCombat, setInCombat] = useState(false);
+  const [nearbyCamp, setNearbyCamp] = useState<CreepCamp | null>(null);
 
   // Refs so the combat interval never goes stale / never needs to restart.
   const campsRef = useRef(camps); campsRef.current = camps;
@@ -57,6 +59,7 @@ export function useCreeps({
   const atkRef = useRef(heroAttack); atkRef.current = heroAttack;
   const onHeroDamageRef = useRef(onHeroDamage); onHeroDamageRef.current = onHeroDamage;
   const awardXpRef = useRef(awardXp); awardXpRef.current = awardXp;
+  const onCombatRef = useRef(onCombat); onCombatRef.current = onCombat;
   const awardShardsRef = useRef(awardShards); awardShardsRef.current = awardShards;
 
   // ── Generate camps once tiles load ─────────────────────────────────────────
@@ -84,7 +87,7 @@ export function useCreeps({
     console.log('[creeps] Generated', m.size, 'camps');
   }, [tiles, centerQ, centerR]);
 
-  // Camp the hero is currently engaging (same tile or adjacent), still alive.
+  // Camp the hero is currently adjacent to (still alive) — the one you can choose to attack.
   const engagedKey = useCallback((): string | null => {
     const { q, r } = heroRef.current;
     for (const camp of campsRef.current.values()) {
@@ -94,40 +97,47 @@ export function useCreeps({
     return null;
   }, []);
 
-  // ── Combat tick (1/s) ───────────────────────────────────────────────────────
+  // ── Nearby camp (for the "press to attack" prompt) ──────────────────────────
   useEffect(() => {
-    const interval = setInterval(() => {
-      const key = engagedKey();
-      if (!key) { setInCombat(false); return; }
-      setInCombat(true);
-      setCamps(prev => {
-        const camp = prev.get(key);
-        if (!camp || camp.cleared) return prev;
-        const creeps = camp.creeps.map(c => ({ ...c }));
-        // Hero hits the front (first alive) creep.
-        let dmg = Math.max(1, atkRef.current || 5);
-        for (const c of creeps) {
-          if (c.hp <= 0) continue;
-          const applied = Math.min(c.hp, dmg);
-          c.hp -= applied; dmg -= applied;
-          if (dmg <= 0) break;
-        }
-        const alive = creeps.filter(c => c.hp > 0);
-        // Alive creeps retaliate.
-        if (alive.length) onHeroDamageRef.current?.(alive.length * camp.dmgPerCreep);
-        const cleared = alive.length === 0;
-        if (cleared) {
-          awardXpRef.current?.(camp.xpReward);
-          awardShardsRef.current?.(camp.shardReward);
-          console.log(`[creeps] Camp ${key} cleared → +${camp.xpReward} XP, +${camp.shardReward} shards`);
-        }
-        const next = new Map(prev);
-        next.set(key, { ...camp, creeps, cleared });
-        return next;
-      });
-    }, 1000);
-    return () => clearInterval(interval);
+    const key = engagedKey();
+    setNearbyCamp(key ? (campsRef.current.get(key) ?? null) : null);
+  }, [camps, heroQ, heroR, engagedKey]);
+
+  // ── Player-initiated attack — ONE round, only when the player chooses to ────
+  // Attacking is a deliberate action (a key/click), not automatic proximity combat.
+  const attackNearby = useCallback((): boolean => {
+    const key = engagedKey();
+    if (!key) return false;
+    const camp = campsRef.current.get(key);
+    if (!camp || camp.cleared) return false;
+    const creeps = camp.creeps.map(c => ({ ...c }));
+    let dmg = Math.max(1, atkRef.current || 5);
+    let toCreep = 0;
+    for (const c of creeps) {
+      if (c.hp <= 0) continue;
+      const applied = Math.min(c.hp, dmg);
+      c.hp -= applied; dmg -= applied; toCreep += applied;
+      if (dmg <= 0) break;
+    }
+    const alive = creeps.filter(c => c.hp > 0);
+    const toHero = alive.length * camp.dmgPerCreep;
+    if (alive.length) onHeroDamageRef.current?.(toHero); // creeps retaliate only when attacked
+    const cleared = alive.length === 0;
+    if (cleared) {
+      awardXpRef.current?.(camp.xpReward);
+      awardShardsRef.current?.(camp.shardReward);
+      console.log(`[creeps] Camp ${key} cleared → +${camp.xpReward} XP, +${camp.shardReward} shards`);
+    }
+    onCombatRef.current?.({ campQ: camp.q, campR: camp.r, toCreep, toHero: alive.length ? toHero : 0, cleared });
+    setCamps(prev => {
+      const c = prev.get(key);
+      if (!c) return prev;
+      const next = new Map(prev);
+      next.set(key, { ...c, creeps, cleared });
+      return next;
+    });
+    return true;
   }, [engagedKey]);
 
-  return { camps, inCombat };
+  return { camps, nearbyCamp, attackNearby };
 }

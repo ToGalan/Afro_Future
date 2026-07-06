@@ -40,6 +40,8 @@ export function computeEffectiveStats(
   faction: string | undefined,
   archetype: string | undefined,
   skills: SkillStatInput,
+  /** Extra flat bonus (e.g. from unlocked faction abilities). */
+  bonus?: Partial<StatBlock>,
 ): { base: StatBlock; skill: StatBlock; total: StatBlock } {
   const b = FACTION_BASE_STATS[(faction || '').toUpperCase()] ?? FACTION_BASE_STATS.PAA;
   const ab = archetypeBonus(archetype);
@@ -62,12 +64,13 @@ export function computeEffectiveStats(
     spd: Math.floor((skills.utility || 0) / 2),
   };
 
+  const bon = bonus || {};
   const total: StatBlock = {
-    hp:  base.hp  + skill.hp,
-    ep:  base.ep  + skill.ep,
-    atk: base.atk + skill.atk,
-    def: base.def + skill.def,
-    spd: base.spd + skill.spd,
+    hp:  base.hp  + skill.hp  + (bon.hp  || 0),
+    ep:  base.ep  + skill.ep  + (bon.ep  || 0),
+    atk: base.atk + skill.atk + (bon.atk || 0),
+    def: base.def + skill.def + (bon.def || 0),
+    spd: base.spd + skill.spd + (bon.spd || 0),
   };
   return { base, skill, total };
 }

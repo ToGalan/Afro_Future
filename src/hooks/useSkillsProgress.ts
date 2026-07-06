@@ -16,6 +16,7 @@ import { useState, useCallback, useRef, useEffect, useMemo } from 'react';
 import { useSkillStore } from '../store/skillStore';
 import { chromeSyncSet } from '../services/chromeSync';
 import { computeEffectiveStats } from '../services/playerStats';
+import { factionAbilityBonus } from '../services/factionAbilities';
 
 // ── Icon helper (mirrors App.tsx skillIconFn) ────────────────────────────────
 function skillIconFn(id: string): string {
@@ -56,6 +57,7 @@ export function useSkillsProgress({
   idToken,
   faction,
   archetype,
+  factionAbilities,
 }: {
   uid: string;
   email?: string;
@@ -65,14 +67,18 @@ export function useSkillsProgress({
   /** Faction & character archetype drive base stats. */
   faction?: string;
   archetype?: string;
+  /** Unlocked faction-ability ids (grant passive stat bonuses). */
+  factionAbilities?: string[];
 }) {
   const skillState = useSkillStore();
 
   // ── Effective stats: faction/character base + level growth + skill modifiers ──
   const { level, attack, defense, utility } = skillState;
+  const faKey = (factionAbilities || []).join(',');
   const stats = useMemo(
-    () => computeEffectiveStats(faction, archetype, { level, attack, defense, utility }),
-    [faction, archetype, level, attack, defense, utility],
+    () => computeEffectiveStats(faction, archetype, { level, attack, defense, utility }, factionAbilityBonus(factionAbilities)),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [faction, archetype, level, attack, defense, utility, faKey],
   );
   const HP_MAX = stats.total.hp;   // faction base HP + level + skill defense
   const EP_MAX = stats.total.ep;   // faction base EP + level + skill utility
