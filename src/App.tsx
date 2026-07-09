@@ -2,7 +2,7 @@
 import { usePlayerProfile } from './hooks/usePlayerProfile';
 import { useSkillStore, availablePoints } from './store/skillStore';
 import { computeEffectiveStats, STAT_META } from './services/playerStats';
-import { getTotalXpForLevel, getXpForNextLevel } from './services/playerExpEconomy';
+import { getTotalXpForLevel, getXpForNextLevel, getLevelFromXp } from './services/playerExpEconomy';
 import { abilitiesForFaction, factionAbilityBonus, type FactionAbility } from './services/factionAbilities';
 import { makeTree } from './store/skillData';
 import { GROUP_ORDER, getVariantsByGroup } from './assets/threeParts';
@@ -1019,7 +1019,9 @@ function MissionScreen({ onExit, onOpenSkillTree, activeLoadout, autoMultiplayer
             // XP shown around the player card is progress WITHIN the current level, not
             // the lifetime total (which would overflow the ring/bar).
             const totalXp = Math.floor(profile?.progress?.hero?.xp ?? 0);
-            const heroLvl = profile?.progress?.hero?.level ?? skillState.level;
+            // Derive level from XP so the level + XP bar always agree, even when the
+            // stored hero.level lags (e.g. movement XP saves xp without recomputing level).
+            const heroLvl = Math.max(1, getLevelFromXp(totalXp));
             const xpIntoLevel = Math.max(0, totalXp - getTotalXpForLevel(heroLvl));
             const xpForLevel = Math.max(1, getXpForNextLevel(heroLvl));
             return {

@@ -1,5 +1,5 @@
 // Renamed from AfroHud.tsx to gameHUD.tsx — Dota 2-style layout, 2x scale
-import React, { useEffect } from 'react';
+import React from 'react';
 import { Faction } from '../types/loadout';
 
 export type Ability = { id: string; icon?: string; cooldown?: number; maxCooldown?: number; disabled?: boolean; key?: string };
@@ -247,9 +247,9 @@ const ITEM_TOOLTIPS: Record<string, string> = {
 };
 
 export const GameHUD: React.FC<GameHUDProps> = ({
-  team, clock, score, hero, pet, abilities, defensiveAbilities, items, resources, skillTokens,
+  team, clock, hero, pet, abilities, defensiveAbilities, items, resources, skillTokens,
   subtitles, onShop, onAbility, onItem, onMinimapClick, onMenu, onSettings, onTalents,
-  onScoreboard, onScan, onGlyph, minimapData,
+  onScoreboard, minimapData,
   skillPoints, totalPlayTime, heroInventory, petInventory, playerProfile,
   abilityMode: abilityModeProp, onSetAbilityMode, onTransferToPet, onTransferToHero, heroStats,
   showOutpostZones, onToggleOutpostZones,
@@ -387,7 +387,7 @@ export const GameHUD: React.FC<GameHUDProps> = ({
               <div
                 className="hud-portrait relative rounded-xl p-[3px]"
                 style={{
-                  background: `conic-gradient(#f59e0b ${pct(hero.xp.current, hero.xp.max) * 360}deg, rgba(255,255,255,0.10) 0deg)`,
+                  background: `conic-gradient(#f59e0b ${pct(hero.xp.current, hero.xp.max) * 360}deg, rgba(255,255,255,0.10) ${pct(hero.xp.current, hero.xp.max) * 360}deg)`,
                 }}
               >
                 <div className="w-full h-full rounded-[10px] overflow-hidden bg-slate-900">
@@ -435,7 +435,7 @@ export const GameHUD: React.FC<GameHUDProps> = ({
                 <div
                   className="hud-portrait relative rounded-xl p-[3px]"
                   style={{
-                    background: `conic-gradient(#f59e0b ${pct(pet.xp?.current ?? 0, pet.xp?.max ?? 100) * 360}deg, rgba(255,255,255,0.10) 0deg)`,
+                    background: `conic-gradient(#f59e0b ${pct(pet.xp?.current ?? 0, pet.xp?.max ?? 100) * 360}deg, rgba(255,255,255,0.10) ${pct(pet.xp?.current ?? 0, pet.xp?.max ?? 100) * 360}deg)`,
                   }}
                 >
                   <div className="w-full h-full rounded-[10px] overflow-hidden bg-slate-900">

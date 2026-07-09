@@ -14,6 +14,7 @@ import { useOutposts } from '../hooks/useOutposts';
 import { useRefugeeCamps } from '../hooks/useRefugeeCamps';
 import { useDuel } from '../hooks/useDuel';
 import { watchOpenRooms } from '../services/duelSignaling';
+import { useSkillStore } from '../store/skillStore';
 import { getLevelFromXp, getTotalXpForLevel, getXpForNextLevel } from '../services/playerExpEconomy';
 import { IsometricCharacter } from './IsometricCharacter';
 import type { Archetype, CharacterLoadout } from '../types/loadout';
@@ -1977,6 +1978,10 @@ export default function SoloMissionMap3D({
     saveProgress,
   });
 
+  // Visual XP feedback funnel (assigned after awardHeroXp/bumpHeroXpVisual are defined
+  // below; used here via a ref because collectibles is constructed earlier).
+  const bumpHeroXpVisualRef = React.useRef<((amount: number) => void) | null>(null);
+
   // ── Collectibles / inventory / item-slot system (standalone hook) ────────
   const collectibles = useCollectibles({
     uid: profile?.uid ?? '',
@@ -1991,6 +1996,7 @@ export default function SoloMissionMap3D({
     saveProgress,
     onHealHP,
     onRestoreEP,
+    onHeroXp: (amt) => bumpHeroXpVisualRef.current?.(amt),
   });
 
   // Destructure for convenience (avoids updating all downstream call sites)
@@ -2006,16 +2012,46 @@ export default function SoloMissionMap3D({
     handleItemUse,
   } = collectibles;
 
-  // ── Creep camps ─────────────────────────────────────────────────────────────
-  // Award hero XP (preserving skill data) — used by creep-camp clears.
+  // ── Hero XP + progression ─────────────────────────────────────────────────────
   const profileForXpRef = React.useRef(profile);
   profileForXpRef.current = profile;
+  const heroPosRef = React.useRef(hero.pos);
+  heroPosRef.current = hero.pos;
+
+  // Floating combat/feedback numbers (damage, heal, +XP).
+  const [combatTexts, setCombatTexts] = React.useState<Array<{ id: number; x: number; z: number; text: string; color: string }>>([]);
+  const nextTextId = React.useRef(0);
+  const spawnCombatText = React.useCallback((x: number, z: number, text: string, color: string) => {
+    const id = nextTextId.current++;
+    setCombatTexts(prev => [...prev.slice(-14), { id, x, z, text, color }]);
+  }, []);
+
+  // Monotonic live XP mirror — the single value the HUD reads. Bumped OPTIMISTICALLY on
+  // every gain (instant feedback) and reconciled upward from the saved profile.
+  const [heroXpLive, setHeroXpLive] = useState(() => Math.floor(profile?.progress?.hero?.xp ?? 0));
+  React.useEffect(() => {
+    const x = Math.floor(profile?.progress?.hero?.xp ?? 0);
+    setHeroXpLive(prev => (x > prev ? x : prev));
+  }, [profile?.progress?.hero?.xp]);
+
+  // Visual-only XP bump (+HUD +"+X XP" popup) — for sources that persist XP themselves
+  // (collectibles). Kept in a ref so the earlier collectibles hook can call it.
+  const bumpHeroXpVisual = React.useCallback((amount: number) => {
+    if (amount <= 0) return;
+    setHeroXpLive(x => x + amount);
+    const hw = axialToWorld({ q: heroPosRef.current.q, r: heroPosRef.current.r }, hexSize);
+    spawnCombatText(hw.x, hw.z, `+${Math.round(amount)} XP`, '#ffd24a');
+  }, [spawnCombatText, hexSize]);
+  bumpHeroXpVisualRef.current = bumpHeroXpVisual;
+
+  // Full award: visual bump + persist (level derived from XP). Used by creeps/missions.
   const awardHeroXp = React.useCallback((amount: number) => {
+    if (amount <= 0) return;
+    bumpHeroXpVisual(amount);
     const prof = profileForXpRef.current;
     const heroXp = prof?.progress?.hero?.xp ?? 0;
-    const heroLevel = prof?.progress?.hero?.level ?? 1;
     const newXp = heroXp + amount;
-    const newLevel = Math.max(heroLevel, getLevelFromXp(newXp));
+    const newLevel = Math.max(prof?.progress?.hero?.level ?? 1, getLevelFromXp(newXp));
     saveProgress({
       hero: {
         traits: prof?.progress?.hero?.traits ?? [],
@@ -2026,19 +2062,30 @@ export default function SoloMissionMap3D({
         level: newLevel,
       },
     });
-  }, [saveProgress]);
+  }, [saveProgress, bumpHeroXpVisual]);
 
-  // Floating combat numbers (damage counters).
-  const [combatTexts, setCombatTexts] = React.useState<Array<{ id: number; x: number; z: number; text: string; color: string }>>([]);
-  const nextTextId = React.useRef(0);
-  const spawnCombatText = React.useCallback((x: number, z: number, text: string, color: string) => {
-    const id = nextTextId.current++;
-    setCombatTexts(prev => [...prev.slice(-14), { id, x, z, text, color }]);
-  }, []);
+  // Level-up: keep the skill-store level in sync so points unlock LIVE, and flash a
+  // "Level Up" banner — this is the meta-progression link (XP → level → skill points).
+  const [levelUpBanner, setLevelUpBanner] = useState<number | null>(null);
+  const prevHeroLevelRef = React.useRef(Math.max(1, getLevelFromXp(Math.floor(heroXpLive))));
+  React.useEffect(() => {
+    const lvl = Math.max(1, getLevelFromXp(Math.floor(heroXpLive)));
+    try { useSkillStore.getState().setLevel(lvl); } catch {}
+    if (lvl > prevHeroLevelRef.current) {
+      prevHeroLevelRef.current = lvl;
+      setLevelUpBanner(lvl);
+      const hw = axialToWorld({ q: heroPosRef.current.q, r: heroPosRef.current.r }, hexSize);
+      spawnCombatText(hw.x, hw.z, `⭐ LEVEL ${lvl}`, '#8fe38f');
+      const t = setTimeout(() => setLevelUpBanner(null), 2600);
+      return () => clearTimeout(t);
+    } else if (lvl < prevHeroLevelRef.current) {
+      prevHeroLevelRef.current = lvl;
+    }
+  }, [heroXpLive, hexSize, spawnCombatText]);
 
   // Award Faction Points (persisted) — earned from faction activities (creep clears, resources).
   const awardFactionPoints = React.useCallback((amount: number) => {
-    const cur = profileForXpRef.current?.progress?.factionPoints ?? 0;
+    const cur = (profileForXpRef.current?.progress as any)?.factionPoints ?? 0;
     saveProgress({ factionPoints: cur + amount } as any);
   }, [saveProgress]);
 
@@ -2838,14 +2885,6 @@ export default function SoloMissionMap3D({
   // Recenter camera on double-tap spacebar
   const [recenterSignal, setRecenterSignal] = useState(0);
 
-  // Monotonic mirror of hero XP for the HUD — XP only ever increases in play, so track
-  // the max seen. This keeps the XP bar/text/level from flickering down if a rapid save
-  // race briefly writes a stale value, and guarantees the HUD reflects every gain.
-  const [heroXpLive, setHeroXpLive] = useState(() => Math.floor(profile?.progress?.hero?.xp ?? 0));
-  React.useEffect(() => {
-    const x = Math.floor(profile?.progress?.hero?.xp ?? 0);
-    setHeroXpLive(prev => (x > prev ? x : prev));
-  }, [profile?.progress?.hero?.xp]);
 
   // Touch device? Show on-screen controls for phones/tablets.
   const [coarsePointer, setCoarsePointer] = useState(false);
@@ -3525,6 +3564,16 @@ export default function SoloMissionMap3D({
                 </div>
               )}
 
+              {/* Level-up flash — XP crossed a threshold → new skill points available */}
+              {levelUpBanner !== null && (
+                <div className="fixed top-1/3 left-1/2 -translate-x-1/2 z-40 pointer-events-none">
+                  <div className="px-6 py-3 rounded-2xl bg-emerald-900/85 ring-1 ring-emerald-400/60 text-center shadow-2xl animate-bounce">
+                    <div className="text-2xl font-extrabold text-emerald-300">⭐ Level {levelUpBanner}!</div>
+                    <div className="text-xs opacity-80 mt-0.5">New skill points available — open the skill tree</div>
+                  </div>
+                </div>
+              )}
+
               {/* Death → respawn flash (PvE) */}
               {deathBanner && !duel.result && (
                 <div className="fixed inset-0 z-50 flex items-center justify-center bg-rose-950/40 backdrop-blur-[2px] pointer-events-none">
@@ -3577,7 +3626,7 @@ export default function SoloMissionMap3D({
                 hero={(() => {
                   // Hero XP is cumulative; use the monotonic live mirror so the ring/bar/
                   // level track every gain and never flicker down from a save race.
-                  const total = heroXpLive;
+                  const total = Math.floor(heroXpLive);
                   const lvl = Math.max(1, getLevelFromXp(total));
                   const max = Math.max(1, getXpForNextLevel(lvl));
                   const cur = Math.max(0, Math.min(max, total - getTotalXpForLevel(lvl)));

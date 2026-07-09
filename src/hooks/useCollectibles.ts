@@ -70,6 +70,8 @@ interface UseCollectiblesOptions {
   saveProgress: (progress: Partial<PlayerProfile['progress']>) => void;
   onHealHP?: (amount: number) => void;
   onRestoreEP?: (amount: number) => void;
+  /** Notified when the hero gains XP from a collect (for instant HUD/popup feedback). */
+  onHeroXp?: (amount: number) => void;
 }
 
 const ITEM_ICON_MAP: Record<string, string> = {
@@ -105,6 +107,7 @@ export function useCollectibles({
   saveProgress,
   onHealHP,
   onRestoreEP,
+  onHeroXp,
 }: UseCollectiblesOptions) {
   // ── Map collectibles ──────────────────────────────────────────────────────
   const [collectibleFlowers, setCollectibleFlowers] = useState<Set<string>>(new Set());
@@ -232,7 +235,10 @@ export function useCollectibles({
 
   // Award XP and persist. Carries forward the EXISTING skill data
   // (traits/unlockedSkillIds/unlockOrder) so a pickup never wipes skill progression.
+  const onHeroXpRef = useRef(onHeroXp);
+  onHeroXpRef.current = onHeroXp;
   const awardXpAndSave = useCallback((xpGain: number) => {
+    onHeroXpRef.current?.(xpGain); // instant HUD/popup feedback
     const prof = profileRef.current;
     const heroXp = prof?.progress?.hero?.xp ?? 0;
     const heroLevel = prof?.progress?.hero?.level ?? 1;
