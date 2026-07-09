@@ -15,7 +15,9 @@
       "Bash(command -v python3)",
       "Bash(pdftotext -layout \"D:/Afro Future -Dev Backup/New Dev 2025/Afro-Future Rising GDD.pdf\" gdd.txt)",
       "Bash(awk 'NR>=1373 && /^function [A-Z]/ && NR>1374 {print NR\": \"$0; exit}' src/components/SoloMissionMap3D.tsx)",
-      "Bash(awk 'NR>1420 && /^function [A-Z]/ {print NR\": \"$0; exit}' src/components/SoloMissionMap3D.tsx)"
+      "Bash(awk 'NR>1420 && /^function [A-Z]/ {print NR\": \"$0; exit}' src/components/SoloMissionMap3D.tsx)",
+      "PowerShell(npx tsc -p tsconfig.json --noEmit)",
+      "PowerShell(npm run build)"
     ]
   }
 }

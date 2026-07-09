@@ -48,6 +48,10 @@ export interface ItemSlot {
   icon?: string;
   qty?: number;
   key?: string;
+  /** Item type (for effect lookup on use). */
+  type?: string;
+  /** Which inventory this slot draws from — number-key use consumes from here. */
+  source?: 'hero' | 'pet';
 }
 
 // ── Hook options ─────────────────────────────────────────────────────────────
@@ -185,25 +189,31 @@ export function useCollectibles({
     setNearbyResource(rType ? { key, type: rType } : null);
   }, [collectibleFlowers, collectibleMushrooms, collectibleResources, heroQ, heroR]);
 
-  // ── Sync heroInventory → itemSlots for HUD ────────────────────────────────
+  // ── Sync hero + pet inventories → itemSlots for HUD ───────────────────────
+  // Each unique item (hero items first, then pet items) gets its own number key
+  // (1–8). Using a key consumes from that item's own inventory (hero or pet).
   useEffect(() => {
     const slots: ItemSlot[] = [];
     let i = 0;
-    for (const item of localHeroInventory) {
-      if (i >= 8 || item.quantity <= 0) continue;
+    const push = (item: InventoryItem, source: 'hero' | 'pet') => {
+      if (i >= 8 || item.quantity <= 0) return;
       slots[i] = {
         id: item.id,
+        type: item.type,
+        source,
         icon: (item as any).icon || ITEM_ICON_MAP[item.type] || '🎒',
         qty: item.quantity,
         key: String(i + 1),
       };
       i++;
-    }
+    };
+    for (const item of localHeroInventory) push(item, 'hero');
+    for (const item of localPetInventory) push(item, 'pet');
     for (; i < 8; i++) {
       slots[i] = { id: `item-empty-${i + 1}`, icon: '', qty: 0, key: String(i + 1) };
     }
     setItemSlots(slots);
-  }, [localHeroInventory]);
+  }, [localHeroInventory, localPetInventory]);
 
   // ── handleCollect: start a 1200 ms collection animation ──────────────────
   /**
@@ -310,10 +320,12 @@ export function useCollectibles({
     const slot = itemSlotsRef.current[slotIndex];
     if (!slot || (slot.qty ?? 0) <= 0 || !slot.icon) return;
 
-    const itemType = slot.id.split('-')[0];
-    setLocalHeroInventory(prev =>
+    const itemType = slot.type || slot.id.split('-')[0];
+    // Consume from whichever inventory owns this slot (hero or pet pack).
+    const consume = slot.source === 'pet' ? setLocalPetInventory : setLocalHeroInventory;
+    consume(prev =>
       prev
-        .map(inv => (inv.type === itemType && inv.quantity > 0 ? { ...inv, quantity: inv.quantity - 1 } : inv))
+        .map(inv => (inv.id === slot.id && inv.quantity > 0 ? { ...inv, quantity: inv.quantity - 1 } : inv))
         .filter(inv => inv.quantity > 0),
     );
     if (itemType === 'flower') onHealHPRef.current?.(20);

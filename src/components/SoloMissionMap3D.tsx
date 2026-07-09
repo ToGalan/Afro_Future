@@ -11,6 +11,9 @@ import { GameAvatar, type AvatarColors } from './GameAvatarMesh';
 import { resolveHeroModel } from '../config/heroModels';
 import { useCreeps, type CreepCamp } from '../hooks/useCreeps';
 import { useOutposts } from '../hooks/useOutposts';
+import { useRefugeeCamps } from '../hooks/useRefugeeCamps';
+import { useDuel } from '../hooks/useDuel';
+import { watchOpenRooms } from '../services/duelSignaling';
 import { getLevelFromXp, getTotalXpForLevel, getXpForNextLevel } from '../services/playerExpEconomy';
 import { IsometricCharacter } from './IsometricCharacter';
 import type { Archetype, CharacterLoadout } from '../types/loadout';
@@ -459,6 +462,63 @@ function OutpostMarker({ size, owned, color }: { size: number; owned: boolean; c
       <mesh position={[0, S * 0.9, 0]} castShadow><cylinderGeometry args={[S * 0.04, S * 0.05, S * 1.6, 6]} /><meshStandardMaterial color="#555" metalness={0.4} /></mesh>
       <mesh ref={flagRef} position={[S * 0.26, S * 1.45, 0]}><boxGeometry args={[S * 0.5, S * 0.34, S * 0.02]} /><meshStandardMaterial color={banner} emissive={owned ? color : '#000'} emissiveIntensity={owned ? 0.4 : 0} roughness={0.6} side={THREE.DoubleSide} /></mesh>
       <Text position={[0, S * 1.9, 0]} fontSize={S * 0.3} color={owned ? '#bfead0' : '#cfd4da'} anchorX="center" anchorY="middle" outlineWidth={S * 0.03} outlineColor="#000">{owned ? 'Outpost ✓' : 'Outpost'}</Text>
+    </group>
+  );
+}
+
+// Refugee camp — a friendly settlement (tents + campfire) that offers a
+// faction-specific side mission. Amber banner when the mission is open, green ✓ once
+// its aid mission is complete.
+function RefugeeCampMarker({ size, done, label, icon, mode, subtitle }: { size: number; done: boolean; label: string; icon: string; mode: 'aid' | 'loot'; subtitle?: string }) {
+  const fireRef = React.useRef<THREE.Mesh>(null);
+  useFrame(({ clock }) => { if (fireRef.current) { const s = 1 + Math.sin(clock.getElapsedTime() * 6) * 0.15; fireRef.current.scale.set(s, s, s); } });
+  const S = size;
+  const loot = mode === 'loot';
+  // Rival camps read hostile (dark/red tents); friendly camps read warm (tan tents).
+  const tents = loot ? ['#7a4a3a', '#8a4030', '#6a3a2a'] : ['#b8895a', '#a8734a', '#c79968'];
+  const flame = done ? '#7fd66b' : loot ? '#ff5a3c' : '#ff9a3c';
+  const titleCol = done ? '#a7e8b6' : loot ? '#ffb59a' : '#ffdca3';
+  const tent = (x: number, z: number, rot: number, col: string) => (
+    <group position={[x, 0, z]} rotation={[0, rot, 0]}>
+      <mesh position={[0, S * 0.32, 0]} castShadow><coneGeometry args={[S * 0.42, S * 0.64, 4]} /><meshStandardMaterial color={col} roughness={0.9} flatShading /></mesh>
+    </group>
+  );
+  return (
+    <group>
+      {tent(-S * 0.5, 0, Math.PI / 4, tents[0])}
+      {tent(S * 0.55, S * 0.2, -Math.PI / 5, tents[1])}
+      {tent(0, -S * 0.6, Math.PI / 3, tents[2])}
+      {/* campfire */}
+      <mesh position={[0, S * 0.06, S * 0.35]}><cylinderGeometry args={[S * 0.18, S * 0.22, S * 0.08, 6]} /><meshStandardMaterial color="#3a2a1e" roughness={1} /></mesh>
+      <mesh ref={fireRef} position={[0, S * 0.22, S * 0.35]}><coneGeometry args={[S * 0.1, S * 0.28, 5]} /><meshBasicMaterial color={flame} /></mesh>
+      <Text position={[0, S * 1.8, 0]} fontSize={S * 0.3} color={titleCol} anchorX="center" anchorY="middle" outlineWidth={S * 0.03} outlineColor="#000">
+        {done ? 'Camp Cleared ✓' : `${icon} ${label}`}
+      </Text>
+      {!done && subtitle && (
+        <Text position={[0, S * 1.45, 0]} fontSize={S * 0.22} color="#e8e0d0" anchorX="center" anchorY="middle" outlineWidth={S * 0.02} outlineColor="#000">{subtitle}</Text>
+      )}
+    </group>
+  );
+}
+
+// Control-zone perimeter around an outpost — a flat ring on the ground showing the
+// area of influence. Player-owned zones glow in the faction colour; neutral ones are
+// a dim grey. Toggled from the HUD ("Zones" button).
+function OutpostZoneRing({ size, owned, color }: { size: number; owned: boolean; color: string }) {
+  const R = size * 3.4;            // ~2 hex rings of influence
+  const tint = owned ? color : '#8a8f96';
+  return (
+    <group position={[0, 0.46, 0]} rotation={[-Math.PI / 2, 0, 0]}>
+      {/* filled disc (subtle) */}
+      <mesh renderOrder={1}>
+        <circleGeometry args={[R, 48]} />
+        <meshBasicMaterial color={tint} transparent opacity={owned ? 0.12 : 0.05} depthWrite={false} side={THREE.DoubleSide} />
+      </mesh>
+      {/* perimeter band */}
+      <mesh renderOrder={2}>
+        <ringGeometry args={[R * 0.92, R, 48]} />
+        <meshBasicMaterial color={tint} transparent opacity={owned ? 0.9 : 0.4} depthWrite={false} side={THREE.DoubleSide} />
+      </mesh>
     </group>
   );
 }
@@ -1740,8 +1800,9 @@ export default function SoloMissionMap3D({
   heroAttack = 8,
   combatStats,
   heroAvatar,
+  autoMultiplayer,
 }: {
-  onExit?: () => void; 
+  onExit?: () => void;
   onMapUpdate?: (data: MinimapData) => void; 
   abilitySlots?: Ability[]; 
   defenseSlots?: Ability[];
@@ -1767,6 +1828,8 @@ export default function SoloMissionMap3D({
   /** Active loadout passed from App — used as the source of truth for avatar data
    *  so changes in the configurator reflect immediately without a page reload. */
   heroAvatar?: CharacterLoadout | null;
+  /** Launched from the dashboard's Multiplayer mode — auto-open the duel lobby + quick-match. */
+  autoMultiplayer?: boolean;
 } = {}) {
   const useChunks = import.meta.env.VITE_USE_CHUNKS === 'true';
   // Adjusted map size to requested 240 x 240 tiles (square) (legacy full-map path only)
@@ -1947,13 +2010,20 @@ export default function SoloMissionMap3D({
   const petCombatBonus = isDog ? 3 + petLevel * 2 : 0;         // Dog fights alongside you
   const petVisionBonus = isDog ? 0 : 1;                        // Cat scouts (+vision)
 
+  // Attack/Defense mode — drives which ability set QWER uses AND the fight math:
+  // Attack mode hits harder; Defense mode hits softer but you take far less damage.
+  const [abilityMode, setAbilityMode] = useState<'offense' | 'defense'>('offense');
+  const combatAtkMult = abilityMode === 'offense' ? 1.3 : 0.6;
+  const combatIncomingScale = abilityMode === 'offense' ? 1 : 0.5;
+
   const { camps: creepCamps, nearbyCamp: nearbyCreepCamp, attackNearby: attackNearbyCamp } = useCreeps({
     tiles,
     heroQ: hero.pos.q,
     heroR: hero.pos.r,
     centerQ: centerAxial.q,
     centerR: centerAxial.r,
-    heroAttack: heroAttack + petCombatBonus,
+    heroAttack: Math.round((heroAttack + petCombatBonus) * combatAtkMult),
+    incomingDamageScale: combatIncomingScale,
     onHeroDamage: (amt) => onDamageHP?.(amt),
     awardXp: awardHeroXp,
     awardShards: awardFactionPoints, // camp clears grant Faction Points
@@ -1971,6 +2041,34 @@ export default function SoloMissionMap3D({
   const [terraformProgress, setTerraformProgress] = React.useState(0);
   const terraformDone = terraformProgress >= 100;
   const nearTerraformer = axialDistance(hero.pos, terraformAxial) <= 1;
+  const TERRAFORM_RADIUS = 3; // tiles greened around the terraformer on completion
+
+  // Terrain that has been terraformed: tile key → new (greener) type. Applied as a
+  // render override so the barren region visibly turns fertile.
+  const [terraformedTiles, setTerraformedTiles] = React.useState<Map<string, TileType>>(new Map());
+
+  // One step "greener": barren → grassland → forest. Water/mountain are left alone.
+  const greener = (type: TileType): TileType => {
+    if (type === 'desert' || type === 'hills') return 'plains';
+    if (type === 'plains') return 'forest';
+    return type;
+  };
+
+  // Convert the region around the terraformer to fertile terrain (the visible payoff of
+  // completing the terraforming mission).
+  const terraformRegion = React.useCallback(() => {
+    setTerraformedTiles(prev => {
+      const next = new Map(prev);
+      for (const t of tiles) {
+        if (axialDistance({ q: t.q, r: t.r }, terraformAxial) > TERRAFORM_RADIUS) continue;
+        const cur = next.get(`${t.q},${t.r}`) ?? t.type;
+        const g = greener(cur);
+        if (g !== cur) next.set(`${t.q},${t.r}`, g);
+      }
+      console.log('[terraform] Region greened around', terraformAxial);
+      return next;
+    });
+  }, [tiles, terraformAxial]);
 
   // Invest one gathered resource (ore/energy/bio) into the terraformer (plain fn so it
   // always closes over the current hero position / inventory).
@@ -1986,7 +2084,7 @@ export default function SoloMissionMap3D({
     if (consumed) {
       setTerraformProgress(p => {
         const np = Math.min(100, p + 12);
-        if (np >= 100 && p < 100) { awardHeroXp(60); awardFactionPoints(5); console.log('[terraform] Region terraformed! +60 XP, +5 FP'); }
+        if (np >= 100 && p < 100) { awardHeroXp(60); awardFactionPoints(5); terraformRegion(); console.log('[terraform] Region terraformed! +60 XP, +5 FP'); }
         return np;
       });
     }
@@ -2001,9 +2099,149 @@ export default function SoloMissionMap3D({
     centerR: centerAxial.r,
     onCapture: (_region, regionCleared) => { awardFactionPoints(regionCleared ? 6 : 2); awardHeroXp(regionCleared ? 40 : 15); },
   });
+  // ── Refugee camps — faction-specific side missions + resource rewards ─────────
+  // Grant a gathered resource straight into the hero inventory (stacks by type).
+  const grantResource = React.useCallback((type: keyof typeof RESOURCE_DEFS, amount: number) => {
+    const def = RESOURCE_DEFS[type];
+    setLocalHeroInventory(prev => {
+      const ex = prev.find(i => i.type === type);
+      return ex
+        ? prev.map(i => (i.type === type ? { ...i, quantity: i.quantity + amount } : i))
+        : [...prev, { id: `${type}-refugee`, type, quantity: amount, effect: def.effect, value: def.hp || def.ep, icon: def.icon }];
+    });
+  }, [setLocalHeroInventory]);
+
+  const { camps: refugeeCamps, nearbyCamp: nearbyRefugeeCamp, deliverToNearby: deliverRefugee, lootNearby: lootRefugee, progress: refugeeProgress } = useRefugeeCamps({
+    tiles,
+    heroQ: hero.pos.q,
+    heroR: hero.pos.r,
+    centerQ: centerAxial.q,
+    centerR: centerAxial.r,
+    faction: factionName,
+    onComplete: (camp) => {
+      // AID: standing only (the resources were the cost). LOOT: seize the rival's cache.
+      if (camp.mode === 'loot' && camp.loot.amount > 0) {
+        grantResource(camp.loot.resource, camp.loot.amount);
+        const cw = axialToWorld({ q: camp.q, r: camp.r }, hexSize);
+        spawnCombatText(cw.x, cw.z, `+${camp.loot.amount} ${RESOURCE_DEFS[camp.loot.resource].label}`, '#ffd24a');
+      } else {
+        const cw = axialToWorld({ q: camp.q, r: camp.r }, hexSize);
+        spawnCombatText(cw.x, cw.z, `Camp aided ✓`, '#7fd66b');
+      }
+      awardHeroXp(camp.reward.xp);
+      awardFactionPoints(camp.reward.fp);
+    },
+  });
+
+  // Interact with the nearby refugee camp (H): loot rivals in one action; for your own
+  // faction's camp, deliver as much of the required resource as you're carrying.
+  const localHeroInventoryRef = React.useRef(localHeroInventory); localHeroInventoryRef.current = localHeroInventory;
+  const nearbyRefugeeCampRef = React.useRef(nearbyRefugeeCamp); nearbyRefugeeCampRef.current = nearbyRefugeeCamp;
+  const handleRefugeeInteract = React.useCallback(() => {
+    const camp = nearbyRefugeeCampRef.current;
+    if (!camp) return;
+    if (camp.mode === 'loot') { lootRefugee(); return; }
+    // Aid: deliver held units of the required resource.
+    const resType = camp.required.resource;
+    const held = localHeroInventoryRef.current.filter(i => i.type === resType).reduce((s, i) => s + (i.quantity || 0), 0);
+    const need = Math.max(0, camp.required.amount - camp.delivered);
+    const give = Math.min(held, need);
+    const hw = axialToWorld({ q: hero.pos.q, r: hero.pos.r }, hexSize);
+    if (give <= 0) {
+      spawnCombatText(hw.x, hw.z, `Need ${need} ${RESOURCE_DEFS[resType].label}`, '#ff8888');
+      return;
+    }
+    // Consume exactly `give` of the resource from the hero inventory.
+    setLocalHeroInventory(prev => {
+      let remaining = give;
+      return prev.map(i => {
+        if (i.type !== resType || remaining <= 0) return i;
+        const take = Math.min(i.quantity, remaining); remaining -= take;
+        return { ...i, quantity: i.quantity - take };
+      }).filter(i => i.quantity > 0);
+    });
+    const res = deliverRefugee(give);
+    if (res && !res.completed) spawnCombatText(hw.x, hw.z, `Delivered ${give} ${RESOURCE_DEFS[resType].label}`, '#7fd66b');
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [deliverRefugee, lootRefugee, hexSize, setLocalHeroInventory]);
+
   // Refs so the keydown handler always calls the current actions.
   const investTerraformRef = React.useRef(investTerraform); investTerraformRef.current = investTerraform;
   const captureNearbyRef = React.useRef(captureNearby); captureNearbyRef.current = captureNearby;
+  const assistRefugeeRef = React.useRef(handleRefugeeInteract); assistRefugeeRef.current = handleRefugeeInteract;
+
+  // Toggle for the outpost control-zone perimeter overlay (HUD "Zones" button / 'Y').
+  const [showOutpostZones, setShowOutpostZones] = useState(false);
+
+  // Tiles kept free of terrain decorations: every camp/outpost/refugee/terraformer tile
+  // PLUS its 1-tile ring, so these interactable sites always have clear sightlines.
+  const decoBlockedKeys = React.useMemo(() => {
+    const set = new Set<string>();
+    const block = (q: number, r: number) => {
+      set.add(`${q},${r}`);
+      for (const n of axialNeighbors({ q, r })) set.add(`${n.q},${n.r}`);
+    };
+    for (const c of creepCamps.values()) if (!c.cleared) block(c.q, c.r);
+    for (const o of outposts.values()) block(o.q, o.r);
+    for (const c of refugeeCamps.values()) block(c.q, c.r);
+    block(terraformAxial.q, terraformAxial.r);
+    return set;
+  }, [creepCamps, outposts, refugeeCamps, terraformAxial]);
+
+  // ── 1v1 PvP duel (WebRTC data channel, Firestore-signaled) ───────────────────
+  const [duelLobbyOpen, setDuelLobbyOpen] = useState(false);
+  const [duelJoinCode, setDuelJoinCode] = useState('');
+  const [duelDeathReported, setDuelDeathReported] = useState(false);
+  const [duelWaiting, setDuelWaiting] = useState(0); // players in the matchmaking queue
+  const duel = useDuel({
+    onHit: (dmg) => {
+      onDamageHP?.(dmg);
+      const hw = axialToWorld({ q: hero.pos.q, r: hero.pos.r }, hexSize);
+      spawnCombatText(hw.x, hw.z, `-${dmg}`, '#ff5555');
+    },
+  });
+  const { active: duelActive, remote: duelRemote, sendState: duelSendState, reportLocalDeath: duelReportDeath, attackRemote: duelAttackRemote } = duel;
+
+  // Live count of players waiting for a quick-match — only while the lobby is open and
+  // we're not already in a session.
+  React.useEffect(() => {
+    if (!duelLobbyOpen || duelActive) return;
+    const unsub = watchOpenRooms(setDuelWaiting);
+    return () => unsub();
+  }, [duelLobbyOpen, duelActive]);
+
+  // Launched from the dashboard "Multiplayer" mode → open the lobby and start a
+  // quick-match automatically (once).
+  const duelAutoStartedRef = React.useRef(false);
+  React.useEffect(() => {
+    if (autoMultiplayer && !duelAutoStartedRef.current) {
+      duelAutoStartedRef.current = true;
+      setDuelLobbyOpen(true);
+      duel.findMatch();
+    }
+  }, [autoMultiplayer, duel]);
+
+  // Broadcast our hero snapshot to the opponent while connected. (The actual effect is
+  // declared further down, after the hero render fields it reads are in scope.)
+  const duelSendStateRef = React.useRef(duelSendState); duelSendStateRef.current = duelSendState;
+
+  // Announce our own death once (defender-authoritative → opponent wins).
+  React.useEffect(() => {
+    const hp = heroVitals?.hp.current ?? 1;
+    if (duelActive && !duelDeathReported && hp <= 0) { duelReportDeath(); setDuelDeathReported(true); }
+    else if (hp > 0 && duelDeathReported) setDuelDeathReported(false);
+  }, [duelActive, duelDeathReported, heroVitals?.hp.current, duelReportDeath]);
+
+  // Attack the opposing player if they're adjacent (invoked from the F key).
+  const duelFightRef = React.useRef<() => void>(() => {});
+  duelFightRef.current = () => {
+    if (!duelActive || !duelRemote) return;
+    if (axialDistance(hero.pos, duelRemote.pos) > 1) return;
+    const dmg = Math.max(1, Math.round((heroAttack + petCombatBonus) * combatAtkMult));
+    duelAttackRemote(dmg);
+    const rw = axialToWorld(duelRemote.pos, hexSize);
+    spawnCombatText(rw.x, rw.z, `-${dmg}`, '#ffd24a');
+  };
 
   // Pet fetch (GDD): the companion periodically carries a supply from base to the field.
   React.useEffect(() => {
@@ -2019,6 +2257,10 @@ export default function SoloMissionMap3D({
     return () => clearInterval(iv);
   }, [setLocalHeroInventory, isDog]);
 
+  // Pet-pack supplies are used via the number-key hotbar (1–8), which merges the
+  // hero and pet inventories so each carried item gets its own key (see
+  // useCollectibles → itemSlots / handleItemUse).
+
   // Ability slots (QWER) — still managed locally as they are tightly coupled
   // to the in-map keydown handler; skill-tree abilities come in via externalAbilities prop.
   // Abilities come ONLY from the skill tree (offensive loadout). Empty until the
@@ -2026,8 +2268,7 @@ export default function SoloMissionMap3D({
   const [abilitySlots, setAbilitySlots] = useState<Ability[]>(externalAbilities ? [...externalAbilities] : []);
   // Defensive ability set (Defense mode) — also ONLY from the skill tree's defensive loadout.
   const [defenseSlots, setDefenseSlots] = useState<Ability[]>(externalDefense ? [...externalDefense] : []);
-  // Attack/Defense mode — determines which ability set QWER and the HUD use.
-  const [abilityMode, setAbilityMode] = useState<'offense' | 'defense'>('offense');
+  // (abilityMode is declared above so the creep-combat math can use it.)
 
   // Active set derived from mode; refs so the keydown closure reads current values.
   const activeSlots = abilityMode === 'defense' ? defenseSlots : abilitySlots;
@@ -2359,6 +2600,19 @@ export default function SoloMissionMap3D({
   const heroParts    = avatarData.parts;
   const heroColors   = avatarData.colors;
   const heroFaction  = avatarData.faction;
+
+  // Broadcast our hero snapshot to the duel opponent while connected (declared here so
+  // the hero render fields — faction/gender/facing/moving — are in scope).
+  React.useEffect(() => {
+    if (!duelActive) return;
+    duelSendStateRef.current({
+      pos: hero.pos,
+      hp: heroVitals?.hp.current ?? 100,
+      maxHp: heroVitals?.hp.max ?? 100,
+      faction: heroFaction, gender: heroGender, name: heroVitals?.name,
+      moving: isHeroMoving, facing: heroFacingAngle,
+    });
+  }, [duelActive, hero.pos, heroVitals?.hp.current, heroVitals?.hp.max, heroVitals?.name, isHeroMoving, heroFacingAngle, heroFaction, heroGender]);
   // avatarReady: always true since IsometricCharacter is procedural (no async loading).
   // Only reset briefly when a custom GLB modelUrl changes to avoid stale-model flash.
   const [avatarReady, setAvatarReady] = useState(true);
@@ -2594,10 +2848,11 @@ export default function SoloMissionMap3D({
         return;
       }
 
-      // ─── ATTACK NEARBY CREEP CAMP (F) — a deliberate choice ────────────
+      // ─── ATTACK NEARBY CREEP CAMP or RIVAL PLAYER (F) — a deliberate choice ─
       if (k === 'f') {
         if (e.repeat) return;
-        attackNearbyRef.current();
+        attackNearbyRef.current();  // creep camp if adjacent
+        duelFightRef.current();     // rival duelist if adjacent
         return;
       }
       // ─── TERRAFORM (T) — invest a resource at the terraformer ──────────
@@ -2612,6 +2867,20 @@ export default function SoloMissionMap3D({
         captureNearbyRef.current();
         return;
       }
+      // ─── TOGGLE OUTPOST CONTROL-ZONE OVERLAY (Y) ───────────────────────
+      if (k === 'y') {
+        if (e.repeat) return;
+        setShowOutpostZones(v => !v);
+        return;
+      }
+      // ─── AID A REFUGEE CAMP (H) — complete its faction mission ──────────
+      if (k === 'h') {
+        if (e.repeat) return;
+        assistRefugeeRef.current();
+        return;
+      }
+      // (Pet-pack supplies are now used via the number keys 1–8, alongside hero
+      //  items — each unique item has its own key. See the ITEM ACTIVATION block.)
 
       // ─── ABILITY ACTIVATION (QWER) — uses the ACTIVE mode's ability set ─
       const abilityMap: Record<string, string> = { q: 'q', w: 'w', e: 'e', r: 'r' };
@@ -2700,37 +2969,44 @@ export default function SoloMissionMap3D({
                 })}
 
                 {/* ── Active render radius tiles ── */}
-                {culledTiles.map((t) => {
+                {culledTiles.map((rawT) => {
+                  const key = `${rawT.q},${rawT.r}`;
+                  // Apply the terraforming override so greened tiles render as fertile.
+                  const ov = terraformedTiles.get(key);
+                  const t: Tile = ov ? { ...rawT, type: ov } : rawT;
                   const { x, z } = axialToWorld(t, hexSize);
-                  const key = `${t.q},${t.r}`;
                   const inHero = heroVisible.has(key);
                   const inPet = petVisible.has(key);
                   const inVision = inHero || inPet;
                   const explored = exploredRef.current.has(key);
                   const tileTop = heightFor(t);
+                  // Keep camp / outpost / terraformer tiles AND the ring of tiles around
+                  // them clear of terrain clutter so the player can fight/capture/deliver
+                  // with clear sightlines (no trees or rocks overlaying the area).
+                  const blockDeco = decoBlockedKeys.has(key);
                   return (
                     <group key={key} position={[x, 0, z]}>
                       <HexTile t={t} size={hexSize} onClick={() => {}} onHover={setHover} />
                       {/* Terrain decorations — visible now OR previously explored (FoW dim sits on top) */}
-                      {(inVision || explored) && t.type === 'forest' && !collectibleMushrooms.has(key) && (
+                      {(inVision || explored) && t.type === 'forest' && !collectibleMushrooms.has(key) && !blockDeco && (
                         <group position={[0, tileTop, 0]}><TreeCluster size={hexSize} seed={t.q * 31 + t.r * 17} /></group>
                       )}
-                      {(inVision || explored) && t.type === 'jungle' && (
+                      {(inVision || explored) && t.type === 'jungle' && !blockDeco && (
                         <group position={[0, tileTop, 0]}><TreeCluster size={hexSize} seed={t.q * 31 + t.r * 17} /></group>
                       )}
-                      {(inVision || explored) && t.type === 'mountain' && (
+                      {(inVision || explored) && t.type === 'mountain' && !blockDeco && (
                         <group position={[0, tileTop, 0]}><MountainDeco size={hexSize} seed={t.q * 31 + t.r * 17} /></group>
                       )}
-                      {(inVision || explored) && t.type === 'hills' && (
+                      {(inVision || explored) && t.type === 'hills' && !blockDeco && (
                         <group position={[0, tileTop, 0]}><HillsDeco size={hexSize} seed={t.q * 31 + t.r * 17} /></group>
                       )}
                       {(inVision || explored) && t.type === 'water' && (
                         <group position={[0, tileTop, 0]}><WaterWaves size={hexSize} /></group>
                       )}
-                      {(inVision || explored) && t.type === 'plains' && (
+                      {(inVision || explored) && t.type === 'plains' && !blockDeco && (
                         <group position={[0, tileTop, 0]}><GrassCluster size={hexSize} seed={t.q * 37 + t.r * 13} /></group>
                       )}
-                      {(inVision || explored) && t.type === 'desert' && (
+                      {(inVision || explored) && t.type === 'desert' && !blockDeco && (
                         <group position={[0, tileTop, 0]} renderOrder={5}><DesertDunes size={hexSize} seed={t.q * 41 + t.r * 19} /></group>
                       )}
                       {/* Gatherable resource node (ore / energy / bio) — removed from the
@@ -2817,6 +3093,23 @@ export default function SoloMissionMap3D({
                     {/* Name label + role/attack counter */}
                     <Text position={[0, ps * 3.1, 0]} fontSize={ps * 0.5} color="#fff" anchorX="center" anchorY="middle" outlineWidth={ps * 0.03} outlineColor="#000">{isDog ? `Dog  ⚔️${petCombatBonus}` : `Cat  👁️+${petVisionBonus}`}</Text>
                   </group> ); })()}
+                {/* Remote duelist (1v1 PvP) — rendered at their synced position */}
+                {duelRemote && axialDistance(hero.pos, duelRemote.pos) <= RENDER_RADIUS && (() => {
+                  const world = axialToWorld(duelRemote.pos, hexSize);
+                  const rivalColors = { ...heroColors, primary: '#d0453f', secondary: '#7a1f1b' } as typeof heroColors;
+                  const hpPct = Math.max(0, Math.min(1, duelRemote.hp / Math.max(1, duelRemote.maxHp)));
+                  return (
+                    <group key="duel-remote" position={[world.x, 0.48, world.z]} rotation={[0, duelRemote.facing ?? 0, 0]} frustumCulled={false}>
+                      <IsometricCharacter gender={(duelRemote.gender as any) ?? 'MALE'} colors={rivalColors} hexSize={hexSize} faction={duelRemote.faction as any} isMoving={!!duelRemote.moving} facingAngle={duelRemote.facing ?? 0} />
+                      <Text position={[0, hexSize * 2.4, 0]} fontSize={hexSize * 0.42} color="#ff9a9a" anchorX="center" anchorY="middle" outlineWidth={hexSize * 0.03} outlineColor="#000">{`⚔️ ${duelRemote.name ?? 'Rival'}`}</Text>
+                      {/* Enemy HP bar */}
+                      <group position={[0, hexSize * 2.0, 0]}>
+                        <mesh><planeGeometry args={[hexSize * 1.4, hexSize * 0.16]} /><meshBasicMaterial color="#2a0a0a" /></mesh>
+                        <mesh position={[-(hexSize * 1.4 * (1 - hpPct)) / 2, 0, 0.01]}><planeGeometry args={[hexSize * 1.4 * hpPct, hexSize * 0.16]} /><meshBasicMaterial color="#e0453f" /></mesh>
+                      </group>
+                    </group>
+                  );
+                })()}
                 {/* Creep camps — only on explored/visible tiles (hidden by fog of war),
                     near the hero, and hidden once cleared. */}
                 {Array.from(creepCamps.values()).map(camp => {
@@ -2853,6 +3146,26 @@ export default function SoloMissionMap3D({
                   return (
                     <group key={`outpost-${o.key}`} position={[ow.x, heightFor({ q: o.q, r: o.r, type: 'plains', char: 'P', resource: null }), ow.z]} frustumCulled={false}>
                       <OutpostMarker size={hexSize} owned={o.owner === 'player'} color={heroColors.primary} />
+                      {showOutpostZones && <OutpostZoneRing size={hexSize} owned={o.owner === 'player'} color={heroColors.primary} />}
+                    </group>
+                  );
+                })}
+                {/* Refugee camps (fog-gated) — faction side missions */}
+                {Array.from(refugeeCamps.values()).map(c => {
+                  const rkey = `${c.q},${c.r}`;
+                  if (!exploredRef.current.has(rkey) && !heroVisible.has(rkey)) return null;
+                  if (axialDistance({ q: c.q, r: c.r }, hero.pos) > RENDER_RADIUS) return null;
+                  const rw = axialToWorld({ q: c.q, r: c.r }, hexSize);
+                  return (
+                    <group key={`refugee-${c.key}`} position={[rw.x, heightFor({ q: c.q, r: c.r, type: 'plains', char: 'P', resource: null }), rw.z]} frustumCulled={false}>
+                      <RefugeeCampMarker
+                        size={hexSize}
+                        done={c.completed}
+                        label={c.mission.title}
+                        icon={c.mission.icon}
+                        mode={c.mode}
+                        subtitle={c.mode === 'aid' ? `${c.delivered}/${c.required.amount} ${RESOURCE_DEFS[c.required.resource].label}` : undefined}
+                      />
                     </group>
                   );
                 })}
@@ -2947,6 +3260,26 @@ export default function SoloMissionMap3D({
                   </div>
                 </div>
               )}
+              {nearbyRefugeeCamp && (() => {
+                const c = nearbyRefugeeCamp;
+                const loot = c.mode === 'loot';
+                const held = localHeroInventory.filter(i => i.type === c.required.resource).reduce((s, i) => s + (i.quantity || 0), 0);
+                const resLbl = RESOURCE_DEFS[c.required.resource]?.label ?? '';
+                return (
+                  <div className="fixed top-40 left-1/2 -translate-x-1/2 z-40">
+                    <div className={`px-4 py-2 rounded-xl border text-sm font-bold backdrop-blur-sm shadow-lg flex items-center gap-2 ${
+                      loot ? 'bg-orange-900/80 border-orange-400/60 text-orange-100' : 'bg-emerald-900/80 border-emerald-400/60 text-emerald-100'
+                    }`}>
+                      {c.mission.icon} {c.mission.title}
+                      {loot
+                        ? <span className="opacity-80 font-normal">— {c.mission.desc}</span>
+                        : <span className="opacity-80 font-normal">— {c.delivered}/{c.required.amount} {resLbl} delivered · holding {held}</span>
+                      }
+                      <span className={`px-1.5 py-0.5 rounded font-bold ${loot ? 'bg-orange-700' : 'bg-emerald-700'}`}>H</span> to {c.mission.verb.toLowerCase()}
+                    </div>
+                  </div>
+                );
+              })()}
 
               {/* Objectives panel (top-left) */}
               <div className="fixed top-32 left-3 z-30 px-3 py-2 rounded-xl bg-[#0c1219]/85 ring-1 ring-white/10 text-[11px] pointer-events-none shadow-lg space-y-1">
@@ -2954,7 +3287,102 @@ export default function SoloMissionMap3D({
                 <div className="flex items-center gap-2"><span>🌱</span><span className="opacity-70">Terraform</span><span className="ml-auto font-semibold tabular-nums">{terraformDone ? '✓' : `${terraformProgress}%`}</span></div>
                 <div className="flex items-center gap-2"><span>🚩</span><span className="opacity-70">Outposts</span><span className="ml-auto font-semibold tabular-nums">{outpostControl.owned}/{outpostControl.total}</span></div>
                 <div className="flex items-center gap-2"><span>🗺️</span><span className="opacity-70">Regions</span><span className="ml-auto font-semibold tabular-nums">{outpostControl.regionsControlled}/{outpostControl.regionCount}</span></div>
+                <div className="flex items-center gap-2"><span>⛺</span><span className="opacity-70">Refugee camps</span><span className="ml-auto font-semibold tabular-nums">{refugeeProgress.done}/{refugeeProgress.total}</span></div>
+                {localPetInventory.length > 0 && (
+                  <div className="flex items-center gap-2 pt-1 mt-1 border-t border-white/10"><span>🐾</span><span className="opacity-70">Pet pack</span><span className="ml-auto font-semibold tabular-nums">{localPetInventory.reduce((s, i) => s + (i.quantity || 0), 0)}</span><span className="px-1 py-0.5 rounded bg-white/10 text-[9px] font-bold">1–8</span></div>
+                )}
+                {duelActive && (
+                  <div className="flex items-center gap-2 pt-1 mt-1 border-t border-white/10"><span>⚔️</span><span className="opacity-70">Duel</span><span className="ml-auto font-semibold tabular-nums">{duel.status === 'connected' ? (duelRemote ? 'vs ' + (duelRemote.name || 'Rival') : 'connected') : duel.status}</span></div>
+                )}
               </div>
+
+              {/* ── 1v1 PvP Duel: launcher button + lobby + result ─────────────── */}
+              <button
+                onClick={() => setDuelLobbyOpen(o => !o)}
+                className={`fixed top-3 right-3 z-40 px-3 py-1.5 rounded-lg text-sm font-bold shadow-lg ring-1 transition ${
+                  duelActive ? 'bg-rose-800/90 ring-rose-400 text-rose-50' : 'bg-[#141b26]/90 ring-white/15 text-gray-200 hover:ring-rose-400/60'
+                }`}
+              >⚔️ Duel{duelActive && duel.status === 'connected' ? ' •' : ''}</button>
+
+              {duelLobbyOpen && (
+                <div className="fixed top-14 right-3 z-40 w-72 p-4 rounded-xl bg-[#0c1219]/95 ring-1 ring-white/12 shadow-2xl text-sm text-gray-100 space-y-3">
+                  <div className="flex items-center justify-between">
+                    <span className="font-bold">⚔️ 1v1 Duel</span>
+                    <button onClick={() => setDuelLobbyOpen(false)} className="opacity-60 hover:opacity-100">✕</button>
+                  </div>
+
+                  {(duel.status === 'idle' || duel.status === 'error') && (
+                    <>
+                      <button onClick={() => duel.findMatch()} className="w-full py-2 rounded-lg bg-emerald-600 hover:bg-emerald-500 font-bold flex items-center justify-center gap-2">
+                        🎯 Find Opponent
+                        {duelWaiting > 0 && <span className="px-1.5 py-0.5 rounded-full bg-black/30 text-[10px] font-bold">{duelWaiting} waiting</span>}
+                      </button>
+                      <div className="text-[11px] opacity-50 text-center">— or play a friend —</div>
+                      <button onClick={() => duel.host()} className="w-full py-2 rounded-lg bg-rose-700 hover:bg-rose-600 font-bold">Host with a code</button>
+                      <div className="flex gap-2">
+                        <input
+                          value={duelJoinCode}
+                          onChange={(e) => setDuelJoinCode(e.target.value.toUpperCase())}
+                          maxLength={5}
+                          placeholder="CODE"
+                          className="flex-1 min-w-0 px-2 py-2 rounded-lg bg-black/40 ring-1 ring-white/15 uppercase tracking-widest font-mono text-center"
+                        />
+                        <button onClick={() => duel.join(duelJoinCode)} disabled={duelJoinCode.length < 4} className="px-3 py-2 rounded-lg bg-indigo-700 hover:bg-indigo-600 font-bold disabled:opacity-40">Join</button>
+                      </div>
+                      {duel.status === 'error' && <div className="text-[11px] text-rose-400">Couldn't connect — try again or check the code.</div>}
+                    </>
+                  )}
+
+                  {duel.status === 'searching' && (
+                    <div className="space-y-2 text-center">
+                      <div className="text-[12px] text-emerald-400 font-bold animate-pulse py-1">🎯 Searching for an opponent…</div>
+                      {duel.code && <div className="text-[11px] opacity-60">You're in the queue{duel.role === 'host' ? ' as host' : ''} — hang tight.</div>}
+                      <button onClick={() => duel.leave()} className="w-full py-1.5 rounded-lg bg-white/10 hover:bg-white/20 text-xs">Cancel search</button>
+                    </div>
+                  )}
+
+                  {duel.status === 'hosting' && (
+                    <div className="space-y-2 text-center">
+                      <div className="text-[11px] opacity-60">Share this code with your opponent:</div>
+                      <div className="text-2xl font-mono font-bold tracking-[0.3em] text-amber-300">{duel.code}</div>
+                      <div className="text-[11px] opacity-60 animate-pulse">Waiting for opponent to join…</div>
+                      <button onClick={() => duel.leave()} className="w-full py-1.5 rounded-lg bg-white/10 hover:bg-white/20 text-xs">Cancel</button>
+                    </div>
+                  )}
+
+                  {duel.status === 'connecting' && (
+                    <div className="text-center text-[12px] opacity-70 animate-pulse py-2">Connecting to {duel.code}…</div>
+                  )}
+
+                  {duel.status === 'connected' && (
+                    <div className="space-y-2">
+                      <div className="text-center text-emerald-400 font-bold">Connected — Fight!</div>
+                      <div className="text-[11px] opacity-70 text-center">Get adjacent to your rival and press <span className="px-1 rounded bg-white/10 font-bold">F</span> to strike.</div>
+                      <button onClick={() => duel.leave()} className="w-full py-1.5 rounded-lg bg-white/10 hover:bg-white/20 text-xs">Leave duel</button>
+                    </div>
+                  )}
+
+                  {duel.status === 'closed' && (
+                    <div className="space-y-2 text-center">
+                      <div className="text-[12px] opacity-70">Connection closed.</div>
+                      <button onClick={() => duel.leave()} className="w-full py-1.5 rounded-lg bg-white/10 hover:bg-white/20 text-xs">Back</button>
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {/* Duel result banner */}
+              {duel.result && (
+                <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm">
+                  <div className="px-10 py-8 rounded-2xl bg-[#0c1219]/95 ring-1 ring-white/15 text-center shadow-2xl">
+                    <div className={`text-4xl font-extrabold mb-2 ${duel.result === 'win' ? 'text-amber-300' : 'text-rose-400'}`}>
+                      {duel.result === 'win' ? '🏆 Victory' : '☠️ Defeat'}
+                    </div>
+                    <div className="opacity-70 text-sm mb-4">{duel.result === 'win' ? 'You defeated your rival.' : 'Your rival bested you.'}</div>
+                    <button onClick={() => { duel.leave(); setDuelLobbyOpen(false); }} className="px-6 py-2 rounded-lg bg-rose-700 hover:bg-rose-600 font-bold">Close</button>
+                  </div>
+                </div>
+              )}
 
               {/* Nearby collectible prompt (flower / mushroom / resource node) */}
               {(nearbyFlower || nearbyMushroom || nearbyResource) && (
@@ -3015,6 +3443,8 @@ export default function SoloMissionMap3D({
                 defensiveAbilities={defenseSlots}
                 abilityMode={abilityMode}
                 onSetAbilityMode={setAbilityMode}
+                showOutpostZones={showOutpostZones}
+                onToggleOutpostZones={() => setShowOutpostZones(v => !v)}
                 onTransferToPet={(type: string) => transferItem(type, 'toPet')}
                 onTransferToHero={(type: string) => transferItem(type, 'toHero')}
                 heroStats={combatStats}

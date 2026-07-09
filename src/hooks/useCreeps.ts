@@ -42,13 +42,15 @@ interface UseCreepsOptions {
   onHeroDamage?: (amount: number) => void;
   awardXp?: (amount: number) => void;
   awardShards?: (amount: number) => void;
+  /** Multiplier on damage the hero TAKES (e.g. lower in Defense mode). Default 1. */
+  incomingDamageScale?: number;
   /** Fired each combat tick with damage dealt to the camp and taken by the hero. */
-  onCombat?: (info: { campQ: number; campR: number; toCreep: number; toHero: number; cleared: boolean }) => void;
+  onCombat?: (info: { campQ: number; campR: number; toCreep: number; toHero: number; killed: number; cleared: boolean }) => void;
 }
 
 export function useCreeps({
   tiles, heroQ, heroR, centerQ, centerR, heroAttack,
-  onHeroDamage, awardXp, awardShards, onCombat,
+  onHeroDamage, awardXp, awardShards, incomingDamageScale, onCombat,
 }: UseCreepsOptions) {
   const [camps, setCamps] = useState<Map<string, CreepCamp>>(new Map());
   const [nearbyCamp, setNearbyCamp] = useState<CreepCamp | null>(null);
@@ -60,6 +62,7 @@ export function useCreeps({
   const onHeroDamageRef = useRef(onHeroDamage); onHeroDamageRef.current = onHeroDamage;
   const awardXpRef = useRef(awardXp); awardXpRef.current = awardXp;
   const onCombatRef = useRef(onCombat); onCombatRef.current = onCombat;
+  const incomingScaleRef = useRef(incomingDamageScale ?? 1); incomingScaleRef.current = incomingDamageScale ?? 1;
   const awardShardsRef = useRef(awardShards); awardShardsRef.current = awardShards;
 
   // ── Generate camps once tiles load ─────────────────────────────────────────
@@ -110,6 +113,7 @@ export function useCreeps({
     if (!key) return false;
     const camp = campsRef.current.get(key);
     if (!camp || camp.cleared) return false;
+    const aliveBefore = camp.creeps.filter(c => c.hp > 0).length;
     const creeps = camp.creeps.map(c => ({ ...c }));
     let dmg = Math.max(1, atkRef.current || 5);
     let toCreep = 0;
@@ -120,15 +124,19 @@ export function useCreeps({
       if (dmg <= 0) break;
     }
     const alive = creeps.filter(c => c.hp > 0);
-    const toHero = alive.length * camp.dmgPerCreep;
-    if (alive.length) onHeroDamageRef.current?.(toHero); // creeps retaliate only when attacked
+    const killed = aliveBefore - alive.length;
+    const toHero = Math.round(alive.length * camp.dmgPerCreep * (incomingScaleRef.current ?? 1));
+    if (toHero > 0) onHeroDamageRef.current?.(toHero); // creeps retaliate only when attacked
     const cleared = alive.length === 0;
+    // XP per creep DEFEATED (registers incrementally), plus a clear bonus + Faction Points.
+    const perCreepXp = Math.max(4, Math.round(camp.xpReward / Math.max(1, camp.creeps.length)));
+    if (killed > 0) { awardXpRef.current?.(killed * perCreepXp); console.log(`[creeps] Defeated ${killed} → +${killed * perCreepXp} XP`); }
     if (cleared) {
-      awardXpRef.current?.(camp.xpReward);
+      awardXpRef.current?.(Math.round(camp.xpReward * 0.25)); // completion bonus
       awardShardsRef.current?.(camp.shardReward);
-      console.log(`[creeps] Camp ${key} cleared → +${camp.xpReward} XP, +${camp.shardReward} shards`);
+      console.log(`[creeps] Camp ${key} cleared → +${camp.shardReward} FP`);
     }
-    onCombatRef.current?.({ campQ: camp.q, campR: camp.r, toCreep, toHero: alive.length ? toHero : 0, cleared });
+    onCombatRef.current?.({ campQ: camp.q, campR: camp.r, toCreep, toHero, killed, cleared });
     setCamps(prev => {
       const c = prev.get(key);
       if (!c) return prev;

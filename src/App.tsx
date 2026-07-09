@@ -89,6 +89,9 @@ export default function App() {
     return null;
   });
   const [mainView, setMainView] = useState<'dashboard' | 'skills' | 'store' | 'help' | 'settings' | 'mission'>('dashboard');
+  // When the player launches from the dashboard's Multiplayer mode, auto-open the duel
+  // lobby + quick-match on entering the mission.
+  const [launchMultiplayer, setLaunchMultiplayer] = useState(false);
   const [progress, setProgress] = useState(0);
   const [playerName] = useState('PlayerOne');
   // Account level is linked to profile; default to 1 if not persisted yet
@@ -578,10 +581,11 @@ export default function App() {
   return (
     mainView === 'mission' ? (
       <MissionErrorBoundary onExit={() => setMainView('dashboard')}>
-        <MissionScreen 
-          onExit={() => setMainView('dashboard')} 
+        <MissionScreen
+          onExit={() => { setLaunchMultiplayer(false); setMainView('dashboard'); }}
           onOpenSkillTree={() => setMainView('skills')}
           activeLoadout={activeLoadout}
+          autoMultiplayer={launchMultiplayer}
         />
       </MissionErrorBoundary>
     ) : (
@@ -594,6 +598,7 @@ export default function App() {
           heroLocked={heroLocked}
           view={mainView}
           onChangeView={setMainView}
+          onLaunch={(mode) => { setLaunchMultiplayer(mode === 'multi'); setMainView('mission'); }}
           profile={profile}
           onSignOut={handleSignOut}
         />
@@ -866,7 +871,7 @@ class CanvasErrorBoundary extends React.Component<
   render() { return this.state.hasError ? (this.props.fallback ?? null) : this.props.children; }
 }
 
-function MissionScreen({ onExit, onOpenSkillTree, activeLoadout }: { onExit: () => void; onOpenSkillTree?: () => void; activeLoadout?: CharacterLoadout | null }){
+function MissionScreen({ onExit, onOpenSkillTree, activeLoadout, autoMultiplayer }: { onExit: () => void; onOpenSkillTree?: () => void; activeLoadout?: CharacterLoadout | null; autoMultiplayer?: boolean }){
   // Access active loadout & skill state for HUD
   // Prefer the live prop from App (stays in sync with configurator changes),
   // fall back to localStorage only when the prop is not available.
@@ -981,9 +986,10 @@ function MissionScreen({ onExit, onOpenSkillTree, activeLoadout }: { onExit: () 
   return (
     <div className="fixed inset-0 bg-[#0b0e13] text-gray-100">
       <div className="absolute inset-0">
-        <SoloMissionMap3D 
-          onExit={onExit} 
-          onMapUpdate={onMapUpdate} 
+        <SoloMissionMap3D
+          onExit={onExit}
+          autoMultiplayer={autoMultiplayer}
+          onMapUpdate={onMapUpdate}
           abilitySlots={abilities} 
           defenseSlots={defensiveAbilities}
           heroVitals={(() => {
@@ -1500,7 +1506,7 @@ function FirstTimeFlow({ faction, archetype, pet, onFaction, onArchetype, onPet,
   );
 }
 
-function MainMenu({ playerName, accountLevel, loadout, onCustomize, heroLocked, view, onChangeView, profile, onSignOut }: { playerName: string; accountLevel: number; loadout: CharacterLoadout; onCustomize: () => void; heroLocked: boolean; view: 'dashboard' | 'skills' | 'store' | 'help' | 'settings' | 'mission'; onChangeView: (v: 'dashboard' | 'skills' | 'store' | 'help' | 'settings' | 'mission') => void; profile?: { sub: string; name?: string; email?: string; picture?: string } | null; onSignOut?: () => void; }) {
+function MainMenu({ playerName, accountLevel, loadout, onCustomize, heroLocked, view, onChangeView, onLaunch, profile, onSignOut }: { playerName: string; accountLevel: number; loadout: CharacterLoadout; onCustomize: () => void; heroLocked: boolean; view: 'dashboard' | 'skills' | 'store' | 'help' | 'settings' | 'mission'; onChangeView: (v: 'dashboard' | 'skills' | 'store' | 'help' | 'settings' | 'mission') => void; onLaunch?: (mode: 'single' | 'multi') => void; profile?: { sub: string; name?: string; email?: string; picture?: string } | null; onSignOut?: () => void; }) {
   // Keep the skill store level in sync with progression: the higher of the loadout
   // level and the XP-driven hero level, so leveling up from XP grants skill points
   // and is reflected in the dashboard even when the Skills view isn't open.
@@ -1515,7 +1521,7 @@ function MainMenu({ playerName, accountLevel, loadout, onCustomize, heroLocked, 
         <div className="h-full grid grid-rows-[1fr]" style={{gridTemplateColumns:'minmax(260px,20%) 1fr minmax(260px,20%)'}}>
           <LeftPlayerPanel className="row-start-1" playerName={playerName} accountLevel={accountLevel} loadout={loadout} heroLocked={heroLocked} />
           <CenterHub className="row-start-1" loadout={loadout} view={view === 'skills' ? 'dashboard' : view} />
-          <RightPlayerPanel className="row-start-1" loadout={loadout} onCustomize={onCustomize} onPlay={()=>onChangeView('mission')} />
+          <RightPlayerPanel className="row-start-1" loadout={loadout} onCustomize={onCustomize} onPlay={(mode)=> onLaunch ? onLaunch(mode) : onChangeView('mission')} />
         </div>
       </div>
       {view === 'skills' && (
@@ -1914,19 +1920,19 @@ function LeftPlayerPanel({ className = '', playerName, accountLevel, loadout, he
   );
 }
 
-function RightPlayerPanel({ className = '', loadout, onCustomize, onPlay }: { className?: string; loadout: CharacterLoadout; onCustomize: () => void; onPlay?: ()=>void }) {
+function RightPlayerPanel({ className = '', loadout, onCustomize, onPlay }: { className?: string; loadout: CharacterLoadout; onCustomize: () => void; onPlay?: (mode: 'single' | 'multi')=>void }) {
   const [mode, setMode] = useState<'single' | 'multi'>('single');
-  const [queue, setQueue] = useState<string | null>(null);
-  
+  const [queue] = useState<string | null>(null);
+
   function startMatch() {
-    if (mode !== 'single') return; // only single-player active right now
-    // Immediately open mission map instead of fake queue
-    onPlay?.();
+    // Both modes launch the mission; multiplayer additionally auto-opens the duel
+    // lobby + quick-match (handled in SoloMissionMap3D via autoMultiplayer).
+    onPlay?.(mode);
   }
-  
+
   const modes: { key: 'single' | 'multi'; label: string; enabled: boolean }[] = [
     { key: 'single', label: 'Single Player', enabled: true },
-    { key: 'multi', label: 'Multiplayer (Coming Soon)', enabled: false },
+    { key: 'multi', label: 'Multiplayer — 1v1 Duel', enabled: true },
   ];
   
   return (
@@ -1977,7 +1983,7 @@ function RightPlayerPanel({ className = '', loadout, onCustomize, onPlay }: { cl
             >
               <div className="flex flex-col items-center justify-center w-full text-center">
                 <span className="font-medium text-sm tracking-wide mb-0.5">{m.label}</span>
-                <span className="text-[11px] opacity-60">{m.enabled ? (m.key === 'single' ? 'Solo mission queue' : 'Feature in development') : 'Unavailable'}</span>
+                <span className="text-[11px] opacity-60">{m.enabled ? (m.key === 'single' ? 'Solo campaign map' : 'Find or invite an opponent') : 'Unavailable'}</span>
               </div>
               {/* Removed 'Active' badge per request */}
             </button>
@@ -1986,8 +1992,8 @@ function RightPlayerPanel({ className = '', loadout, onCustomize, onPlay }: { cl
         </div>
   {/* Play footer pinned to bottom */}
   <div className="p-4 mt-auto bg-[#0f1218]">
-          <Button className="w-full h-12 text-lg" onClick={startMatch} disabled={mode !== 'single'}>Play</Button>
-          <div className="mt-1 text-[11px] text-gray-300 h-4">{queue ?? (mode === 'single' ? '' : 'Disabled')}</div>
+          <Button className="w-full h-12 text-lg" onClick={startMatch}>{mode === 'multi' ? 'Play — Find Duel' : 'Play'}</Button>
+          <div className="mt-1 text-[11px] text-gray-300 h-4">{queue ?? (mode === 'multi' ? 'Opens the duel lobby on entry' : '')}</div>
         </div>
     </aside>
   );

@@ -138,6 +138,9 @@ export interface GameHUDProps {
   onTransferToHero?: (type: string) => void;
   /** Combat stats (faction base + skill modifiers) shown in the menu overview. */
   heroStats?: { atk: number; def: number; spd: number };
+  /** Outpost control-zone perimeter overlay toggle. */
+  showOutpostZones?: boolean;
+  onToggleOutpostZones?: () => void;
   items: Item[];
   resources: Resource[];
   skillTokens: number;
@@ -242,6 +245,7 @@ export const GameHUD: React.FC<GameHUDProps> = ({
   onScoreboard, onScan, onGlyph, minimapData,
   skillPoints, totalPlayTime, heroInventory, petInventory, playerProfile,
   abilityMode: abilityModeProp, onSetAbilityMode, onTransferToPet, onTransferToHero, heroStats,
+  showOutpostZones, onToggleOutpostZones,
 }) => {
   const [menuOpen, setMenuOpen] = React.useState(false);
   const [menuTab, setMenuTab] = React.useState<'overview' | 'skills' | 'pet' | 'inventory' | 'settings'>('overview');
@@ -343,6 +347,17 @@ export const GameHUD: React.FC<GameHUDProps> = ({
               }`}
               title="Defensive abilities"
             >🛡️</button>
+            {onToggleOutpostZones && (
+              <button
+                onClick={onToggleOutpostZones}
+                className={`hud-action-btn rounded-lg ring-2 flex items-center justify-center transition active:scale-90 text-base sm:text-xl ${
+                  showOutpostZones
+                    ? 'bg-emerald-900/70 ring-emerald-400'
+                    : 'bg-[#1c2838] ring-white/10 hover:ring-emerald-400/50 opacity-50 hover:opacity-80'
+                }`}
+                title="Toggle outpost control zones (Y)"
+              >🗺️</button>
+            )}
           </div>
 
           {/* ── HERO + ABILITIES (player section — flex-[1]) ───────────── */}

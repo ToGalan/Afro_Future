@@ -117,12 +117,7 @@ export function useSkillsProgress({
       const dt = (ts - last) / 1000;
       last = ts;
 
-      // HP/EP regen (2 HP/s, 4 EP/s)
-      setHeroVitals(v => {
-        const hp = Math.min(hpMaxRef.current, v.hp + 2 * dt);
-        const ep = Math.min(epMaxRef.current, v.ep + 4 * dt);
-        return hp === v.hp && ep === v.ep ? v : { hp, ep };
-      });
+      // No passive HP/EP regen — vitals only recover from items/abilities (per design).
 
       // Cooldown tick
       setRuntimeAbilities(prev => {

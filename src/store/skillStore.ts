@@ -32,9 +32,16 @@ export interface SkillState {
 }
 
 const TREE = makeTree();
+const TREE_BY_ID = new Map(TREE.map(n => [n.id, n]));
 // Stats come from each node's explicit `stats` (defined in skillData).
 function deriveStats(unlocked: string[]): { attack: number; defense: number; utility: number } {
   return sumSkillStats(unlocked, TREE);
+}
+// Which ability bar an unlocked skill auto-slots into (so it shows in the HUD).
+function abilityCategory(type: string | undefined): 'offensive' | 'defensive' | null {
+  if (type === 'spell' || type === 'weapon' || type === 'ability' || type === 'stat') return 'offensive';
+  if (type === 'buff' || type === 'zone') return 'defensive';
+  return null;
 }
 
 const INIT_UNLOCKED = ['root'];
@@ -92,7 +99,16 @@ export const useSkillStore = create<SkillState>((set) => ({
     const nextOrder = [...state.unlockOrder, id];
     const stats = deriveStats(nextUnlocked);
     const traits = deriveTraits(nextUnlocked, TREE);
-    return { unlocked: nextUnlocked, unlockOrder: nextOrder, spent: state.spent + 1, ...stats, primaryBranch: traits.topBranch, primaryType: traits.topType, traitTags: traits.tags } as Partial<SkillState> as SkillState;
+    // Auto-slot the newly unlocked skill into a free ability slot so it shows in the
+    // HUD immediately (the player can reassign in the skills modal).
+    let abilityLoadout = state.abilityLoadout;
+    const cat = abilityCategory(TREE_BY_ID.get(id)?.type);
+    if (cat) {
+      const slots = [...state.abilityLoadout[cat]] as (string | null)[];
+      const free = slots.indexOf(null);
+      if (free >= 0 && !slots.includes(id)) { slots[free] = id; abilityLoadout = { ...state.abilityLoadout, [cat]: slots }; }
+    }
+    return { unlocked: nextUnlocked, unlockOrder: nextOrder, spent: state.spent + 1, abilityLoadout, ...stats, primaryBranch: traits.topBranch, primaryType: traits.topType, traitTags: traits.tags } as Partial<SkillState> as SkillState;
   }),
   respec: () => set(state => {
     if (!state.unlockOrder.length) return state;
