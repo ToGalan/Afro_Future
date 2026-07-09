@@ -147,5 +147,39 @@ export function useCreeps({
     return true;
   }, [engagedKey]);
 
-  return { camps, nearbyCamp, attackNearby };
+  // ── Ability strike — a burst of `power` damage to the nearby camp, NO retaliation
+  //    (it's paid for with energy). Awards XP per kill + clear bonus like a normal hit.
+  const strikeNearby = useCallback((power: number): { hit: boolean; killed: number; cleared: boolean } => {
+    const key = engagedKey();
+    if (!key) return { hit: false, killed: 0, cleared: false };
+    const camp = campsRef.current.get(key);
+    if (!camp || camp.cleared) return { hit: false, killed: 0, cleared: false };
+    const aliveBefore = camp.creeps.filter(c => c.hp > 0).length;
+    const creeps = camp.creeps.map(c => ({ ...c }));
+    let dmg = Math.max(1, Math.round(power));
+    let toCreep = 0;
+    for (const c of creeps) {
+      if (c.hp <= 0) continue;
+      const applied = Math.min(c.hp, dmg);
+      c.hp -= applied; dmg -= applied; toCreep += applied;
+      if (dmg <= 0) break;
+    }
+    const alive = creeps.filter(c => c.hp > 0);
+    const killed = aliveBefore - alive.length;
+    const cleared = alive.length === 0;
+    const perCreepXp = Math.max(4, Math.round(camp.xpReward / Math.max(1, camp.creeps.length)));
+    if (killed > 0) awardXpRef.current?.(killed * perCreepXp);
+    if (cleared) { awardXpRef.current?.(Math.round(camp.xpReward * 0.25)); awardShardsRef.current?.(camp.shardReward); }
+    onCombatRef.current?.({ campQ: camp.q, campR: camp.r, toCreep, toHero: 0, killed, cleared });
+    setCamps(prev => {
+      const c = prev.get(key);
+      if (!c) return prev;
+      const next = new Map(prev);
+      next.set(key, { ...c, creeps, cleared });
+      return next;
+    });
+    return { hit: true, killed, cleared };
+  }, [engagedKey]);
+
+  return { camps, nearbyCamp, attackNearby, strikeNearby };
 }

@@ -1010,6 +1010,8 @@ function MissionScreen({ onExit, onOpenSkillTree, activeLoadout, autoMultiplayer
         <SoloMissionMap3D
           onExit={onExit}
           autoMultiplayer={autoMultiplayer}
+          sharedProfile={profile}
+          sharedSaveProgress={saveProgress}
           onMapUpdate={onMapUpdate}
           abilitySlots={abilities} 
           defenseSlots={defensiveAbilities}
@@ -1049,6 +1051,7 @@ function MissionScreen({ onExit, onOpenSkillTree, activeLoadout, autoMultiplayer
           onHealHP={(amount) => setHeroVitals(v => ({ ...v, hp: Math.min(hpMaxRef.current, v.hp + amount) }))}
           onRestoreEP={(amount) => setHeroVitals(v => ({ ...v, ep: Math.min(epMaxRef.current, v.ep + amount) }))}
           onDamageHP={(amount) => setHeroVitals(v => ({ ...v, hp: Math.max(0, v.hp - amount) }))}
+          onDrainEP={(amount) => setHeroVitals(v => ({ ...v, ep: Math.max(0, v.ep - amount) }))}
           heroAttack={heroStats.total.atk}
           combatStats={{ atk: heroStats.total.atk, def: heroStats.total.def, spd: heroStats.total.spd }}
           heroAvatar={activeLoadout}

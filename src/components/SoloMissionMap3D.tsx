@@ -1822,10 +1822,13 @@ export default function SoloMissionMap3D({
   onHealHP,
   onRestoreEP,
   onDamageHP,
+  onDrainEP,
   heroAttack = 8,
   combatStats,
   heroAvatar,
   autoMultiplayer,
+  sharedProfile,
+  sharedSaveProgress,
 }: {
   onExit?: () => void;
   onMapUpdate?: (data: MinimapData) => void; 
@@ -1846,6 +1849,8 @@ export default function SoloMissionMap3D({
   onHealHP?: (amount: number) => void;
   onRestoreEP?: (amount: number) => void;
   onDamageHP?: (amount: number) => void;
+  /** Spend energy (ability cost). */
+  onDrainEP?: (amount: number) => void;
   /** Hero attack stat — creep-camp combat damage per tick. */
   heroAttack?: number;
   /** Combat stats (atk/def/spd) shown in the in-game menu overview. */
@@ -1855,6 +1860,9 @@ export default function SoloMissionMap3D({
   heroAvatar?: CharacterLoadout | null;
   /** Launched from the dashboard's Multiplayer mode — auto-open the duel lobby + quick-match. */
   autoMultiplayer?: boolean;
+  /** Shared player-profile instance from MissionScreen (single source of truth). */
+  sharedProfile?: ReturnType<typeof usePlayerProfile>['profile'];
+  sharedSaveProgress?: ReturnType<typeof usePlayerProfile>['saveProgress'];
 } = {}) {
   const useChunks = import.meta.env.VITE_USE_CHUNKS === 'true';
   // Adjusted map size to requested 240 x 240 tiles (square) (legacy full-map path only)
@@ -1914,8 +1922,14 @@ export default function SoloMissionMap3D({
   }, [useChunks, GRID_W, GRID_H]);
   // If chunk mode enabled, center using world midpoint assumptions
   const chunkCenterAxial = useMemo(() => ({ q: Math.floor(GRID_W/2), r: Math.floor(GRID_H/2) }), []);
-  // Player profile (anonymous auth + progress)
-    const { profile, loading: profileLoading, saveProgress } = usePlayerProfile();
+  // Player profile (anonymous auth + progress). Prefer the SHARED instance passed from
+  // MissionScreen so the whole session reads/writes ONE profile — otherwise a second
+  // copy diverges (heroVitals vs HUD XP) and its writes clobber the other's (e.g. the
+  // periodic play-time save overwriting earned XP). Falls back to a local hook if none.
+  const localPP = usePlayerProfile();
+  const profile = sharedProfile ?? localPP.profile;
+  const profileLoading = localPP.loading;
+  const saveProgress = sharedSaveProgress ?? localPP.saveProgress;
   const { session, updateHeroPosition, syncing: sessionSyncing, lastSync: sessionLastSync } = usePlayerSession();
   // Compute approximate center axial coordinate by averaging q,r
   const centerAxial = useMemo(() => {
@@ -2041,7 +2055,7 @@ export default function SoloMissionMap3D({
   const combatAtkMult = abilityMode === 'offense' ? 1.3 : 0.6;
   const combatIncomingScale = abilityMode === 'offense' ? 1 : 0.5;
 
-  const { camps: creepCamps, nearbyCamp: nearbyCreepCamp, attackNearby: attackNearbyCamp } = useCreeps({
+  const { camps: creepCamps, nearbyCamp: nearbyCreepCamp, attackNearby: attackNearbyCamp, strikeNearby: strikeNearbyCamp } = useCreeps({
     tiles,
     heroQ: hero.pos.q,
     heroR: hero.pos.r,
@@ -2317,15 +2331,54 @@ export default function SoloMissionMap3D({
   const setActiveSlotsRef = React.useRef(setActiveSlots);
   setActiveSlotsRef.current = setActiveSlots;
 
-  // Activate an ability by id (shared by QWER keys and HUD clicks) — respects
-  // cooldown and applies defensive effects.
+  // Energy cost per ability cast — abilities are gated on EP (no passive EP regen;
+  // refuel with energy/ore items).
+  const ABILITY_EP_COST = 12;
+  const strikeNearbyRef = React.useRef(strikeNearbyCamp); strikeNearbyRef.current = strikeNearbyCamp;
+
+  // Activate an ability by id (shared by QWER keys and HUD clicks). Costs energy, then
+  // applies an effect: OFFENSE mode damages the nearest enemy (rival duelist or creep
+  // camp); DEFENSE mode heals/shields. Starts the cooldown on success.
   const activateAbility = React.useCallback((id: string) => {
     const ability = abilitySlotsRef.current.find(a => a.id === id);
     if (!ability || (ability.cooldown ?? 0) !== 0) return;
+
+    const hw = axialToWorld({ q: hero.pos.q, r: hero.pos.r }, hexSize);
+    // ── Energy gate ──
+    const curEp = heroVitals?.ep?.current ?? 0;
+    if (curEp < ABILITY_EP_COST) { spawnCombatText(hw.x, hw.z, '⚡ No energy', '#7aa2ff'); return; }
+    onDrainEP?.(ABILITY_EP_COST);
+
+    const icon = ability.icon ?? '✨';
+    const idl = id.toLowerCase();
+    if (abilityMode === 'offense') {
+      // A burst scaled by attack — hits a rival duelist in range first, else a creep camp.
+      const power = Math.round((heroAttack + petCombatBonus) * (combatAtkMult + 0.6)) + 12;
+      if (duelActive && duelRemote && axialDistance(hero.pos, duelRemote.pos) <= 2) {
+        duelAttackRemote(power);
+        const rw = axialToWorld(duelRemote.pos, hexSize);
+        spawnCombatText(rw.x, rw.z, `${icon} -${power}`, '#ffd24a');
+      } else if (strikeNearbyRef.current(power).hit) {
+        spawnCombatText(hw.x, hw.z, `${icon} -${power}`, '#ffd24a');
+      } else {
+        spawnCombatText(hw.x, hw.z, `${icon} (no target)`, '#9aa4b2');
+      }
+    } else {
+      // Defensive: spend energy to recover / protect.
+      if (idl.includes('support') || idl.includes('heal') || idl.includes('bond') || idl.includes('pet')) {
+        onHealHP?.(40); spawnCombatText(hw.x, hw.z, `${icon} +40 HP`, '#7fd66b');
+      } else if (idl.includes('shield') || idl.includes('defense') || idl.includes('zone') || idl.includes('mobility')) {
+        onHealHP?.(28); spawnCombatText(hw.x, hw.z, `${icon} +28 HP`, '#7fd66b');
+      } else {
+        onHealHP?.(20); spawnCombatText(hw.x, hw.z, `${icon} +20 HP`, '#7fd66b');
+      }
+    }
+
+    // Start cooldown on a successful cast.
     setActiveSlotsRef.current(prev => prev.map(a => a.id === id ? { ...a, cooldown: a.maxCooldown } : a));
-    if (id === 'heal') onHealHP?.(25);
-    else if (id === 'ward' || id === 'shield') onRestoreEP?.(15);
-  }, [onHealHP, onRestoreEP]);
+  }, [heroVitals, hero.pos, hexSize, abilityMode, heroAttack, petCombatBonus, combatAtkMult, duelActive, duelRemote, duelAttackRemote, onDrainEP, onHealHP]);
+  // Keep a fresh ref so the keydown QWER closure always calls the latest activation.
+  const activateAbilityRef = React.useRef(activateAbility); activateAbilityRef.current = activateAbility;
 
   // Always mirror the skill-tree loadout (including empty), so abilities appear only
   // after they're selected in the skill tree and update the moment the loadout changes.
@@ -2973,7 +3026,7 @@ export default function SoloMissionMap3D({
         if (e.repeat) return;
         const slotKey = abilityMap[k].toUpperCase();
         const ability = abilitySlotsRef.current.find(a => a.key === slotKey);
-        if (ability) activateAbility(ability.id);
+        if (ability) activateAbilityRef.current(ability.id);
         return;
       }
       
@@ -3566,7 +3619,7 @@ export default function SoloMissionMap3D({
                 onAbility={activateAbility}
                 onItem={(id: string) => { const idx = itemSlots.findIndex(s => s.id === id); if (idx >= 0) handleItemUse(idx); }}
                 items={itemSlots}
-                resources={resources || []}
+                resources={[{ id: 'shards', label: 'Faction Points', value: (profile?.progress as any)?.factionPoints ?? 0, icon: '✦' }, ...(resources || [])]}
                 skillTokens={skillTokens || 0}
                 petTokens={0}
                 minimapData={minimapData}

@@ -299,6 +299,18 @@ export const GameHUD: React.FC<GameHUDProps> = ({
         </button>
       )}
 
+      {/* Currency chip (top-left) — Faction Points earned in-game + unspent skill points */}
+      <div className={`fixed top-3 left-3 z-30 flex items-center gap-3 px-3 py-1.5 rounded-xl ${panelCls} text-sm shadow-lg pointer-events-none`}>
+        <span className="flex items-center gap-1" title="Faction Points">
+          <span className="text-amber-300">✦</span>
+          <span className="font-bold tabular-nums">{shardsValue ?? 0}</span>
+        </span>
+        <span className="flex items-center gap-1" title="Unspent skill points">
+          <span className="text-emerald-300">◆</span>
+          <span className="font-bold tabular-nums">{skillPoints ?? skillTokens ?? 0}</span>
+        </span>
+      </div>
+
       {/* ══════════════════ BOTTOM HUD BAR — full width, Dota 2 style ════════ */}
       {/*
         Layout (left → right):
