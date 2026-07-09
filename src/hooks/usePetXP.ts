@@ -11,6 +11,7 @@
 import { useState, useCallback, useRef, useEffect } from 'react';
 import { getXpForNextPetLevel } from '../services/petExpEconomy';
 import type { PlayerProfile } from '../types/player';
+import type { ProgressPatch } from './usePlayerProfile';
 
 export interface UsePetXPReturn {
   petXp: number;
@@ -42,7 +43,7 @@ export function usePetXP({
   email?: string;
   displayName?: string;
   profile: PlayerProfile | null;
-  saveProgress: (progress: Partial<PlayerProfile['progress']>) => void;
+  saveProgress: (progress: ProgressPatch) => void;
 }): UsePetXPReturn {
   const [petXp, setPetXp] = useState(() => profile?.progress?.pet?.xp ?? 0);
   const [petLevel, setPetLevel] = useState(() => profile?.progress?.pet?.level ?? 1);
@@ -89,14 +90,14 @@ export function usePetXP({
           setPetLevel(level);
           console.log(`[PetXP] Level up → ${level}`);
         }
+        // Only patch xp/level — do NOT include traits/unlockedSkillIds/unlockOrder here.
+        // mergeProgress spreads the existing hero, so sending empty arrays would WIPE the
+        // player's unlocked skills on every move (and persist the wipe to the account).
         saveProgress({
           pet: { xp, level, type: petTypeRef.current },
           hero: {
             xp: currentHeroXp + 0.5,
             level: heroLevel,
-            traits: [],
-            unlockedSkillIds: [],
-            unlockOrder: [],
           },
         });
         return xp;
@@ -113,9 +114,6 @@ export function usePetXP({
         hero: {
           xp: currentHeroXp + 5,
           level: heroLevel,
-          traits: [],
-          unlockedSkillIds: [],
-          unlockOrder: [],
         },
       });
     },

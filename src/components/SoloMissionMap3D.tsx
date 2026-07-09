@@ -2052,16 +2052,9 @@ export default function SoloMissionMap3D({
     const heroXp = prof?.progress?.hero?.xp ?? 0;
     const newXp = heroXp + amount;
     const newLevel = Math.max(prof?.progress?.hero?.level ?? 1, getLevelFromXp(newXp));
-    saveProgress({
-      hero: {
-        traits: prof?.progress?.hero?.traits ?? [],
-        unlockedSkillIds: prof?.progress?.hero?.unlockedSkillIds ?? [],
-        unlockOrder: prof?.progress?.hero?.unlockOrder ?? [],
-        ...prof?.progress?.hero,
-        xp: newXp,
-        level: newLevel,
-      },
-    });
+    // Patch ONLY xp/level — mergeProgress preserves the existing hero (skills, traits),
+    // so we never risk wiping unlocked skills from a stale snapshot.
+    saveProgress({ hero: { xp: newXp, level: newLevel } });
   }, [saveProgress, bumpHeroXpVisual]);
 
   // Level-up: keep the skill-store level in sync so points unlock LIVE, and flash a

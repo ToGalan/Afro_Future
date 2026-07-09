@@ -16,6 +16,7 @@
 
 import { useState, useEffect, useRef, useCallback } from 'react';
 import type { PlayerProfile } from '../types/player';
+import type { ProgressPatch } from './usePlayerProfile';
 import { getLevelFromXp } from '../services/playerExpEconomy';
 
 // ── Shared tile shape (subset of SoloMissionMap3D's Tile) ───────────────────
@@ -67,7 +68,7 @@ interface UseCollectiblesOptions {
   heroInventoryProp?: InventoryItem[];
   /** Override initial pet inventory (prop > profile > []). */
   petInventoryProp?: InventoryItem[];
-  saveProgress: (progress: Partial<PlayerProfile['progress']>) => void;
+  saveProgress: (progress: ProgressPatch) => void;
   onHealHP?: (amount: number) => void;
   onRestoreEP?: (amount: number) => void;
   /** Notified when the hero gains XP from a collect (for instant HUD/popup feedback). */
@@ -233,8 +234,8 @@ export function useCollectibles({
     });
   }, []);
 
-  // Award XP and persist. Carries forward the EXISTING skill data
-  // (traits/unlockedSkillIds/unlockOrder) so a pickup never wipes skill progression.
+  // Award XP and persist. Patch ONLY xp/level so mergeProgress preserves the existing
+  // hero (skills/traits) — a pickup must never wipe skill progression.
   const onHeroXpRef = useRef(onHeroXp);
   onHeroXpRef.current = onHeroXp;
   const awardXpAndSave = useCallback((xpGain: number) => {
@@ -244,16 +245,7 @@ export function useCollectibles({
     const heroLevel = prof?.progress?.hero?.level ?? 1;
     const newXp = heroXp + xpGain;
     const newLevel = Math.max(heroLevel, getLevelFromXp(newXp));
-    saveProgressRef.current({
-      hero: {
-        traits: prof?.progress?.hero?.traits ?? [],
-        unlockedSkillIds: prof?.progress?.hero?.unlockedSkillIds ?? [],
-        unlockOrder: prof?.progress?.hero?.unlockOrder ?? [],
-        ...prof?.progress?.hero,
-        xp: newXp,
-        level: newLevel,
-      },
-    });
+    saveProgressRef.current({ hero: { xp: newXp, level: newLevel } });
   }, []);
 
   /**
