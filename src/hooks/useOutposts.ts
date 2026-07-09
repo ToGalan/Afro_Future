@@ -41,12 +41,17 @@ interface UseOutpostsOptions {
 export function useOutposts({ tiles, heroQ, heroR, centerQ, centerR, onCapture }: UseOutpostsOptions) {
   const [outposts, setOutposts] = useState<Map<string, Outpost>>(new Map());
   const [nearbyOutpost, setNearbyOutpost] = useState<Outpost | null>(null);
+  // Voronoi partition: every tile → the key of its nearest outpost. Together the
+  // outposts' territories tile the ENTIRE map, so capturing an outpost claims a
+  // contiguous chunk of ground.
+  const [territory, setTerritory] = useState<Map<string, string>>(new Map());
 
   const outpostsRef = useRef(outposts); outpostsRef.current = outposts;
   const heroRef = useRef({ q: heroQ, r: heroR }); heroRef.current = { q: heroQ, r: heroR };
   const onCaptureRef = useRef(onCapture); onCaptureRef.current = onCapture;
 
-  // Generate outposts once tiles load — a handful, spread out, away from spawn.
+  // Generate outposts once tiles load — spread out, away from spawn — then assign the
+  // whole map to the nearest outpost so territories cover every tile.
   useEffect(() => {
     if (!tiles.length) return;
     const m = new Map<string, Outpost>();
@@ -54,11 +59,28 @@ export function useOutposts({ tiles, heroQ, heroR, centerQ, centerR, onCapture }
       if (t.type === 'water' || t.type === 'mountain') continue;
       const dist = axialDist(t.q, t.r, centerQ, centerR);
       if (dist < 6) continue;
-      if (hash(t.q, t.r) >= 0.012) continue; // ~1.2% → a small set
+      if (hash(t.q, t.r) >= 0.007) continue; // sparse → each owns a sizeable territory
       m.set(`${t.q},${t.r}`, { key: `${t.q},${t.r}`, q: t.q, r: t.r, region: regionOf(t.q, t.r, centerQ, centerR), owner: 'neutral' });
     }
     setOutposts(m);
-    console.log('[outposts] Generated', m.size, 'outposts');
+
+    // Nearest-outpost assignment for every tile (Voronoi). Positions are fixed, so this
+    // runs once; only ownership flips afterward.
+    const outs = Array.from(m.values());
+    const terr = new Map<string, string>();
+    if (outs.length) {
+      for (const t of tiles) {
+        let best = outs[0].key;
+        let bestD = Infinity;
+        for (const o of outs) {
+          const d = axialDist(t.q, t.r, o.q, o.r);
+          if (d < bestD) { bestD = d; best = o.key; }
+        }
+        terr.set(`${t.q},${t.r}`, best);
+      }
+    }
+    setTerritory(terr);
+    console.log('[outposts] Generated', m.size, 'outposts;', terr.size, 'tiles partitioned');
   }, [tiles, centerQ, centerR]);
 
   const engagedKey = useCallback((): string | null => {
@@ -102,8 +124,15 @@ export function useOutposts({ tiles, heroQ, heroR, centerQ, centerR, onCapture }
       regions.set(o.region, r);
     }
     const regionsControlled = Array.from(regions.values()).filter(r => r.total > 0 && r.owned === r.total).length;
-    return { owned, total: all.length, regionsControlled, regionCount: regions.size };
-  }, [outposts]);
+    // Share of the map (by tiles) whose controlling outpost is player-owned.
+    let ownedTiles = 0;
+    for (const outKey of territory.values()) {
+      if (outposts.get(outKey)?.owner === 'player') ownedTiles++;
+    }
+    const totalTiles = territory.size;
+    const tilePct = totalTiles ? Math.round((ownedTiles / totalTiles) * 100) : 0;
+    return { owned, total: all.length, regionsControlled, regionCount: regions.size, ownedTiles, totalTiles, tilePct };
+  }, [outposts, territory]);
 
-  return { outposts, nearbyOutpost, captureNearby, control };
+  return { outposts, nearbyOutpost, captureNearby, control, territory };
 }

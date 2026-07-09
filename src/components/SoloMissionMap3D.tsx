@@ -501,28 +501,6 @@ function RefugeeCampMarker({ size, done, label, icon, mode, subtitle }: { size: 
   );
 }
 
-// Control-zone perimeter around an outpost — a flat ring on the ground showing the
-// area of influence. Player-owned zones glow in the faction colour; neutral ones are
-// a dim grey. Toggled from the HUD ("Zones" button).
-function OutpostZoneRing({ size, owned, color }: { size: number; owned: boolean; color: string }) {
-  const R = size * 3.4;            // ~2 hex rings of influence
-  const tint = owned ? color : '#8a8f96';
-  return (
-    <group position={[0, 0.46, 0]} rotation={[-Math.PI / 2, 0, 0]}>
-      {/* filled disc (subtle) */}
-      <mesh renderOrder={1}>
-        <circleGeometry args={[R, 48]} />
-        <meshBasicMaterial color={tint} transparent opacity={owned ? 0.12 : 0.05} depthWrite={false} side={THREE.DoubleSide} />
-      </mesh>
-      {/* perimeter band */}
-      <mesh renderOrder={2}>
-        <ringGeometry args={[R * 0.92, R, 48]} />
-        <meshBasicMaterial color={tint} transparent opacity={owned ? 0.9 : 0.4} depthWrite={false} side={THREE.DoubleSide} />
-      </mesh>
-    </group>
-  );
-}
-
 const TERRAIN_ICON: Record<string, string> = {
   water: '🌊', desert: '🏜️', plains: '🌾', forest: '🌲', jungle: '🌴', hills: '⛰️', mountain: '🏔️',
 };
@@ -2138,7 +2116,7 @@ export default function SoloMissionMap3D({
   };
 
   // ── Outposts / region control ────────────────────────────────────────────────
-  const { outposts, nearbyOutpost, captureNearby, control: outpostControl } = useOutposts({
+  const { outposts, nearbyOutpost, captureNearby, control: outpostControl, territory: outpostTerritory } = useOutposts({
     tiles,
     heroQ: hero.pos.q,
     heroR: hero.pos.r,
@@ -2234,6 +2212,20 @@ export default function SoloMissionMap3D({
     block(terraformAxial.q, terraformAxial.r);
     return set;
   }, [creepCamps, outposts, refugeeCamps, terraformAxial]);
+
+  // Tiles that sit on a territory border (a neighbour belongs to a different outpost) —
+  // drawn brighter in the zone overlay so the perimeters read across the whole map.
+  const zoneBoundary = React.useMemo(() => {
+    const b = new Set<string>();
+    for (const [key, outKey] of outpostTerritory) {
+      const [q, r] = key.split(',').map(Number);
+      for (const n of axialNeighbors({ q, r })) {
+        const no = outpostTerritory.get(`${n.q},${n.r}`);
+        if (no && no !== outKey) { b.add(key); break; }
+      }
+    }
+    return b;
+  }, [outpostTerritory]);
 
   // ── 1v1 PvP duel (WebRTC data channel, Firestore-signaled) ───────────────────
   const [duelLobbyOpen, setDuelLobbyOpen] = useState(false);
@@ -2793,6 +2785,15 @@ export default function SoloMissionMap3D({
   // Recenter camera on double-tap spacebar
   const [recenterSignal, setRecenterSignal] = useState(0);
 
+  // Monotonic mirror of hero XP for the HUD — XP only ever increases in play, so track
+  // the max seen. This keeps the XP bar/text/level from flickering down if a rapid save
+  // race briefly writes a stale value, and guarantees the HUD reflects every gain.
+  const [heroXpLive, setHeroXpLive] = useState(() => Math.floor(profile?.progress?.hero?.xp ?? 0));
+  React.useEffect(() => {
+    const x = Math.floor(profile?.progress?.hero?.xp ?? 0);
+    setHeroXpLive(prev => (x > prev ? x : prev));
+  }, [profile?.progress?.hero?.xp]);
+
   // Touch device? Show on-screen controls for phones/tablets.
   const [coarsePointer, setCoarsePointer] = useState(false);
   React.useEffect(() => {
@@ -2910,10 +2911,13 @@ export default function SoloMissionMap3D({
           tilesMoveRef.current++;
           if (tilesMoveRef.current >= 40) {
             tilesMoveRef.current = 0;
-            // Pet XP + hero XP gain delegated to usePetXP hook
+            // Pet XP + hero XP gain delegated to usePetXP hook. Read the CURRENT hero XP
+            // from the ref (this keydown closure's `profile` is stale — its effect deps
+            // don't include profile), otherwise each tick re-saves the same stale value
+            // and hero XP never accumulates.
             petXPSystem.gainXPOnMove(
-              profile?.progress?.hero?.xp ?? 0,
-              profile?.progress?.hero?.level ?? 1,
+              profileForXpRef.current?.progress?.hero?.xp ?? 0,
+              profileForXpRef.current?.progress?.hero?.level ?? 1,
             );
             console.log('[XP] Hero +0.5 XP, Pet +1 XP!');
           }
@@ -3122,6 +3126,21 @@ export default function SoloMissionMap3D({
                           <meshBasicMaterial color="#000" transparent opacity={0.38} depthWrite={false} />
                         </mesh>
                       )}
+                      {/* Outpost control zone — each tile tinted by its controlling outpost's
+                          owner (faction colour if captured, grey if neutral). Border tiles are
+                          brighter so the territory perimeters read across the whole map. */}
+                      {showOutpostZones && (inVision || explored) && outpostTerritory.has(key) && (() => {
+                        const owned = outposts.get(outpostTerritory.get(key)!)?.owner === 'player';
+                        const onBorder = zoneBoundary.has(key);
+                        const col = owned ? heroColors.primary : '#8a8f96';
+                        const op = owned ? (onBorder ? 0.4 : 0.16) : (onBorder ? 0.24 : 0.06);
+                        return (
+                          <mesh rotation={[0, Math.PI / 6, 0]} position={[0, tileTop + 0.05, 0]} renderOrder={13}>
+                            <cylinderGeometry args={[hexSize * (onBorder ? 1 : 0.9), hexSize * (onBorder ? 1 : 0.9), 0.02, 6]} />
+                            <meshBasicMaterial color={col} transparent opacity={op} depthWrite={false} />
+                          </mesh>
+                        );
+                      })()}
                     </group>
                   );
                 })}
@@ -3228,7 +3247,6 @@ export default function SoloMissionMap3D({
                   return (
                     <group key={`outpost-${o.key}`} position={[ow.x, heightFor({ q: o.q, r: o.r, type: 'plains', char: 'P', resource: null }), ow.z]} frustumCulled={false}>
                       <OutpostMarker size={hexSize} owned={o.owner === 'player'} color={heroColors.primary} />
-                      {showOutpostZones && <OutpostZoneRing size={hexSize} owned={o.owner === 'player'} color={heroColors.primary} />}
                     </group>
                   );
                 })}
@@ -3369,6 +3387,7 @@ export default function SoloMissionMap3D({
                 <div className="flex items-center gap-2"><span>🌱</span><span className="opacity-70">Terraform</span><span className="ml-auto font-semibold tabular-nums">{terraformDone ? '✓' : `${terraformProgress}%`}</span></div>
                 <div className="flex items-center gap-2"><span>🚩</span><span className="opacity-70">Outposts</span><span className="ml-auto font-semibold tabular-nums">{outpostControl.owned}/{outpostControl.total}</span></div>
                 <div className="flex items-center gap-2"><span>🗺️</span><span className="opacity-70">Regions</span><span className="ml-auto font-semibold tabular-nums">{outpostControl.regionsControlled}/{outpostControl.regionCount}</span></div>
+                <div className="flex items-center gap-2"><span>🟩</span><span className="opacity-70">Territory</span><span className="ml-auto font-semibold tabular-nums">{outpostControl.tilePct}%</span></div>
                 <div className="flex items-center gap-2"><span>⛺</span><span className="opacity-70">Refugee camps</span><span className="ml-auto font-semibold tabular-nums">{refugeeProgress.done}/{refugeeProgress.total}</span></div>
                 {localPetInventory.length > 0 && (
                   <div className="flex items-center gap-2 pt-1 mt-1 border-t border-white/10"><span>🐾</span><span className="opacity-70">Pet pack</span><span className="ml-auto font-semibold tabular-nums">{localPetInventory.reduce((s, i) => s + (i.quantity || 0), 0)}</span><span className="px-1 py-0.5 rounded bg-white/10 text-[9px] font-bold">1–8</span></div>
@@ -3503,15 +3522,12 @@ export default function SoloMissionMap3D({
                 clock={elapsedTime || new Date().toLocaleTimeString()}
                 score={{ radiant: 0, dire: 0 }}
                 hero={(() => {
-                  // Hero XP is cumulative in the profile (the instance that receives all
-                  // in-game saves). Derive level from total so level + ring + bar all
-                  // track live as XP is gained.
-                  const total = Math.floor(profile?.progress?.hero?.xp ?? 0);
-                  const lvl = profile ? Math.max(1, getLevelFromXp(total)) : (heroVitals?.level ?? 1);
+                  // Hero XP is cumulative; use the monotonic live mirror so the ring/bar/
+                  // level track every gain and never flicker down from a save race.
+                  const total = heroXpLive;
+                  const lvl = Math.max(1, getLevelFromXp(total));
                   const max = Math.max(1, getXpForNextLevel(lvl));
-                  const cur = profile
-                    ? Math.max(0, Math.min(max, total - getTotalXpForLevel(lvl)))
-                    : (heroVitals?.xp?.current ?? 0);
+                  const cur = Math.max(0, Math.min(max, total - getTotalXpForLevel(lvl)));
                   return {
                     name: heroVitals?.name ?? 'Hero',
                     level: lvl,
