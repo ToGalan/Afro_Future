@@ -485,20 +485,41 @@ export default function App() {
     setPhase('main');
   }
 
-  // Persist skills to server whenever they change (after auth)
+  // Persist skills + ability loadout whenever they change (after auth). Saved to the
+  // Firestore player profile (the durable account store, hydrated on next login) plus
+  // Chrome Sync and the optional REST endpoint as best-effort mirrors.
   const skillState = useSkillStore();
   useEffect(() => {
     if (!idToken) return;
     const handle = setTimeout(() => {
       try {
+        // Don't clobber saved skills with the pristine default before the store has been
+        // hydrated from the profile. A brand-new player is already default in Firestore,
+        // so skipping this exact state never loses data; a leveled player is level > 1.
+        const pristine = skillState.unlocked.length <= 1
+          && skillState.unlockOrder.length === 0
+          && skillState.level <= 1
+          && skillState.abilityLoadout.offensive.every(x => !x)
+          && skillState.abilityLoadout.defensive.every(x => !x);
+        if (pristine) return;
+        // ── Durable: write to the account profile in Firestore ──
+        saveProfileProgress({
+          hero: {
+            level: skillState.level,
+            unlockedSkillIds: skillState.unlocked,
+            unlockOrder: skillState.unlockOrder,
+          },
+          abilityLoadout: skillState.abilityLoadout,
+        });
+        // ── Best-effort mirrors ──
         const payload = {
           skills: {
             level: skillState.level,
             unlocked: skillState.unlocked,
             unlockOrder: skillState.unlockOrder,
+            abilityLoadout: skillState.abilityLoadout,
           }
         };
-        // Mirror to Chrome Sync (best-effort)
         chromeSyncSet({ 'afrofuture.skills': payload.skills }).catch(()=>{});
         persistServerProfile(idToken, payload);
       } catch (e) {
@@ -507,7 +528,7 @@ export default function App() {
     }, 500);
     return () => clearTimeout(handle);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [idToken, skillState.level, skillState.unlocked, skillState.unlockOrder]);
+  }, [idToken, skillState.level, skillState.unlocked, skillState.unlockOrder, skillState.abilityLoadout]);
 
   // Listen for remote loadout updates over WebRTC to keep sessions in sync ("chrome sync webrtc" requirement)
   useEffect(()=>{

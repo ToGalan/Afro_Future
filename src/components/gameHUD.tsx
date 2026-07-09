@@ -224,10 +224,14 @@ const Slot = React.memo(function Slot({ icon = '', hotkey, qty, cooldown, maxCoo
 const AB_KEYS = ['Q', 'W', 'E', 'R'];
 const IT_KEYS = ['1', '2', '3', '4', '5', '6', '7', '8'];
 
-// Consolidated icon mapping for all inventory displays
+// Consolidated icon mapping for all inventory displays. Resource glyphs mirror
+// RESOURCE_DEFS in useCollectibles so the HUD, hotbar, and map all agree.
 const ITEM_ICONS: Record<string, string> = {
   'flower': '🌸',
   'herb': '🍃',
+  'ore': '⬢',
+  'energy': '⚡',
+  'bio': '🌿',
   'potion': '🧪',
   'consumable': '📦'
 };
@@ -235,6 +239,9 @@ const ITEM_ICONS: Record<string, string> = {
 const ITEM_TOOLTIPS: Record<string, string> = {
   '🌸': 'Flower - Heal 20 HP',
   '🍃': 'Mushroom - Restore 5 EP',
+  '⬢': 'Ore - Restore 12 EP',
+  '⚡': 'Energy - Restore 20 EP',
+  '🌿': 'Bio - Heal 22 HP',
   '🧪': 'Potion - Restore 50 HP',
   '📦': 'Consumable Item'
 };

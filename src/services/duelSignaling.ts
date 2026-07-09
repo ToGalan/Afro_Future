@@ -70,19 +70,33 @@ export async function hostDuel(open = false): Promise<DuelConnection> {
     open,
   });
 
+  // ICE candidates that arrive before the remote description (answer) is applied must be
+  // buffered — addIceCandidate() throws otherwise and the connection can silently fail.
+  let remoteSet = false;
+  const pending: RTCIceCandidateInit[] = [];
+  const addOrQueue = (cand: RTCIceCandidateInit) => {
+    if (remoteSet) pc.addIceCandidate(new RTCIceCandidate(cand)).catch(() => {});
+    else pending.push(cand);
+  };
+
   // Listen for the guest's answer.
   unsubs.push(onSnapshot(roomRef, (snap) => {
     const data = snap.data();
     if (data?.answer && !pc.currentRemoteDescription) {
-      pc.setRemoteDescription(new RTCSessionDescription(data.answer)).catch(() => {});
+      pc.setRemoteDescription(new RTCSessionDescription(data.answer))
+        .then(() => {
+          remoteSet = true;
+          pending.splice(0).forEach((c) => pc.addIceCandidate(new RTCIceCandidate(c)).catch(() => {}));
+        })
+        .catch(() => {});
       // Opponent found — drop out of the matchmaking queue.
       if (open) updateDoc(roomRef, { open: false }).catch(() => {});
     }
   }));
-  // Listen for the guest's ICE candidates.
+  // Listen for the guest's ICE candidates (buffered until the answer is set).
   unsubs.push(onSnapshot(guestCandidates, (snap) => {
     snap.docChanges().forEach((ch) => {
-      if (ch.type === 'added') pc.addIceCandidate(new RTCIceCandidate(ch.doc.data() as any)).catch(() => {});
+      if (ch.type === 'added') addOrQueue(ch.doc.data() as RTCIceCandidateInit);
     });
   }));
 

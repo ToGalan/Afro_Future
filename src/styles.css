@@ -20,15 +20,16 @@ body { @apply bg-white text-gray-100 antialiased select-none; }
    Change the clamp values here to adjust across the entire HUD at once.
 ──────────────────────────────────────────────────────────────────────────── */
 
-/* HUD bar total height */
+/* HUD bar total height. vmin so it scales with the SMALLER viewport axis — keeps the
+   bar from eating a portrait phone's height while still growing on desktop. */
 .hud-bar {
-  height: clamp(8rem, 20vh, 15.5rem);
+  height: clamp(7rem, 22vmin, 15.5rem);
 }
 
-/* Ability AND inventory slots — identical size so they match visually */
+/* Ability AND inventory slots — identical size so they match visually. */
 .hud-slot {
-  width:  clamp(2.275rem, 5.85vh, 4.7rem);
-  height: clamp(2.275rem, 5.85vh, 4.7rem);
+  width:  clamp(1.9rem, 6vmin, 4.7rem);
+  height: clamp(1.9rem, 6vmin, 4.7rem);
   flex-shrink: 0;
 }
 
@@ -51,6 +52,26 @@ body { @apply bg-white text-gray-100 antialiased select-none; }
 
 /* Action buttons (⚔️ / 🛡️) */
 .hud-action-btn {
-  width:  clamp(1.6rem, 4vh, 3rem);
-  height: clamp(1.6rem, 4vh, 3rem);
+  width:  clamp(1.5rem, 4.4vmin, 3rem);
+  height: clamp(1.5rem, 4.4vmin, 3rem);
 }
+
+/* ── Compact HUD on small / phone screens ─────────────────────────────────── */
+@media (max-width: 640px) {
+  .hud-bar { height: clamp(5.5rem, 30vw, 9rem); }
+  .hud-slot { width: clamp(1.5rem, 8.5vw, 2.4rem); height: clamp(1.5rem, 8.5vw, 2.4rem); }
+  .hud-action-btn { width: clamp(1.4rem, 7vw, 2rem); height: clamp(1.4rem, 7vw, 2rem); }
+}
+
+/* On-screen touch controls (mobile). Hidden by default; shown for coarse pointers. */
+.touch-btn {
+  display: flex; align-items: center; justify-content: center;
+  border-radius: 0.75rem;
+  background: rgba(12, 18, 25, 0.82);
+  box-shadow: 0 2px 10px rgba(0,0,0,0.4);
+  border: 1px solid rgba(255,255,255,0.14);
+  color: rgba(255,255,255,0.92);
+  touch-action: none;
+  user-select: none;
+}
+.touch-btn:active { background: rgba(16, 44, 32, 0.9); transform: scale(0.92); }

@@ -527,6 +527,53 @@ const TERRAIN_ICON: Record<string, string> = {
   water: '🌊', desert: '🏜️', plains: '🌾', forest: '🌲', jungle: '🌴', hills: '⛰️', mountain: '🏔️',
 };
 
+// ── Mobile touch controls ─────────────────────────────────────────────────────
+// Dispatches synthetic keyboard events so the existing WASD/action key handlers work
+// unchanged on touch devices.
+function dispatchGameKey(key: string, type: 'keydown' | 'keyup') {
+  window.dispatchEvent(new KeyboardEvent(type, { key, bubbles: true }));
+}
+
+function TouchButton({ kbdKey, label, hold, size = 'h-12 w-12 text-lg' }: { kbdKey: string; label: React.ReactNode; hold?: boolean; size?: string }) {
+  const timer = React.useRef<number | null>(null);
+  const fire = () => { dispatchGameKey(kbdKey, 'keydown'); window.setTimeout(() => dispatchGameKey(kbdKey, 'keyup'), 50); };
+  const start = (e: React.PointerEvent) => {
+    e.preventDefault();
+    fire();
+    if (hold) timer.current = window.setInterval(fire, 200);
+  };
+  const stop = () => { if (timer.current) { clearInterval(timer.current); timer.current = null; } };
+  return (
+    <button className={`touch-btn pointer-events-auto ${size}`} onPointerDown={start} onPointerUp={stop} onPointerLeave={stop} onPointerCancel={stop}>{label}</button>
+  );
+}
+
+/** On-screen d-pad + action buttons, floated just above the HUD bar. */
+function TouchControls() {
+  return (
+    <div
+      className="fixed inset-x-0 z-30 px-3 flex items-end justify-between pointer-events-none"
+      style={{ bottom: 'calc(clamp(5.5rem, 30vw, 15.5rem) + 0.5rem)' }}
+    >
+      {/* Movement d-pad */}
+      <div className="grid grid-cols-3 grid-rows-3 gap-1">
+        <span /><TouchButton kbdKey="w" label="▲" hold size="h-11 w-11 text-base" /><span />
+        <TouchButton kbdKey="a" label="◀" hold size="h-11 w-11 text-base" />
+        <span className="rounded-lg bg-white/5" />
+        <TouchButton kbdKey="d" label="▶" hold size="h-11 w-11 text-base" />
+        <span /><TouchButton kbdKey="s" label="▼" hold size="h-11 w-11 text-base" /><span />
+      </div>
+      {/* Action buttons */}
+      <div className="grid grid-cols-2 gap-2">
+        <TouchButton kbdKey="f" label="⚔️" size="h-12 w-12 text-xl" />
+        <TouchButton kbdKey="c" label="✋" size="h-12 w-12 text-xl" />
+        <TouchButton kbdKey="h" label="🤝" size="h-12 w-12 text-xl" />
+        <TouchButton kbdKey="g" label="🚩" size="h-12 w-12 text-xl" />
+      </div>
+    </div>
+  );
+}
+
 function tileColor(t: Tile) {
   if (t.type === 'water') return '#87d5ff';
   if (t.type === 'desert') return '#f7d08a';
@@ -542,7 +589,7 @@ function tileColor(t: Tile) {
 function heightFor(_t: Tile) { return 0.4; }
 
 function ResourceIcon({ t, size }: { t: Tile; size: number }) {
-  const label = t.resource === 'ore' ? '⬢' : t.resource === 'energy' ? '⚡' : t.resource === 'bio' ? '🍃' : '';
+  const label = t.resource ? (RESOURCE_DEFS[t.resource]?.icon ?? '') : '';
   if (!label) return null;
   // Local positioning: parent tile group already placed in world space
   return (
@@ -2745,6 +2792,40 @@ export default function SoloMissionMap3D({
   const [refDesert, setRefDesert] = useState(false);
   // Recenter camera on double-tap spacebar
   const [recenterSignal, setRecenterSignal] = useState(0);
+
+  // Touch device? Show on-screen controls for phones/tablets.
+  const [coarsePointer, setCoarsePointer] = useState(false);
+  React.useEffect(() => {
+    if (typeof window === 'undefined' || !window.matchMedia) return;
+    const mq = window.matchMedia('(pointer: coarse)');
+    const update = () => setCoarsePointer(mq.matches || 'ontouchstart' in window || (navigator.maxTouchPoints ?? 0) > 0);
+    update();
+    mq.addEventListener?.('change', update);
+    return () => mq.removeEventListener?.('change', update);
+  }, []);
+
+  // ── Death → respawn: when HP hits 0, return to base at full vitals ──────────
+  const [deathBanner, setDeathBanner] = useState(false);
+  const diedRef = React.useRef(false);
+  React.useEffect(() => {
+    const hp = heroVitals?.hp.current ?? 1;
+    if (hp <= 0 && !diedRef.current) {
+      diedRef.current = true;
+      // Teleport to the base/spawn hub and refill HP + EP.
+      setHero(h => ({ ...h, pos: { ...baseAxial } }));
+      saveProgress({ heroPosition: { ...baseAxial } });
+      updateHeroPosition({ ...baseAxial });
+      setRecenterSignal(s => s + 1);
+      onHealHP?.(999999);
+      onRestoreEP?.(999999);
+      setDeathBanner(true);
+      setTimeout(() => setDeathBanner(false), 1600);
+      console.log('[death] Hero defeated — respawned at base');
+    } else if (hp > 0 && diedRef.current) {
+      diedRef.current = false;
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [heroVitals?.hp.current]);
   const lastSpaceRef = React.useRef(0);
   useEffect(() => {
     function onSpace(e: KeyboardEvent) {
@@ -2922,7 +3003,8 @@ export default function SoloMissionMap3D({
   <div className="relative w-screen h-screen bg-[#111827] overflow-hidden">
       {/* Helper overlay removed for production */}
       <div className="absolute inset-0 select-none">
-    <Canvas shadows camera={{ position: [0, 22, 22], fov: 45 }} gl={{ alpha: false }} style={{ background: '#111827' }} onCreated={({ gl, scene }) => { gl.setClearColor('#111827', 1); scene.background = new THREE.Color('#111827'); }}>
+    {/* Camera elevation ≈ 33.3° above the ground plane (height/horizontal = tan(33.3°)). */}
+    <Canvas shadows camera={{ position: [0, 14.47, 22], fov: 45 }} gl={{ alpha: false }} style={{ background: '#111827' }} onCreated={({ gl, scene }) => { gl.setClearColor('#111827', 1); scene.background = new THREE.Color('#111827'); }}>
   <MapCameraController
     bounds={mapBounds}
     gameMode={true}
@@ -3266,8 +3348,8 @@ export default function SoloMissionMap3D({
                 const held = localHeroInventory.filter(i => i.type === c.required.resource).reduce((s, i) => s + (i.quantity || 0), 0);
                 const resLbl = RESOURCE_DEFS[c.required.resource]?.label ?? '';
                 return (
-                  <div className="fixed top-40 left-1/2 -translate-x-1/2 z-40">
-                    <div className={`px-4 py-2 rounded-xl border text-sm font-bold backdrop-blur-sm shadow-lg flex items-center gap-2 ${
+                  <div className="fixed top-40 left-1/2 -translate-x-1/2 z-40 max-w-[94vw]">
+                    <div className={`px-4 py-2 rounded-xl border text-xs sm:text-sm font-bold backdrop-blur-sm shadow-lg flex flex-wrap items-center justify-center gap-x-2 gap-y-1 text-center ${
                       loot ? 'bg-orange-900/80 border-orange-400/60 text-orange-100' : 'bg-emerald-900/80 border-emerald-400/60 text-emerald-100'
                     }`}>
                       {c.mission.icon} {c.mission.title}
@@ -3299,13 +3381,13 @@ export default function SoloMissionMap3D({
               {/* ── 1v1 PvP Duel: launcher button + lobby + result ─────────────── */}
               <button
                 onClick={() => setDuelLobbyOpen(o => !o)}
-                className={`fixed top-3 right-3 z-40 px-3 py-1.5 rounded-lg text-sm font-bold shadow-lg ring-1 transition ${
+                className={`fixed top-16 right-3 z-40 px-3 py-1.5 rounded-lg text-sm font-bold shadow-lg ring-1 transition pointer-events-auto ${
                   duelActive ? 'bg-rose-800/90 ring-rose-400 text-rose-50' : 'bg-[#141b26]/90 ring-white/15 text-gray-200 hover:ring-rose-400/60'
                 }`}
               >⚔️ Duel{duelActive && duel.status === 'connected' ? ' •' : ''}</button>
 
               {duelLobbyOpen && (
-                <div className="fixed top-14 right-3 z-40 w-72 p-4 rounded-xl bg-[#0c1219]/95 ring-1 ring-white/12 shadow-2xl text-sm text-gray-100 space-y-3">
+                <div className="fixed top-28 right-3 z-40 w-[min(18rem,92vw)] p-4 rounded-xl bg-[#0c1219]/95 ring-1 ring-white/12 shadow-2xl text-sm text-gray-100 space-y-3">
                   <div className="flex items-center justify-between">
                     <span className="font-bold">⚔️ 1v1 Duel</span>
                     <button onClick={() => setDuelLobbyOpen(false)} className="opacity-60 hover:opacity-100">✕</button>
@@ -3371,6 +3453,16 @@ export default function SoloMissionMap3D({
                 </div>
               )}
 
+              {/* Death → respawn flash (PvE) */}
+              {deathBanner && !duel.result && (
+                <div className="fixed inset-0 z-50 flex items-center justify-center bg-rose-950/40 backdrop-blur-[2px] pointer-events-none">
+                  <div className="px-8 py-5 rounded-2xl bg-[#1a0c0e]/90 ring-1 ring-rose-500/40 text-center shadow-2xl">
+                    <div className="text-3xl font-extrabold text-rose-400 mb-1">💀 Defeated</div>
+                    <div className="opacity-70 text-sm">Respawning at base…</div>
+                  </div>
+                </div>
+              )}
+
               {/* Duel result banner */}
               {duel.result && (
                 <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm">
@@ -3405,40 +3497,47 @@ export default function SoloMissionMap3D({
               )}
 
               {/* Game HUD with XP, abilities, and inventory */}
+              {coarsePointer && <TouchControls />}
               <GameHUD
                 team={factionName || "radiant"}
                 clock={elapsedTime || new Date().toLocaleTimeString()}
                 score={{ radiant: 0, dire: 0 }}
-                hero={heroVitals ? {
-                  name: heroVitals.name,
-                  // Level + XP read from THIS component's live profile (the instance that
-                  // receives XP saves), so the ring/bar actually progress in real time.
-                  level: profile?.progress?.hero?.level ?? heroVitals.level,
-                  hp: heroVitals.hp,
-                  ep: heroVitals.ep,
-                  xp: (() => {
-                    const lvl = profile?.progress?.hero?.level ?? heroVitals.level;
-                    const total = Math.floor(profile?.progress?.hero?.xp ?? heroVitals.xp.current ?? 0);
-                    const forLvl = Math.max(1, getXpForNextLevel(lvl));
-                    return { current: Math.min(forLvl, Math.max(0, total - getTotalXpForLevel(lvl))), max: forLvl };
-                  })(),
-                  portraitUrl: heroVitals.portraitUrl,
-                  buffs: heroVitals.buffs,
-                } : {
-                  name: 'Hero',
-                  level: profile?.progress?.hero?.level || 1,
-                  hp: { current: 100, max: 100 },
-                  ep: { current: 50, max: 50 },
-                  xp: { current: profile?.progress?.hero?.xp || 0, max: 500 },
-                }}
-                pet={petData || {
-                  name: 'Pet',
-                  level: profile?.progress?.pet?.level || 1,
-                  hp: { current: 50, max: 50 },
-                  ep: { current: 25, max: 25 },
-                  xp: { current: profile?.progress?.pet?.xp || 0, max: 250 },
-                  icon: '🐾',
-                }}
+                hero={(() => {
+                  // Hero XP is cumulative in the profile (the instance that receives all
+                  // in-game saves). Derive level from total so level + ring + bar all
+                  // track live as XP is gained.
+                  const total = Math.floor(profile?.progress?.hero?.xp ?? 0);
+                  const lvl = profile ? Math.max(1, getLevelFromXp(total)) : (heroVitals?.level ?? 1);
+                  const max = Math.max(1, getXpForNextLevel(lvl));
+                  const cur = profile
+                    ? Math.max(0, Math.min(max, total - getTotalXpForLevel(lvl)))
+                    : (heroVitals?.xp?.current ?? 0);
+                  return {
+                    name: heroVitals?.name ?? 'Hero',
+                    level: lvl,
+                    hp: heroVitals?.hp ?? { current: 100, max: 100 },
+                    ep: heroVitals?.ep ?? { current: 50, max: 50 },
+                    xp: { current: cur, max },
+                    portraitUrl: heroVitals?.portraitUrl,
+                    buffs: heroVitals?.buffs,
+                  };
+                })()}
+                pet={(() => {
+                  // Pet level/XP come from the live usePetXP state (petXp is the remainder
+                  // within the current level; xpToNext is the level's requirement).
+                  const lvl = petXPSystem.petLevel;
+                  const max = Math.max(1, petXPSystem.xpToNext || 1);
+                  const cur = Math.max(0, Math.min(max, Math.floor(petXPSystem.petXp)));
+                  return {
+                    name: petData?.name ?? (isDog ? 'Cyber-Dog' : 'Cyber-Cat'),
+                    level: lvl,
+                    hp: petData?.hp ?? { current: 50, max: 50 },
+                    ep: petData?.ep ?? { current: 25, max: 25 },
+                    xp: { current: cur, max },
+                    icon: petData?.icon ?? '🐾',
+                    portraitUrl: petData?.portraitUrl,
+                  };
+                })()}
                 abilities={abilitySlots}
                 defensiveAbilities={defenseSlots}
                 abilityMode={abilityMode}
