@@ -147,6 +147,8 @@ export interface GameHUDProps {
   petTokens: number;
   subtitles?: string;
   onMenu?: () => void; onSettings?: () => void; onScoreboard?: () => void; onScan?: () => void; onStats?: () => void; onTalents?: () => void; onGlyph?: () => void; onShop?: () => void;
+  /** Explicit "Save Game" action for solo play. Returns a promise that resolves once the write is flushed. */
+  onSave?: () => void | Promise<void>;
   onAbility?: (id: string) => void; onItem?: (id: string) => void; onMinimapClick?: (x: number, y: number) => void;
   minimapData?: MinimapData;
   // Extended menu data
@@ -228,7 +230,7 @@ const IT_KEYS = ['1', '2', '3', '4', '5', '6', '7', '8'];
 // RESOURCE_DEFS in useCollectibles so the HUD, hotbar, and map all agree.
 const ITEM_ICONS: Record<string, string> = {
   'flower': '🌸',
-  'herb': '🍃',
+  'herb': '🍄',
   'ore': '⬢',
   'energy': '⚡',
   'bio': '🌿',
@@ -238,7 +240,7 @@ const ITEM_ICONS: Record<string, string> = {
 
 const ITEM_TOOLTIPS: Record<string, string> = {
   '🌸': 'Flower - Heal 20 HP',
-  '🍃': 'Mushroom - Restore 5 EP',
+  '🍄': 'Mushroom - Restore 5 EP',
   '⬢': 'Ore - Restore 12 EP',
   '⚡': 'Energy - Restore 20 EP',
   '🌿': 'Bio - Heal 22 HP',
@@ -249,12 +251,24 @@ const ITEM_TOOLTIPS: Record<string, string> = {
 export const GameHUD: React.FC<GameHUDProps> = ({
   team, clock, hero, pet, abilities, defensiveAbilities, items, resources, skillTokens,
   subtitles, onShop, onAbility, onItem, onMinimapClick, onMenu, onSettings, onTalents,
-  onScoreboard, minimapData,
+  onScoreboard, minimapData, onSave,
   skillPoints, totalPlayTime, heroInventory, petInventory, playerProfile,
   abilityMode: abilityModeProp, onSetAbilityMode, onTransferToPet, onTransferToHero, heroStats,
   showOutpostZones, onToggleOutpostZones,
 }) => {
   const [menuOpen, setMenuOpen] = React.useState(false);
+  // 'idle' | 'saving' | 'saved' — drives the Save Game button's inline feedback.
+  const [saveState, setSaveState] = React.useState<'idle' | 'saving' | 'saved'>('idle');
+  const saveResetRef = React.useRef<ReturnType<typeof setTimeout> | null>(null);
+  const handleSave = React.useCallback(async () => {
+    if (!onSave || saveState === 'saving') return;
+    setSaveState('saving');
+    try { await onSave(); } catch { /* best-effort; still show saved */ }
+    setSaveState('saved');
+    if (saveResetRef.current) clearTimeout(saveResetRef.current);
+    saveResetRef.current = setTimeout(() => setSaveState('idle'), 2000);
+  }, [onSave, saveState]);
+  React.useEffect(() => () => { if (saveResetRef.current) clearTimeout(saveResetRef.current); }, []);
   const [menuTab, setMenuTab] = React.useState<'overview' | 'skills' | 'pet' | 'inventory' | 'settings'>('overview');
   // Controlled by the map (so QWER + HUD agree) when provided; else internal.
   const [internalMode, setInternalMode] = React.useState<'offense' | 'defense'>('offense');
@@ -744,7 +758,9 @@ export const GameHUD: React.FC<GameHUDProps> = ({
                         <h4 className="text-sm font-bold mb-2 opacity-70">Pet Inventory</h4>
                         <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-2">
                           {petInventory.map((item, i) => {
-                            const displayIcon = (item as any).icon || ITEM_ICONS[item.type] || '🐾';
+                            // Canonical type icon wins so HUD/hotbar/map agree even for
+                            // previously-saved items that stored an out-of-date glyph.
+                            const displayIcon = ITEM_ICONS[item.type] || (item as any).icon || '🐾';
                             return (
                               <div key={i} className="bg-black/30 rounded-lg p-2 sm:p-3 text-center">
                                 <div className="text-2xl mb-1">{displayIcon}</div>
@@ -800,7 +816,9 @@ export const GameHUD: React.FC<GameHUDProps> = ({
                         <div className="text-xs font-semibold opacity-60 mb-2">STORED ITEMS</div>
                         <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-2">
                           {heroInventory.map((item, i) => {
-                            const displayIcon = (item as any).icon || ITEM_ICONS[item.type] || '🎒';
+                            // Canonical type icon wins so HUD/hotbar/map agree even for
+                            // previously-saved items that stored an out-of-date glyph.
+                            const displayIcon = ITEM_ICONS[item.type] || (item as any).icon || '🎒';
                             return (
                               <div key={i} className="bg-black/30 rounded-lg p-2 sm:p-3 text-center">
                                 <div className="text-2xl mb-1">{displayIcon}</div>
@@ -894,17 +912,30 @@ export const GameHUD: React.FC<GameHUDProps> = ({
                   <div className="bg-white/5 rounded-xl p-4 border border-white/10">
                     <h3 className="font-bold mb-3 text-rose-300">🚪 Exit Options</h3>
                     <div className="space-y-2">
-                      <button 
+                      <button
                         onClick={() => setMenuOpen(false)}
                         className="w-full px-4 py-2.5 rounded-lg bg-emerald-600/60 hover:bg-emerald-600/80 text-left font-semibold transition"
                       >
                         Resume Game
                       </button>
-                      <button 
-                        onClick={() => { onMenu && onMenu(); setMenuOpen(false); }}
+                      {onSave && (
+                        <button
+                          onClick={handleSave}
+                          disabled={saveState === 'saving'}
+                          className={`w-full px-4 py-2.5 rounded-lg text-left font-semibold transition disabled:opacity-70 ${
+                            saveState === 'saved'
+                              ? 'bg-emerald-500/70 hover:bg-emerald-500/80'
+                              : 'bg-sky-600/60 hover:bg-sky-600/80'
+                          }`}
+                        >
+                          {saveState === 'saving' ? '💾 Saving…' : saveState === 'saved' ? '✓ Game Saved' : '💾 Save Game'}
+                        </button>
+                      )}
+                      <button
+                        onClick={async () => { if (onSave) { try { await onSave(); } catch {} } onMenu && onMenu(); setMenuOpen(false); }}
                         className="w-full px-4 py-2.5 rounded-lg bg-rose-600/60 hover:bg-rose-600/80 text-left font-semibold transition"
                       >
-                        Exit to Dashboard
+                        {onSave ? 'Save & Exit to Dashboard' : 'Exit to Dashboard'}
                       </button>
                     </div>
                   </div>

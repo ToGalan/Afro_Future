@@ -11,7 +11,8 @@ import { GameAvatar, type AvatarColors } from './GameAvatarMesh';
 import { resolveHeroModel } from '../config/heroModels';
 import { useCreeps, type CreepCamp } from '../hooks/useCreeps';
 import { useOutposts } from '../hooks/useOutposts';
-import { useRefugeeCamps } from '../hooks/useRefugeeCamps';
+import { useRefugeeCamps, factionKey, type FactionKey } from '../hooks/useRefugeeCamps';
+import { useFactionEnemies, DOCTRINE, type FactionEnemy, type GuardPost } from '../hooks/useFactionEnemies';
 import { useDuel, type RemoteHero } from '../hooks/useDuel';
 import { watchOpenRooms } from '../services/duelSignaling';
 import { useSkillStore } from '../store/skillStore';
@@ -394,6 +395,58 @@ function CreepCampMesh({ camp, size }: { camp: CreepCamp; size: number }) {
         );
       })}
       <Text position={[0, cs * 2.7, 0]} fontSize={size * 0.3} color="#ff9a9a" anchorX="center" anchorY="middle" outlineWidth={size * 0.02} outlineColor="#000">Lv {camp.level}  ⚔️{camp.dmgPerCreep}</Text>
+    </group>
+  );
+}
+
+/**
+ * EnemyUnitMesh — a single mobile faction enemy. Owns its world position and smoothly
+ * lerps toward the target tile each frame so the discrete AI steps read as walking.
+ * Colour + label come from the faction doctrine; a red ⚔️ flags an actively-hunting unit.
+ */
+function EnemyUnitMesh({ enemy, size, target }: { enemy: FactionEnemy; size: number; target: [number, number, number] }) {
+  const ref = React.useRef<THREE.Group>(null);
+  const snapped = React.useRef(false);
+  useFrame(() => {
+    const g = ref.current; if (!g) return;
+    if (!snapped.current) { g.position.set(target[0], target[1], target[2]); snapped.current = true; return; }
+    g.position.x += (target[0] - g.position.x) * 0.2;
+    g.position.y += (target[1] - g.position.y) * 0.2;
+    g.position.z += (target[2] - g.position.z) * 0.2;
+    // Face the direction of travel.
+    const dx = target[0] - g.position.x, dz = target[2] - g.position.z;
+    if (dx * dx + dz * dz > 1e-4) g.rotation.y = Math.atan2(dx, dz);
+  });
+  const doc = DOCTRINE[enemy.faction];
+  const boss = enemy.role === 'boss';
+  const cs = size * (boss ? 0.5 : 0.32); // faction champions are visibly larger
+  const hpPct = Math.max(0, enemy.hp / enemy.maxHp);
+  const hunting = enemy.state === 'pursue' || enemy.state === 'attack';
+  return (
+    <group ref={ref} frustumCulled={false}>
+      {/* Boss crown — marks the faction champion ("the faction player"). */}
+      {boss && (
+        <mesh position={[0, cs * 2.15, 0]} rotation={[Math.PI, 0, 0]}>
+          <coneGeometry args={[cs * 0.34, cs * 0.4, 5]} />
+          <meshStandardMaterial color="#ffd24a" emissive="#8a6a10" emissiveIntensity={0.5} roughness={0.4} metalness={0.6} flatShading />
+        </mesh>
+      )}
+      {/* Legs */}
+      <mesh position={[cs * 0.22, cs * 0.35, 0]} castShadow><cylinderGeometry args={[cs * 0.11, cs * 0.11, cs * 0.7, 5]} /><meshStandardMaterial color="#20242b" flatShading /></mesh>
+      <mesh position={[-cs * 0.22, cs * 0.35, 0]} castShadow><cylinderGeometry args={[cs * 0.11, cs * 0.11, cs * 0.7, 5]} /><meshStandardMaterial color="#20242b" flatShading /></mesh>
+      {/* Torso — faction-coloured */}
+      <mesh position={[0, cs * 1.05, 0]} castShadow><capsuleGeometry args={[cs * 0.4, cs * 0.55, 4, 8]} /><meshStandardMaterial color={doc.color} roughness={0.55} emissive={doc.color} emissiveIntensity={hunting ? 0.5 : 0.2} flatShading /></mesh>
+      {/* Head + visor */}
+      <mesh position={[0, cs * 1.75, 0]} castShadow><sphereGeometry args={[cs * 0.3, 8, 8]} /><meshStandardMaterial color="#15181d" roughness={0.6} flatShading /></mesh>
+      <mesh position={[0, cs * 1.78, cs * 0.24]}><boxGeometry args={[cs * 0.34, cs * 0.1, cs * 0.06]} /><meshBasicMaterial color={hunting ? '#ff3b3b' : '#ffd24a'} /></mesh>
+      {/* Weapon arm */}
+      <mesh position={[cs * 0.55, cs * 1.05, cs * 0.2]} rotation={[0.4, 0, -0.5]} castShadow><cylinderGeometry args={[cs * 0.08, cs * 0.08, cs * 0.8, 5]} /><meshStandardMaterial color="#2a2f38" flatShading /></mesh>
+      {/* HP bar */}
+      <mesh position={[0, cs * 2.4, 0]}><boxGeometry args={[cs * 1.3, cs * 0.16, cs * 0.05]} /><meshBasicMaterial color="#300000" /></mesh>
+      <mesh position={[-(cs * 1.3) * (1 - hpPct) / 2, cs * 2.4, cs * 0.04]}><boxGeometry args={[Math.max(0.001, cs * 1.3 * hpPct), cs * 0.12, cs * 0.05]} /><meshBasicMaterial color={hunting ? '#ff4d4d' : '#ffa24d'} /></mesh>
+      <Text position={[0, cs * (boss ? 2.9 : 3.0), 0]} fontSize={size * (boss ? 0.32 : 0.26)} color={boss ? '#ffd24a' : doc.color} anchorX="center" anchorY="middle" outlineWidth={size * 0.02} outlineColor="#000">
+        {boss ? `👑 ${enemy.faction} Commander Lv${enemy.level}` : `${hunting ? '⚔️ ' : ''}${enemy.faction} ${doc.label} Lv${enemy.level}`}
+      </Text>
     </group>
   );
 }
@@ -2160,6 +2213,11 @@ export default function SoloMissionMap3D({
   const combatAtkMult = abilityMode === 'offense' ? 1.3 : 0.6;
   const combatIncomingScale = abilityMode === 'offense' ? 1 : 0.5;
 
+  // Faction-enemy provoke handle, assigned once useFactionEnemies is constructed below.
+  // Declared early so mission callbacks (loot a rival camp, capture an outpost) can make
+  // the responsible faction's nearby units drop their leash and hunt the hero.
+  const enemyProvokeRef = React.useRef<((q: number, r: number, fk?: FactionKey, radius?: number) => void) | null>(null);
+
   const { camps: creepCamps, nearbyCamp: nearbyCreepCamp, attackNearby: attackNearbyCamp, strikeNearby: strikeNearbyCamp } = useCreeps({
     tiles,
     heroQ: hero.pos.q,
@@ -2241,7 +2299,11 @@ export default function SoloMissionMap3D({
     heroR: hero.pos.r,
     centerQ: centerAxial.q,
     centerR: centerAxial.r,
-    onCapture: (_region, regionCleared) => { awardFactionPoints(regionCleared ? 6 : 2); awardHeroXp(regionCleared ? 40 : 15); },
+    onCapture: (_region, regionCleared) => {
+      awardFactionPoints(regionCleared ? 6 : 2); awardHeroXp(regionCleared ? 40 : 15);
+      // Seizing contested ground draws a response from any rival units in the area.
+      enemyProvokeRef.current?.(heroPosRef.current.q, heroPosRef.current.r, undefined, 7);
+    },
   });
   // ── Refugee camps — faction-specific side missions + resource rewards ─────────
   // Grant a gathered resource straight into the hero inventory (stacks by type).
@@ -2268,6 +2330,8 @@ export default function SoloMissionMap3D({
         grantResource(camp.loot.resource, camp.loot.amount);
         const cw = axialToWorld({ q: camp.q, r: camp.r }, hexSize);
         spawnCombatText(cw.x, cw.z, `+${camp.loot.amount} ${RESOURCE_DEFS[camp.loot.resource].label}`, '#ffd24a');
+        // Raiding a rival cache enrages that faction's defenders nearby.
+        enemyProvokeRef.current?.(camp.q, camp.r, factionKey(camp.campFaction), 8);
       } else {
         const cw = axialToWorld({ q: camp.q, r: camp.r }, hexSize);
         spawnCombatText(cw.x, cw.z, `Camp aided ✓`, '#7fd66b');
@@ -2276,6 +2340,63 @@ export default function SoloMissionMap3D({
       awardFactionPoints(camp.reward.fp);
     },
   });
+
+  // ── Faction enemies — mobile rival-faction AI units (active PvE) ──────────────
+  // Guard posts are the rival factions' refugee camps ('loot' camps belong to a rival;
+  // 'aid' camps are your own faction). Their defenders spawn there and, together with
+  // free-roaming patrols, hunt the hero per each faction's doctrine.
+  const enemyGuardPosts = useMemo<GuardPost[]>(() => {
+    const posts: GuardPost[] = [];
+    for (const c of refugeeCamps.values()) {
+      if (c.mode === 'loot') posts.push({ key: c.key, q: c.q, r: c.r, faction: c.campFaction });
+    }
+    return posts;
+  }, [refugeeCamps]);
+  const heroHpFrac = heroVitals ? Math.max(0, Math.min(1, heroVitals.hp.current / Math.max(1, heroVitals.hp.max))) : 1;
+  // GDD: a PAA player fights non-lethally — defeats read as "Pacify/Disable", not kills.
+  const playerFactionKey = factionKey(factionName);
+  const paaPlayer = playerFactionKey === 'PAA';
+
+  const {
+    enemies: factionEnemies, nearbyEnemy: nearbyFactionEnemy,
+    attackNearby: attackNearbyEnemy, strikeNearby: strikeNearbyEnemy,
+    provoke: provokeEnemies, threat: enemyThreat,
+  } = useFactionEnemies({
+    tiles,
+    heroQ: hero.pos.q,
+    heroR: hero.pos.r,
+    centerQ: centerAxial.q,
+    centerR: centerAxial.r,
+    faction: factionName,
+    guardPosts: enemyGuardPosts,
+    heroAttack: Math.round((heroAttack + petCombatBonus) * combatAtkMult),
+    heroHpFrac,
+    incomingDamageScale: combatIncomingScale,
+    enabled: !autoMultiplayer, // solo PvE only — duels are handled by useDuel
+    paused: !!inputPaused,     // freeze combat while the skill-tree overlay is open
+    onHeroDamage: (amt) => onDamageHP?.(amt),
+    awardXp: awardHeroXp,
+    awardFactionPoints,
+    onEvent: (ev) => {
+      const w = axialToWorld({ q: ev.q, r: ev.r }, hexSize);
+      if (ev.kind === 'attack') {
+        const hw = axialToWorld({ q: heroPosRef.current.q, r: heroPosRef.current.r }, hexSize);
+        spawnCombatText(hw.x, hw.z, `-${ev.dmg}`, '#ff5555');
+      } else if (ev.kind === 'hurt') {
+        spawnCombatText(w.x, w.z, `-${ev.dmg}`, '#ffd24a');
+      } else if (ev.kind === 'kill') {
+        // PAA disables/pacifies (non-lethal ethos); other factions defeat lethally.
+        // A faction champion (boss) gets a louder callout.
+        const verb = ev.boss
+          ? (paaPlayer ? '🕊️ Commander Pacified' : '💀 Commander Defeated')
+          : (paaPlayer ? '🕊️ Pacified' : '☠️');
+        spawnCombatText(w.x, w.z, `${verb} +${ev.xp} XP`, ev.boss ? '#ffd24a' : '#8fe38f');
+      }
+    },
+  });
+  enemyProvokeRef.current = provokeEnemies;
+  const attackNearbyEnemyRef = React.useRef(attackNearbyEnemy); attackNearbyEnemyRef.current = attackNearbyEnemy;
+  const strikeNearbyEnemyRef = React.useRef(strikeNearbyEnemy); strikeNearbyEnemyRef.current = strikeNearbyEnemy;
 
   // Interact with the nearby refugee camp (H): loot rivals in one action; for your own
   // faction's camp, deliver as much of the required resource as you're carrying.
@@ -2491,6 +2612,8 @@ export default function SoloMissionMap3D({
         duelAttackRemote(power, hero.pos); // with attacker pos for range validation
         const rw = axialToWorld(duelRemote.pos, hexSize);
         spawnCombatText(rw.x, rw.z, `${icon} -${power}`, '#ffd24a');
+      } else if (strikeNearbyEnemyRef.current(power).hit) {
+        spawnCombatText(hw.x, hw.z, `${icon} -${power}`, '#ffd24a');
       } else if (strikeNearbyRef.current(power).hit) {
         spawnCombatText(hw.x, hw.z, `${icon} -${power}`, '#ffd24a');
       } else {
@@ -3115,10 +3238,12 @@ export default function SoloMissionMap3D({
         return;
       }
 
-      // ─── ATTACK NEARBY CREEP CAMP or RIVAL PLAYER (F) — a deliberate choice ─
+      // ─── ATTACK NEARBY ENEMY / CREEP CAMP / RIVAL PLAYER (F) — a deliberate choice ─
       if (k === 'f') {
         if (e.repeat) return;
-        attackNearbyRef.current();  // creep camp if adjacent
+        // Faction enemies take priority (they can move onto you); fall back to camps.
+        const hitEnemy = attackNearbyEnemyRef.current().hit;
+        if (!hitEnemy) attackNearbyRef.current();  // creep camp if adjacent
         duelFightRef.current();     // rival duelist if adjacent
         return;
       }
@@ -3394,6 +3519,19 @@ export default function SoloMissionMap3D({
                     </group>
                   );
                 })}
+                {/* Faction enemies — mobile rival-faction AI units (active PvE). Rendered
+                    at absolute world coords so they walk across tiles; fog-of-war + range
+                    culled like camps. */}
+                {factionEnemies.map(en => {
+                  if (en.hp <= 0) return null;
+                  const ekey = `${en.q},${en.r}`;
+                  if (!exploredRef.current.has(ekey) && !heroVisible.has(ekey)) return null; // fog of war
+                  if (axialDistance({ q: en.q, r: en.r }, hero.pos) > RENDER_RADIUS) return null;
+                  const ew = axialToWorld({ q: en.q, r: en.r }, hexSize);
+                  const tile = tilesByKey.get(ekey);
+                  const y = heightFor(tile ?? { q: en.q, r: en.r, type: 'plains', char: 'P', resource: null });
+                  return <EnemyUnitMesh key={en.id} enemy={en} size={hexSize} target={[ew.x, y, ew.z]} />;
+                })}
                 {/* Base / Command Center at spawn */}
                 {(() => { const bw = axialToWorld(baseAxial, hexSize); return (
                   <group key="base" position={[bw.x, heightFor({ q: baseAxial.q, r: baseAxial.r, type: 'plains', char: 'P', resource: null }), bw.z]} frustumCulled={false}>
@@ -3504,12 +3642,36 @@ export default function SoloMissionMap3D({
                 </div>
               )}
 
+              {/* Nearby faction enemy — takes priority over a creep camp (press F) */}
+              {nearbyFactionEnemy && (() => {
+                const en = nearbyFactionEnemy;
+                const isBoss = en.role === 'boss';
+                const label = isBoss ? `${en.faction} Commander` : `${en.faction} ${DOCTRINE[en.faction].label}`;
+                const verb = paaPlayer ? 'to pacify' : 'to attack';
+                return (
+                  <div className="fixed top-16 left-1/2 -translate-x-1/2 z-40">
+                    <div className={`px-4 py-2 rounded-xl bg-rose-900/85 border-2 text-sm font-bold text-rose-100 backdrop-blur-sm shadow-lg flex items-center gap-2 ${isBoss ? 'border-amber-400/80' : 'border-rose-400/70'}`}>
+                      <span style={{ color: isBoss ? '#ffd24a' : DOCTRINE[en.faction].color }}>{isBoss ? '👑' : '⚔️'} {label}</span>
+                      <span className="opacity-80">Lv {en.level} · {Math.ceil(en.hp)}/{en.maxHp} HP</span>
+                      <span className="ml-1 px-1.5 py-0.5 rounded bg-rose-700 font-bold">F</span> {verb}
+                    </div>
+                  </div>
+                );
+              })()}
               {/* Nearby creep camp — attacking is a deliberate choice (press F) */}
-              {nearbyCreepCamp && (
+              {!nearbyFactionEnemy && nearbyCreepCamp && (
                 <div className="fixed top-16 left-1/2 -translate-x-1/2 z-40">
                   <div className="px-4 py-2 rounded-xl bg-rose-900/80 border border-rose-400/60 text-sm font-bold text-rose-100 backdrop-blur-sm shadow-lg flex items-center gap-2">
                     ⚔️ Enemy Camp — Lv {nearbyCreepCamp.level} · {nearbyCreepCamp.creeps.filter(c => c.hp > 0).length} left
                     <span className="ml-1 px-1.5 py-0.5 rounded bg-rose-700 font-bold">F</span> to attack
+                  </div>
+                </div>
+              )}
+              {/* Faction threat indicator — flags rival units actively hunting the hero. */}
+              {enemyThreat.hunting > 0 && (
+                <div className="fixed top-4 left-1/2 -translate-x-1/2 z-40">
+                  <div className="px-3 py-1 rounded-full bg-red-950/85 border border-red-500/60 text-xs font-bold text-red-200 backdrop-blur-sm shadow animate-pulse flex items-center gap-1.5">
+                    🚨 {enemyThreat.hunting} enemy {enemyThreat.hunting === 1 ? 'unit' : 'units'} hunting you
                   </div>
                 </div>
               )}
@@ -3704,7 +3866,7 @@ export default function SoloMissionMap3D({
                     )}
                     <div className="relative z-10 flex items-center gap-2">
                       {nearbyFlower ? '🌸 Flower'
-                        : nearbyMushroom ? '🍃 Mushroom'
+                        : nearbyMushroom ? '🍄 Mushroom'
                         : nearbyResource ? `${RESOURCE_DEFS[nearbyResource.type].icon} ${RESOURCE_DEFS[nearbyResource.type].label}`
                         : ''} Press <span className="px-1.5 py-0.5 rounded bg-emerald-700 font-bold">C</span> to Collect
                       {(collectingFlower || collectingMushroom || collectingResource) && <span className="ml-1 text-xs text-emerald-300">{Math.round(collectingProgress * 100)}%</span>}
@@ -3769,6 +3931,24 @@ export default function SoloMissionMap3D({
                 petTokens={0}
                 minimapData={minimapData}
                 onMenu={onExit}
+                onSave={autoMultiplayer ? undefined : () => {
+                  // Explicit "Save Game" (solo only): flush a full live snapshot so the
+                  // player can quit and resume exactly where they left off. Mirrors the
+                  // auto-save fields but bundles them into one write on demand. Disabled
+                  // in multiplayer duels where the arena position isn't meaningful to save.
+                  try {
+                    const s = useSkillStore.getState();
+                    const lvl = Math.max(1, getLevelFromXp(Math.floor(heroXpLive)), s.level);
+                    s.setLevel(lvl);
+                    saveProgress({
+                      heroPosition: { q: heroPosRef.current.q, r: heroPosRef.current.r },
+                      hero: { xp: Math.floor(heroXpLive), level: lvl, unlockedSkillIds: s.unlocked, unlockOrder: s.unlockOrder },
+                      heroInventory: localHeroInventory as any,
+                      petInventory: localPetInventory as any,
+                      explored: Array.from(exploredRef.current),
+                    });
+                  } catch {}
+                }}
                 skillPoints={skillPoints}
                 totalPlayTime={totalPlayTime}
                 heroInventory={localHeroInventory}

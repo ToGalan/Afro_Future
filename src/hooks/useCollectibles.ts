@@ -77,7 +77,7 @@ interface UseCollectiblesOptions {
 
 const ITEM_ICON_MAP: Record<string, string> = {
   flower: '🌸',
-  herb: '🍃',
+  herb: '🍄',
   ore: '⬢',
   energy: '⚡',
   bio: '🌿',
@@ -142,6 +142,23 @@ export function useCollectibles({
     petInventoryProp || profile?.progress?.petInventory || [],
   );
 
+  // ── Late inventory hydration ──────────────────────────────────────────────
+  // The useState initializers above run once at mount. Because the map usually
+  // mounts BEFORE the player profile finishes loading (async auth + Firestore read),
+  // that first read is empty and the saved inventory would otherwise be lost on
+  // resume. Seed the local inventory once the saved data arrives — but only while
+  // it's still empty, so anything collected before the profile loaded is preserved.
+  const invHydratedRef = useRef(false);
+  useEffect(() => {
+    if (invHydratedRef.current) return;
+    const heroInv = heroInventoryProp || profile?.progress?.heroInventory;
+    const petInv = petInventoryProp || profile?.progress?.petInventory;
+    if (!heroInv && !petInv) return; // nothing to hydrate from yet
+    invHydratedRef.current = true;
+    if (heroInv?.length) setLocalHeroInventory(prev => (prev.length === 0 ? heroInv : prev));
+    if (petInv?.length) setLocalPetInventory(prev => (prev.length === 0 ? petInv : prev));
+  }, [profile, heroInventoryProp, petInventoryProp]);
+
   // ── Item slots (HUD display) ──────────────────────────────────────────────
   const [itemSlots, setItemSlots] = useState<ItemSlot[]>(makeEmptySlots);
 
@@ -205,7 +222,9 @@ export function useCollectibles({
         id: item.id,
         type: item.type,
         source,
-        icon: (item as any).icon || ITEM_ICON_MAP[item.type] || '🎒',
+        // Canonical type icon wins so a previously-saved item with an out-of-date
+        // glyph (e.g. an old 🍃 mushroom) still renders the correct icon.
+        icon: ITEM_ICON_MAP[item.type] || (item as any).icon || '🎒',
         qty: item.quantity,
         key: String(i + 1),
       };
@@ -287,7 +306,7 @@ export function useCollectibles({
           collectingFlowerRef.current = null; setCollectingFlower(null); setNearbyFlower(null);
         } else if (kind === 'mushroom') {
           setCollectibleMushrooms(prev => { const n = new Set(prev); n.delete(targetKey); return n; });
-          addInventoryItem('herb', 'buff', 5, '🍃', targetKey);
+          addInventoryItem('herb', 'buff', 5, '🍄', targetKey);
           onRestoreEPRef.current?.(5);
           collectingMushroomRef.current = null; setCollectingMushroom(null); setNearbyMushroom(null);
         } else {

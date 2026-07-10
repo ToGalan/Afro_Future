@@ -17,7 +17,11 @@
       "Bash(awk 'NR>=1373 && /^function [A-Z]/ && NR>1374 {print NR\": \"$0; exit}' src/components/SoloMissionMap3D.tsx)",
       "Bash(awk 'NR>1420 && /^function [A-Z]/ {print NR\": \"$0; exit}' src/components/SoloMissionMap3D.tsx)",
       "PowerShell(npx tsc -p tsconfig.json --noEmit)",
-      "PowerShell(npm run build)"
+      "PowerShell(npm run build)",
+      "Bash(xargs ls -la)",
+      "Bash(sort -k5 -n)",
+      "Bash(timeout 300 npx vite build)",
+      "Bash(grep -vi \"MissionScreen\\\\|MissionMap\\\\|SoloMission\\\\|import\\\\|//\")"
     ]
   }
 }

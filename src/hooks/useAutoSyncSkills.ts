@@ -25,11 +25,13 @@ export function useAutoSyncSkills(enabled: boolean = true) {
           unlockedSkillIds: state.unlocked,
           unlockOrder: state.unlockOrder,
         },
-        skillTokens: {
-          earned: state.basePoints + Math.floor((state.level-1)/5)*state.bonusPer5,
-          spent: state.spent,
-          remaining: (state.basePoints + Math.floor((state.level-1)/5)*state.bonusPer5) - state.spent,
-        },
+        skillTokens: (() => {
+          // Must mirror availablePoints() in skillStore: base + 1/level + a bonus every
+          // 5th level. The per-level term (level-1) was previously missing, understating
+          // the persisted token totals versus what the player can actually spend.
+          const earned = state.basePoints + (state.level - 1) + Math.floor((state.level - 1) / 5) * state.bonusPer5;
+          return { earned, spent: state.spent, remaining: earned - state.spent };
+        })(),
         abilityLoadout: {
           offensive: state.abilityLoadout.offensive,
           defensive: state.abilityLoadout.defensive,

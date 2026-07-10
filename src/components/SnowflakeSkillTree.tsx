@@ -55,8 +55,11 @@ export default function SnowflakeSkillTree({ initialLevel = 1, onClose }: Snowfl
   const [pan, setPan] = useState({ x: 0, y: 0 });
   const [dragging, setDragging] = useState(false);
   const [lastPt, setLastPt] = useState<{ x: number; y: number } | null>(null);
-  // initialize global level once if different
-  React.useEffect(()=>{ if (level !== initialLevel) setLevelGlobal(initialLevel);},[initialLevel, level, setLevelGlobal]);
+  // Raise the store level to at least the loadout level, but NEVER downgrade it.
+  // The store level is driven by the XP economy (set live during play), so forcing it
+  // back down to a stale loadout.level here would zero out earned skill points and make
+  // freshly-unlockable skills un-unlockable. initialLevel acts only as a floor.
+  React.useEffect(()=>{ if (initialLevel > level) setLevelGlobal(initialLevel);},[initialLevel, level, setLevelGlobal]);
   const nodes = useMemo(()=>makeTree(),[]);
   const size = 1200;
   const laid = useMemo(()=>layoutSnowflake(nodes,size),[nodes]);
