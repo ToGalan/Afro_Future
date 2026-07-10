@@ -12,7 +12,7 @@ import { resolveHeroModel } from '../config/heroModels';
 import { useCreeps, type CreepCamp } from '../hooks/useCreeps';
 import { useOutposts } from '../hooks/useOutposts';
 import { useRefugeeCamps } from '../hooks/useRefugeeCamps';
-import { useDuel } from '../hooks/useDuel';
+import { useDuel, type RemoteHero } from '../hooks/useDuel';
 import { watchOpenRooms } from '../services/duelSignaling';
 import { useSkillStore } from '../store/skillStore';
 import { getLevelFromXp, getTotalXpForLevel, getXpForNextLevel } from '../services/playerExpEconomy';
@@ -566,6 +566,68 @@ function tileColor(t: Tile) {
 
 // All tiles same low height for flat prototype
 function heightFor(_t: Tile) { return 0.4; }
+
+/**
+ * Remote duelist — renders the opponent's hero + pet, INTERPOLATING position/facing from
+ * the duel snapshot buffer each frame (exponential smoothing) so movement is smooth
+ * instead of snapping between 15 Hz network updates. HP/name come from React state.
+ */
+function RemoteDuelist({ bufRef, remote, hexSize, colors }: {
+  bufRef: React.MutableRefObject<RemoteHero | null>;
+  remote: RemoteHero | null;
+  hexSize: number;
+  colors: any;
+}) {
+  const groupRef = React.useRef<THREE.Group>(null);
+  const petRef = React.useRef<THREE.Group>(null);
+  const curPos = React.useRef(new THREE.Vector3());
+  const inited = React.useRef(false);
+  const rivalColors = React.useMemo(() => ({ ...colors, primary: '#d0453f', secondary: '#7a1f1b' }), [colors]);
+  useFrame((_, delta) => {
+    const buf = bufRef.current;
+    if (!buf || !groupRef.current) return;
+    const k = 1 - Math.pow(0.0025, Math.min(0.05, delta)); // smoothing factor
+    const w = axialToWorld(buf.pos, hexSize);
+    const target = new THREE.Vector3(w.x, 0.48, w.z);
+    if (!inited.current) { curPos.current.copy(target); inited.current = true; }
+    curPos.current.lerp(target, k);
+    groupRef.current.position.copy(curPos.current);
+    // Smoothly rotate toward the target facing (shortest angular path).
+    const tRot = buf.facing ?? 0;
+    let d = ((tRot - groupRef.current.rotation.y + Math.PI) % (Math.PI * 2)) - Math.PI;
+    if (d < -Math.PI) d += Math.PI * 2;
+    groupRef.current.rotation.y += d * k;
+    // Pet
+    if (petRef.current) {
+      if (buf.pet) {
+        const pw = axialToWorld(buf.pet, hexSize);
+        petRef.current.position.x += (pw.x - petRef.current.position.x) * k;
+        petRef.current.position.z += (pw.z - petRef.current.position.z) * k;
+        petRef.current.position.y = 0.48;
+        petRef.current.visible = true;
+      } else {
+        petRef.current.visible = false;
+      }
+    }
+  });
+  const hpPct = remote ? Math.max(0, Math.min(1, remote.hp / Math.max(1, remote.maxHp))) : 1;
+  const isDogPet = (remote?.pet?.type ?? bufRef.current?.pet?.type) === 'CYBER_DOG';
+  return (
+    <>
+      <group ref={groupRef} frustumCulled={false}>
+        <IsometricCharacter gender={(remote?.gender as any) ?? 'MALE'} colors={rivalColors} hexSize={hexSize} faction={remote?.faction as any} isMoving={!!remote?.moving} facingAngle={0} />
+        <Text position={[0, hexSize * 2.4, 0]} fontSize={hexSize * 0.42} color="#ff9a9a" anchorX="center" anchorY="middle" outlineWidth={hexSize * 0.03} outlineColor="#000">{`⚔️ ${remote?.name ?? 'Rival'}`}</Text>
+        <group position={[0, hexSize * 2.0, 0]}>
+          <mesh><planeGeometry args={[hexSize * 1.4, hexSize * 0.16]} /><meshBasicMaterial color="#2a0a0a" /></mesh>
+          <mesh position={[-(hexSize * 1.4 * (1 - hpPct)) / 2, 0, 0.01]}><planeGeometry args={[hexSize * 1.4 * hpPct, hexSize * 0.16]} /><meshBasicMaterial color="#e0453f" /></mesh>
+        </group>
+      </group>
+      <group ref={petRef} frustumCulled={false}>
+        {isDogPet ? <IsometricDog ps={hexSize * 0.32} isMoving /> : <IsometricPet ps={hexSize * 0.32} isMoving />}
+      </group>
+    </>
+  );
+}
 
 function ResourceIcon({ t, size }: { t: Tile; size: number }) {
   const label = t.resource ? (RESOURCE_DEFS[t.resource]?.icon ?? '') : '';
@@ -2286,14 +2348,38 @@ export default function SoloMissionMap3D({
   const [duelJoinCode, setDuelJoinCode] = useState('');
   const [duelDeathReported, setDuelDeathReported] = useState(false);
   const [duelWaiting, setDuelWaiting] = useState(0); // players in the matchmaking queue
+  const [codeCopied, setCodeCopied] = useState(false);
+  const copyDuelCode = React.useCallback((c: string | null) => {
+    if (!c) return;
+    try { navigator.clipboard?.writeText(c); } catch {}
+    setCodeCopied(true);
+    setTimeout(() => setCodeCopied(false), 1500);
+  }, []);
+  const pasteDuelCode = React.useCallback(async () => {
+    try { const t = await navigator.clipboard?.readText(); if (t) setDuelJoinCode(t.toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 5)); } catch {}
+  }, []);
   const duel = useDuel({
-    onHit: (dmg) => {
+    onHit: (dmg, at) => {
+      // Receiver-side range check vs MY hero (the hook already checked the attacker's
+      // claim against their broadcast). Reject hits from out of melee range.
+      const myPos = heroPosRef.current;
+      if (at && axialDistance(myPos, at) > 2) { console.warn('[duel] rejected out-of-range hit', at); return; }
       onDamageHP?.(dmg);
-      const hw = axialToWorld({ q: hero.pos.q, r: hero.pos.r }, hexSize);
+      const hw = axialToWorld({ q: myPos.q, r: myPos.r }, hexSize);
       spawnCombatText(hw.x, hw.z, `-${dmg}`, '#ff5555');
     },
+    onCast: (icon, at) => {
+      if (at) { const w = axialToWorld(at, hexSize); spawnCombatText(w.x, w.z, icon, '#c9b3ff'); }
+    },
+    onRemoteDead: (at) => {
+      if (at) { const w = axialToWorld(at, hexSize); spawnCombatText(w.x, w.z, '☠️', '#ff5555'); }
+    },
   });
-  const { active: duelActive, remote: duelRemote, sendState: duelSendState, reportLocalDeath: duelReportDeath, attackRemote: duelAttackRemote } = duel;
+  const {
+    active: duelActive, remote: duelRemote, remoteBufRef: duelRemoteBufRef,
+    setLocalSnapshot: duelSetSnapshot, reportLocalDeath: duelReportDeath,
+    attackRemote: duelAttackRemote, castAbility: duelCastAbility,
+  } = duel;
 
   // Live count of players waiting for a quick-match — only while the lobby is open and
   // we're not already in a session.
@@ -2314,9 +2400,10 @@ export default function SoloMissionMap3D({
     }
   }, [autoMultiplayer, duel]);
 
-  // Broadcast our hero snapshot to the opponent while connected. (The actual effect is
-  // declared further down, after the hero render fields it reads are in scope.)
-  const duelSendStateRef = React.useRef(duelSendState); duelSendStateRef.current = duelSendState;
+  // Push our latest snapshot into the duel hook (it broadcasts at a fixed 15 Hz tick).
+  // The actual push effect is declared further down, once the hero render fields are in
+  // scope; this ref keeps the pusher current.
+  const duelSetSnapshotRef = React.useRef(duelSetSnapshot); duelSetSnapshotRef.current = duelSetSnapshot;
 
   // Announce our own death once (defender-authoritative → opponent wins).
   React.useEffect(() => {
@@ -2325,14 +2412,16 @@ export default function SoloMissionMap3D({
     else if (hp > 0 && duelDeathReported) setDuelDeathReported(false);
   }, [duelActive, duelDeathReported, heroVitals?.hp.current, duelReportDeath]);
 
-  // Attack the opposing player if they're adjacent (invoked from the F key).
+  // Attack the opposing player if they're adjacent (invoked from the F key). Sends our
+  // position so the defender can range-validate the hit.
   const duelFightRef = React.useRef<() => void>(() => {});
   duelFightRef.current = () => {
-    if (!duelActive || !duelRemote) return;
-    if (axialDistance(hero.pos, duelRemote.pos) > 1) return;
+    if (!duelActive) return;
+    const rpos = duelRemoteBufRef.current?.pos ?? duelRemote?.pos;
+    if (!rpos || axialDistance(hero.pos, rpos) > 1) return;
     const dmg = Math.max(1, Math.round((heroAttack + petCombatBonus) * combatAtkMult));
-    duelAttackRemote(dmg);
-    const rw = axialToWorld(duelRemote.pos, hexSize);
+    duelAttackRemote(dmg, hero.pos);
+    const rw = axialToWorld(rpos, hexSize);
     spawnCombatText(rw.x, rw.z, `-${dmg}`, '#ffd24a');
   };
 
@@ -2395,7 +2484,8 @@ export default function SoloMissionMap3D({
       // A burst scaled by attack — hits a rival duelist in range first, else a creep camp.
       const power = Math.round((heroAttack + petCombatBonus) * (combatAtkMult + 0.6)) + 12;
       if (duelActive && duelRemote && axialDistance(hero.pos, duelRemote.pos) <= 2) {
-        duelAttackRemote(power);
+        duelCastAbility(icon, hero.pos);   // opponent sees the cast
+        duelAttackRemote(power, hero.pos); // with attacker pos for range validation
         const rw = axialToWorld(duelRemote.pos, hexSize);
         spawnCombatText(rw.x, rw.z, `${icon} -${power}`, '#ffd24a');
       } else if (strikeNearbyRef.current(power).hit) {
@@ -2416,7 +2506,7 @@ export default function SoloMissionMap3D({
 
     // Start cooldown on a successful cast.
     setActiveSlotsRef.current(prev => prev.map(a => a.id === id ? { ...a, cooldown: a.maxCooldown } : a));
-  }, [heroVitals, hero.pos, hexSize, abilityMode, heroAttack, petCombatBonus, combatAtkMult, duelActive, duelRemote, duelAttackRemote, onDrainEP, onHealHP]);
+  }, [heroVitals, hero.pos, hexSize, abilityMode, heroAttack, petCombatBonus, combatAtkMult, duelActive, duelRemote, duelAttackRemote, duelCastAbility, onDrainEP, onHealHP]);
   // Keep a fresh ref so the keydown QWER closure always calls the latest activation.
   const activateAbilityRef = React.useRef(activateAbility); activateAbilityRef.current = activateAbility;
 
@@ -2733,18 +2823,19 @@ export default function SoloMissionMap3D({
   const heroColors   = avatarData.colors;
   const heroFaction  = avatarData.faction;
 
-  // Broadcast our hero snapshot to the duel opponent while connected (declared here so
-  // the hero render fields — faction/gender/facing/moving — are in scope).
+  // Push our latest snapshot (hero + pet) to the duel hook while connected; the hook
+  // broadcasts it at a fixed 15 Hz tick. Runs on any relevant change (cheap ref write).
   React.useEffect(() => {
     if (!duelActive) return;
-    duelSendStateRef.current({
+    duelSetSnapshotRef.current({
       pos: hero.pos,
       hp: heroVitals?.hp.current ?? 100,
       maxHp: heroVitals?.hp.max ?? 100,
       faction: heroFaction, gender: heroGender, name: heroVitals?.name,
       moving: isHeroMoving, facing: heroFacingAngle,
+      pet: { q: pet.pos.q, r: pet.pos.r, type: petType, moving: isPetMoving },
     });
-  }, [duelActive, hero.pos, heroVitals?.hp.current, heroVitals?.hp.max, heroVitals?.name, isHeroMoving, heroFacingAngle, heroFaction, heroGender]);
+  }, [duelActive, hero.pos, heroVitals?.hp.current, heroVitals?.hp.max, heroVitals?.name, isHeroMoving, heroFacingAngle, heroFaction, heroGender, pet.pos, petType, isPetMoving]);
   // avatarReady: always true since IsometricCharacter is procedural (no async loading).
   // Only reset briefly when a custom GLB modelUrl changes to avoid stale-model flash.
   const [avatarReady, setAvatarReady] = useState(true);
@@ -3279,23 +3370,10 @@ export default function SoloMissionMap3D({
                     {/* Name label + role/attack counter */}
                     <Text position={[0, ps * 3.1, 0]} fontSize={ps * 0.5} color="#fff" anchorX="center" anchorY="middle" outlineWidth={ps * 0.03} outlineColor="#000">{isDog ? `Dog  ⚔️${petCombatBonus}` : `Cat  👁️+${petVisionBonus}`}</Text>
                   </group> ); })()}
-                {/* Remote duelist (1v1 PvP) — rendered at their synced position */}
-                {duelRemote && axialDistance(hero.pos, duelRemote.pos) <= RENDER_RADIUS && (() => {
-                  const world = axialToWorld(duelRemote.pos, hexSize);
-                  const rivalColors = { ...heroColors, primary: '#d0453f', secondary: '#7a1f1b' } as typeof heroColors;
-                  const hpPct = Math.max(0, Math.min(1, duelRemote.hp / Math.max(1, duelRemote.maxHp)));
-                  return (
-                    <group key="duel-remote" position={[world.x, 0.48, world.z]} rotation={[0, duelRemote.facing ?? 0, 0]} frustumCulled={false}>
-                      <IsometricCharacter gender={(duelRemote.gender as any) ?? 'MALE'} colors={rivalColors} hexSize={hexSize} faction={duelRemote.faction as any} isMoving={!!duelRemote.moving} facingAngle={duelRemote.facing ?? 0} />
-                      <Text position={[0, hexSize * 2.4, 0]} fontSize={hexSize * 0.42} color="#ff9a9a" anchorX="center" anchorY="middle" outlineWidth={hexSize * 0.03} outlineColor="#000">{`⚔️ ${duelRemote.name ?? 'Rival'}`}</Text>
-                      {/* Enemy HP bar */}
-                      <group position={[0, hexSize * 2.0, 0]}>
-                        <mesh><planeGeometry args={[hexSize * 1.4, hexSize * 0.16]} /><meshBasicMaterial color="#2a0a0a" /></mesh>
-                        <mesh position={[-(hexSize * 1.4 * (1 - hpPct)) / 2, 0, 0.01]}><planeGeometry args={[hexSize * 1.4 * hpPct, hexSize * 0.16]} /><meshBasicMaterial color="#e0453f" /></mesh>
-                      </group>
-                    </group>
-                  );
-                })()}
+                {/* Remote duelist (1v1 PvP) — interpolated between 15 Hz snapshots */}
+                {duelRemote && (
+                  <RemoteDuelist bufRef={duelRemoteBufRef} remote={duelRemote} hexSize={hexSize} colors={heroColors} />
+                )}
                 {/* Creep camps — only on explored/visible tiles (hidden by fog of war),
                     near the hero, and hidden once cleared. */}
                 {Array.from(creepCamps.values()).map(camp => {
@@ -3478,7 +3556,7 @@ export default function SoloMissionMap3D({
                   <div className="flex items-center gap-2 pt-1 mt-1 border-t border-white/10"><span>🐾</span><span className="opacity-70">Pet pack</span><span className="ml-auto font-semibold tabular-nums">{localPetInventory.reduce((s, i) => s + (i.quantity || 0), 0)}</span><span className="px-1 py-0.5 rounded bg-white/10 text-[9px] font-bold">1–8</span></div>
                 )}
                 {duelActive && (
-                  <div className="flex items-center gap-2 pt-1 mt-1 border-t border-white/10"><span>⚔️</span><span className="opacity-70">Duel</span><span className="ml-auto font-semibold tabular-nums">{duel.status === 'connected' ? (duelRemote ? 'vs ' + (duelRemote.name || 'Rival') : 'connected') : duel.status}</span></div>
+                  <div className="flex items-center gap-2 pt-1 mt-1 border-t border-white/10"><span>⚔️</span><span className="opacity-70">Duel</span><span className="ml-auto font-semibold tabular-nums">{duel.status === 'connected' ? `${duel.myScore}–${duel.oppScore}` : duel.status}</span></div>
                 )}
               </div>
 
@@ -3503,16 +3581,17 @@ export default function SoloMissionMap3D({
                         🎯 Find Opponent
                         {duelWaiting > 0 && <span className="px-1.5 py-0.5 rounded-full bg-black/30 text-[10px] font-bold">{duelWaiting} waiting</span>}
                       </button>
-                      <div className="text-[11px] opacity-50 text-center">— or play a friend —</div>
+                      <div className="text-[11px] opacity-50 text-center">— or play a friend: host, share the code, they paste & join —</div>
                       <button onClick={() => duel.host()} className="w-full py-2 rounded-lg bg-rose-700 hover:bg-rose-600 font-bold">Host with a code</button>
-                      <div className="flex gap-2">
+                      <div className="flex gap-1.5">
                         <input
                           value={duelJoinCode}
-                          onChange={(e) => setDuelJoinCode(e.target.value.toUpperCase())}
+                          onChange={(e) => setDuelJoinCode(e.target.value.toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 5))}
                           maxLength={5}
                           placeholder="CODE"
                           className="flex-1 min-w-0 px-2 py-2 rounded-lg bg-black/40 ring-1 ring-white/15 uppercase tracking-widest font-mono text-center"
                         />
+                        <button onClick={pasteDuelCode} title="Paste code" className="px-2.5 py-2 rounded-lg bg-white/10 hover:bg-white/20 text-sm">📋</button>
                         <button onClick={() => duel.join(duelJoinCode)} disabled={duelJoinCode.length < 4} className="px-3 py-2 rounded-lg bg-indigo-700 hover:bg-indigo-600 font-bold disabled:opacity-40">Join</button>
                       </div>
                       {duel.status === 'error' && <div className="text-[11px] text-rose-400">Couldn't connect — try again or check the code.</div>}
@@ -3530,7 +3609,11 @@ export default function SoloMissionMap3D({
                   {duel.status === 'hosting' && (
                     <div className="space-y-2 text-center">
                       <div className="text-[11px] opacity-60">Share this code with your opponent:</div>
-                      <div className="text-2xl font-mono font-bold tracking-[0.3em] text-amber-300">{duel.code}</div>
+                      {/* Big, copyable room code */}
+                      <div className="flex items-center gap-2">
+                        <div className="flex-1 select-all text-2xl font-mono font-bold tracking-[0.3em] text-amber-300 py-2 rounded-lg bg-black/40 ring-1 ring-amber-400/40">{duel.code}</div>
+                        <button onClick={() => copyDuelCode(duel.code)} className="px-3 py-2 rounded-lg bg-amber-700 hover:bg-amber-600 font-bold text-sm">{codeCopied ? '✓' : 'Copy'}</button>
+                      </div>
                       <div className="text-[11px] opacity-60 animate-pulse">Waiting for opponent to join…</div>
                       <button onClick={() => duel.leave()} className="w-full py-1.5 rounded-lg bg-white/10 hover:bg-white/20 text-xs">Cancel</button>
                     </div>
@@ -3543,7 +3626,20 @@ export default function SoloMissionMap3D({
                   {duel.status === 'connected' && (
                     <div className="space-y-2">
                       <div className="text-center text-emerald-400 font-bold">Connected — Fight!</div>
-                      <div className="text-[11px] opacity-70 text-center">Get adjacent to your rival and press <span className="px-1 rounded bg-white/10 font-bold">F</span> to strike.</div>
+                      <div className="text-center text-lg font-extrabold tabular-nums">
+                        <span className="text-amber-300">You {duel.myScore}</span>
+                        <span className="opacity-50"> — </span>
+                        <span className="text-rose-300">{duel.oppScore} Rival</span>
+                      </div>
+                      <div className="text-[11px] opacity-70 text-center">First to {duel.winTarget} · get adjacent & press <span className="px-1 rounded bg-white/10 font-bold">F</span> to strike.</div>
+                      <button onClick={() => duel.leave()} className="w-full py-1.5 rounded-lg bg-white/10 hover:bg-white/20 text-xs">Leave duel</button>
+                    </div>
+                  )}
+
+                  {duel.status === 'reconnecting' && (
+                    <div className="space-y-2 text-center">
+                      <div className="text-[12px] text-amber-300 font-bold animate-pulse">Connection dropped — reconnecting…</div>
+                      <div className="text-[11px] opacity-60">Hang tight, trying to recover the link.</div>
                       <button onClick={() => duel.leave()} className="w-full py-1.5 rounded-lg bg-white/10 hover:bg-white/20 text-xs">Leave duel</button>
                     </div>
                   )}
@@ -3584,7 +3680,8 @@ export default function SoloMissionMap3D({
                     <div className={`text-4xl font-extrabold mb-2 ${duel.result === 'win' ? 'text-amber-300' : 'text-rose-400'}`}>
                       {duel.result === 'win' ? '🏆 Victory' : '☠️ Defeat'}
                     </div>
-                    <div className="opacity-70 text-sm mb-4">{duel.result === 'win' ? 'You defeated your rival.' : 'Your rival bested you.'}</div>
+                    <div className="text-lg font-bold tabular-nums mb-1"><span className="text-amber-300">{duel.myScore}</span> <span className="opacity-50">—</span> <span className="text-rose-300">{duel.oppScore}</span></div>
+                    <div className="opacity-70 text-sm mb-4">{duel.result === 'win' ? `Best of ${duel.winTarget * 2 - 1} — you won the match.` : 'Your rival won the match.'}</div>
                     <button onClick={() => { duel.leave(); setDuelLobbyOpen(false); }} className="px-6 py-2 rounded-lg bg-rose-700 hover:bg-rose-600 font-bold">Close</button>
                   </div>
                 </div>
@@ -3671,7 +3768,18 @@ export default function SoloMissionMap3D({
                 heroInventory={localHeroInventory}
                 petInventory={localPetInventory}
                 playerProfile={playerProfile}
-                onTalents={onOpenSkillTree}
+                onTalents={() => {
+                  // Auto-save the live progression BEFORE leaving the mission for the skill
+                  // tree, via the shared profile (correct XP), and sync the skill-store level
+                  // so points are immediately available and nothing resets.
+                  try {
+                    const s = useSkillStore.getState();
+                    const lvl = Math.max(1, getLevelFromXp(Math.floor(heroXpLive)), s.level);
+                    s.setLevel(lvl);
+                    saveProgress({ hero: { xp: Math.floor(heroXpLive), level: lvl, unlockedSkillIds: s.unlocked, unlockOrder: s.unlockOrder } });
+                  } catch {}
+                  onOpenSkillTree?.();
+                }}
               />
       </div>
     </div>

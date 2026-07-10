@@ -1534,12 +1534,17 @@ function FirstTimeFlow({ faction, archetype, pet, onFaction, onArchetype, onPet,
 
 function MainMenu({ playerName, accountLevel, loadout, onCustomize, heroLocked, view, onChangeView, onLaunch, profile, onSignOut }: { playerName: string; accountLevel: number; loadout: CharacterLoadout; onCustomize: () => void; heroLocked: boolean; view: 'dashboard' | 'skills' | 'store' | 'help' | 'settings' | 'mission'; onChangeView: (v: 'dashboard' | 'skills' | 'store' | 'help' | 'settings' | 'mission') => void; onLaunch?: (mode: 'single' | 'multi') => void; profile?: { sub: string; name?: string; email?: string; picture?: string } | null; onSignOut?: () => void; }) {
   // Keep the skill store level in sync with progression: the higher of the loadout
-  // level and the XP-driven hero level, so leveling up from XP grants skill points
-  // and is reflected in the dashboard even when the Skills view isn't open.
+  // level, the XP-driven hero level, AND the level already in the store. Including the
+  // store level is critical — otherwise opening the skill tree right after leveling up
+  // in-game (before this dashboard instance's profile has reloaded) would RESET the level
+  // back down, zeroing available points and clobbering the saved progression.
   const setSkillLevel = useSkillStore(s=>s.setLevel);
   const { profile: gameProfile } = usePlayerProfile();
   const heroLvl = gameProfile?.progress?.hero?.level ?? 1;
-  useEffect(()=>{ setSkillLevel(Math.max(loadout.level ?? 1, heroLvl)); }, [loadout.level, heroLvl, setSkillLevel]);
+  useEffect(()=>{
+    const storeLvl = useSkillStore.getState().level;
+    setSkillLevel(Math.max(loadout.level ?? 1, heroLvl, storeLvl));
+  }, [loadout.level, heroLvl, setSkillLevel]);
   return (
     <div className="h-full w-full bg-[#0f1218] text-gray-100 relative">
   <TopNav view={view} onChangeView={onChangeView} profile={profile} onSignOut={onSignOut} />
