@@ -1892,6 +1892,7 @@ export default function SoloMissionMap3D({
   autoMultiplayer,
   sharedProfile,
   sharedSaveProgress,
+  inputPaused,
 }: {
   onExit?: () => void;
   onMapUpdate?: (data: MinimapData) => void; 
@@ -1926,6 +1927,8 @@ export default function SoloMissionMap3D({
   /** Shared player-profile instance from MissionScreen (single source of truth). */
   sharedProfile?: ReturnType<typeof usePlayerProfile>['profile'];
   sharedSaveProgress?: ReturnType<typeof usePlayerProfile>['saveProgress'];
+  /** When true (e.g. skill-tree overlay open), mission keyboard input is ignored. */
+  inputPaused?: boolean;
 } = {}) {
   const useChunks = import.meta.env.VITE_USE_CHUNKS === 'true';
   // Adjusted map size to requested 240 x 240 tiles (square) (legacy full-map path only)
@@ -3050,11 +3053,14 @@ export default function SoloMissionMap3D({
     }
     return a; // fallback
   }
+  const inputPausedRef = React.useRef(inputPaused);
+  inputPausedRef.current = inputPaused;
   useEffect(() => {
     const downSet = new Set<string>();
     function onKey(e: KeyboardEvent) {
+      if (inputPausedRef.current) return; // skill-tree overlay open — ignore game input
       const k = e.key.toLowerCase();
-      
+
       // ─── MOVEMENT (WASD ONLY) ─────────────────────────────────────
       // Arrow keys reserved for camera control
       const dirMap: Record<string, Axial> = {

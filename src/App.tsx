@@ -954,6 +954,10 @@ function MissionScreen({ onExit, onOpenSkillTree, activeLoadout, autoMultiplayer
   const pet = loadout.pet ? { name: loadout.pet.type === 'CYBER_DOG' ? 'Cyber-Dog' : 'Cyber-Cat', level: loadout.pet.level || 1, hp: { current: 50, max: 50 }, ep: { current: 30, max: 30 }, icon: '🐾', portraitUrl: PetIcon[loadout.pet.type] } : undefined;
 
   const [sessionStartTime] = React.useState(() => Date.now());
+  // Skill tree opens as an OVERLAY on top of the live mission (not a navigation), so the
+  // game state — map, hero position, camps, progress — is preserved. Closing returns to
+  // exactly where you were, and newly-unlocked abilities apply live.
+  const [skillsOpen, setSkillsOpen] = React.useState(false);
   const [elapsedSeconds, setElapsedSeconds] = React.useState(0);
   
   // Update elapsed time every second
@@ -1049,7 +1053,8 @@ function MissionScreen({ onExit, onOpenSkillTree, activeLoadout, autoMultiplayer
             email: profile.email, 
             faction: loadout.faction 
           } : undefined}
-          onOpenSkillTree={onOpenSkillTree}
+          onOpenSkillTree={() => setSkillsOpen(true)}
+          inputPaused={skillsOpen}
           onHealHP={(amount) => setHeroVitals(v => ({ ...v, hp: Math.min(hpMaxRef.current, v.hp + amount) }))}
           onRestoreEP={(amount) => setHeroVitals(v => ({ ...v, ep: Math.min(epMaxRef.current, v.ep + amount) }))}
           onDamageHP={(amount) => setHeroVitals(v => ({ ...v, hp: Math.max(0, v.hp - amount) }))}
@@ -1060,6 +1065,11 @@ function MissionScreen({ onExit, onOpenSkillTree, activeLoadout, autoMultiplayer
         />
         <PetPanel />
       </div>
+      {/* Skill tree as an in-mission overlay — the game keeps running underneath, so
+          spending points after a level-up continues the session instead of restarting. */}
+      {skillsOpen && (
+        <SkillsModal loadout={loadout} onClose={() => setSkillsOpen(false)} />
+      )}
     </div>
   );
 }
@@ -1545,14 +1555,35 @@ function MainMenu({ playerName, accountLevel, loadout, onCustomize, heroLocked, 
     const storeLvl = useSkillStore.getState().level;
     setSkillLevel(Math.max(loadout.level ?? 1, heroLvl, storeLvl));
   }, [loadout.level, heroLvl, setSkillLevel]);
+  // On phones the 3-column layout can't fit — show ONE panel at a time via a tab bar.
+  const [mobilePanel, setMobilePanel] = React.useState<'left' | 'center' | 'right'>('center');
+  const showCls = (k: 'left' | 'center' | 'right') => `${mobilePanel === k ? 'block' : 'hidden'} md:block h-full min-h-0`;
   return (
-    <div className="h-full w-full bg-[#0f1218] text-gray-100 relative">
-  <TopNav view={view} onChangeView={onChangeView} profile={profile} onSignOut={onSignOut} />
-      <div className="h-[calc(100%-64px)]">
-        <div className="h-full grid grid-rows-[1fr]" style={{gridTemplateColumns:'minmax(260px,20%) 1fr minmax(260px,20%)'}}>
-          <LeftPlayerPanel className="row-start-1" playerName={playerName} accountLevel={accountLevel} loadout={loadout} heroLocked={heroLocked} />
-          <CenterHub className="row-start-1" loadout={loadout} view={view === 'skills' ? 'dashboard' : view} />
-          <RightPlayerPanel className="row-start-1" loadout={loadout} onCustomize={onCustomize} onPlay={(mode)=> onLaunch ? onLaunch(mode) : onChangeView('mission')} />
+    <div className="h-full w-full bg-[#0f1218] text-gray-100 relative flex flex-col">
+      <TopNav view={view} onChangeView={onChangeView} profile={profile} onSignOut={onSignOut} />
+      {/* Mobile panel switcher (hidden on md+) */}
+      <div className="md:hidden flex shrink-0 border-b border-white/10 bg-[#141924]">
+        {([['left', '👤', 'Character'], ['center', '🏠', 'Home'], ['right', '▶️', 'Play']] as const).map(([k, icon, label]) => (
+          <button
+            key={k}
+            onClick={() => setMobilePanel(k)}
+            className={`flex-1 py-2 text-[11px] font-semibold flex items-center justify-center gap-1 transition ${mobilePanel === k ? 'text-emerald-300 border-b-2 border-emerald-400' : 'text-white/55 hover:text-white/80'}`}
+          >
+            <span>{icon}</span>{label}
+          </button>
+        ))}
+      </div>
+      <div className="flex-1 min-h-0">
+        <div className="h-full block md:grid md:grid-rows-[1fr]" style={{ gridTemplateColumns: 'minmax(240px,20%) 1fr minmax(240px,20%)' }}>
+          <div className={showCls('left')}>
+            <LeftPlayerPanel className="h-full" playerName={playerName} accountLevel={accountLevel} loadout={loadout} heroLocked={heroLocked} />
+          </div>
+          <div className={showCls('center')}>
+            <CenterHub className="h-full overflow-y-auto no-scrollbar" loadout={loadout} view={view === 'skills' ? 'dashboard' : view} />
+          </div>
+          <div className={showCls('right')}>
+            <RightPlayerPanel className="h-full overflow-y-auto no-scrollbar" loadout={loadout} onCustomize={onCustomize} onPlay={(mode)=> onLaunch ? onLaunch(mode) : onChangeView('mission')} />
+          </div>
         </div>
       </div>
       {view === 'skills' && (
@@ -1592,8 +1623,8 @@ function TopNav({ view, onChangeView, profile, onSignOut }: { view: 'dashboard' 
     return ()=>{ window.removeEventListener('mousedown', handle); window.removeEventListener('keydown', handleKey); };
   },[open]);
   return (
-    <div className="col-span-3 grid grid-cols-3 items-center px-6 bg-[#141924] border-b border-white/10 h-16 relative">
-      <div className="flex items-center">
+    <div className="shrink-0 flex sm:grid sm:grid-cols-3 items-center gap-2 px-3 sm:px-6 bg-[#141924] border-b border-white/10 h-16 relative">
+      <div className="flex items-center shrink-0">
         <button
           onClick={() => onChangeView('dashboard')}
           className="flex items-center gap-2 group"
@@ -1605,21 +1636,21 @@ function TopNav({ view, onChangeView, profile, onSignOut }: { view: 'dashboard' 
           <span className="text-sm font-semibold tracking-wide bg-gradient-to-r from-emerald-300 to-sky-300 bg-clip-text text-transparent hidden xl:inline-block">Afro‑Future</span>
         </button>
       </div>
-  <div className="flex items-center justify-center gap-6">
-        <button className={`opacity-80 hover:opacity-100 transition ${view==='dashboard' ? 'text-emerald-400' : ''}`} onClick={()=>onChangeView('dashboard')}>Dashboard</button>
-        <button className={`opacity-80 hover:opacity-100 transition ${view==='skills' ? 'text-emerald-400' : ''}`} onClick={()=>onChangeView('skills')}>Skills</button>
-  <button className={`opacity-80 hover:opacity-100 transition ${view==='store' ? 'text-emerald-400' : ''}`} onClick={()=>onChangeView('store')}>Store</button>
-  <button className={`opacity-80 hover:opacity-100 transition ${view==='help' ? 'text-emerald-400' : ''}`} onClick={()=>onChangeView('help')}>Help</button>
+  <div className="flex items-center justify-start sm:justify-center gap-3 sm:gap-6 flex-1 min-w-0 overflow-x-auto no-scrollbar text-xs sm:text-base">
+        <button className={`shrink-0 opacity-80 hover:opacity-100 transition ${view==='dashboard' ? 'text-emerald-400' : ''}`} onClick={()=>onChangeView('dashboard')}>Dashboard</button>
+        <button className={`shrink-0 opacity-80 hover:opacity-100 transition ${view==='skills' ? 'text-emerald-400' : ''}`} onClick={()=>onChangeView('skills')}>Skills</button>
+  <button className={`shrink-0 opacity-80 hover:opacity-100 transition ${view==='store' ? 'text-emerald-400' : ''}`} onClick={()=>onChangeView('store')}>Store</button>
+  <button className={`shrink-0 opacity-80 hover:opacity-100 transition ${view==='help' ? 'text-emerald-400' : ''}`} onClick={()=>onChangeView('help')}>Help</button>
         {/* Room selector removed per request */}
       </div>
-      <div className="ml-auto flex items-center justify-end gap-4">
-        <Chip>1,458 <span className="opacity-70">shards</span></Chip>
-  <IconButton label="Notifications">
+      <div className="ml-auto flex items-center justify-end gap-2 sm:gap-4 shrink-0">
+        <div className="hidden sm:flex"><Chip>1,458 <span className="opacity-70">shards</span></Chip></div>
+  <div className="hidden sm:inline-flex"><IconButton label="Notifications">
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
               <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/>
               <path d="M13.73 21a2 2 0 0 1-3.46 0"/>
             </svg>
-          </IconButton>
+          </IconButton></div>
         <IconButton label={isFs ? 'Exit Fullscreen' : 'Enter Fullscreen'} onClick={toggleFullscreen}>
           {/* Expand arrows icon */}
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
@@ -2062,11 +2093,11 @@ function CenterHub({ className = '', loadout, view }: { className?: string; load
     return <SettingsView className={className} />;
   }
   return (
-    <main className={`col-start-2 px-6 py-5 min-h-0 flex flex-col gap-5 ${className}`}>
-      <div className="relative" style={{flex:'0 0 50%'}}>
+    <main className={`col-start-2 px-4 sm:px-6 py-4 sm:py-5 min-h-0 flex flex-col gap-4 sm:gap-5 ${className}`}>
+      <div className="relative shrink-0 h-44 sm:h-auto sm:flex-[0_0_50%]">
         <HeroBanner loadout={loadout} />
       </div>
-      <div className="flex-1 grid grid-cols-3 gap-5 min-h-0">
+      <div className="flex-1 grid grid-cols-1 sm:grid-cols-3 gap-3 sm:gap-5 min-h-0">
         <NewsCard title="Season 1: Terraformers" />
         <NewsCard title="Patch 0.2.3 Notes" />
         <NewsCard title="Community Spotlight" />
