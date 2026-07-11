@@ -5,7 +5,7 @@ import { computeEffectiveStats, STAT_META } from './services/playerStats';
 import { getTotalXpForLevel, getXpForNextLevel, getLevelFromXp } from './services/playerExpEconomy';
 import { abilitiesForFaction, factionAbilityBonus, type FactionAbility } from './services/factionAbilities';
 import { getPetSpecies, derivePetStats } from './services/petSpecies';
-import { makeTree } from './store/skillData';
+import { makeTree, skillIconFor } from './store/skillData';
 import { GROUP_ORDER, getVariantsByGroup } from './assets/threeParts';
 import { buildAvatarConfig } from './services/avatarConfig';
 import AvatarScene from './components/AvatarScene';
@@ -632,22 +632,9 @@ export default function App() {
   );
 }
 
-// Module-level skill icon helper (used by MissionScreen and SkillsModal)
-function skillIconFn(id: string): string {
-  if(id.includes('combat')) return '⚔️';
-  if(id.includes('support')) return '✚';
-  if(id.includes('pet') || id.includes('bond')) return '🐾';
-  if(id.includes('weapon')) return '🔫';
-  if(id.includes('spell') || id.includes('spellcraft')) return '✨';
-  if(id.includes('defense') || id.includes('shield')) return '🛡️';
-  if(id.includes('mobility')) return '🦶';
-  if(id.includes('leadership')) return '🗣️';
-  if(id.includes('terraform')) return '🌍';
-  if(id.includes('technologist') || id.includes('techno')) return '🧪';
-  if(id.includes('merchant') || id.includes('trade')) return '💱';
-  if(id.includes('looting')) return '📦';
-  return '⬢';
-}
+// Module-level skill icon helper (used by MissionScreen and SkillsModal).
+// Delegates to the GDD grid's category → icon map (ids are now `lvlN`).
+function skillIconFn(id: string): string { return skillIconFor(id); }
 
 // Full-screen skills modal with SnowflakeSkillTree + ability assignment loadout
 function SkillsModal({ loadout, onClose }: { loadout: CharacterLoadout; onClose: () => void }) {

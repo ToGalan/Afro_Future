@@ -16,6 +16,8 @@ import { useFactionEnemies, DOCTRINE, type FactionEnemy, type GuardPost } from '
 import { useDuel, type RemoteHero } from '../hooks/useDuel';
 import { watchOpenRooms } from '../services/duelSignaling';
 import { useSkillStore } from '../store/skillStore';
+import { skillEffectFor, type SkillEffect } from '../store/skillData';
+import { pruneEffects, aggregateEffects, type ActiveEffect } from '../services/statusEffects';
 import { getLevelFromXp, getTotalXpForLevel, getXpForNextLevel } from '../services/playerExpEconomy';
 import { IsometricCharacter } from './IsometricCharacter';
 import type { Archetype, CharacterLoadout } from '../types/loadout';
@@ -426,9 +428,32 @@ function CreepCampMesh({ camp, size }: { camp: CreepCamp; size: number }) {
 }
 
 /**
+ * Per-faction enemy palette — the SAME lore colours the hero avatar uses (see
+ * FACTION_DEFAULTS inside SoloMissionMap3D). Enemies are always rival factions, so
+ * they never clash with the player's own colours. Feeds the chibi IsometricCharacter.
+ */
+const ENEMY_FACTION_COLORS: Record<FactionEnemy['faction'], AvatarColors> = {
+  PAA: { primary: '#00A37A', secondary: '#D4AF37', skin: '#8B5A2B' }, // Afrofuture green + gold
+  ASF: { primary: '#C75B1E', secondary: '#4A4A5A', skin: '#5C3317' }, // Military amber + dark
+  WC:  { primary: '#1E40AF', secondary: '#9CA3AF', skin: '#D4A87A' }, // Corporate blue + light
+};
+
+// Deterministic 0/1 from an enemy id → stable gender pick (so a unit doesn't flip
+// gender across renders, but the roster still has a mix of male/female chibis).
+function enemyHash(id: string): number {
+  let h = 0;
+  for (let i = 0; i < id.length; i++) h = (h * 31 + id.charCodeAt(i)) & 0xffff;
+  return h;
+}
+
+/**
  * EnemyUnitMesh — a single mobile faction enemy. Owns its world position and smoothly
  * lerps toward the target tile each frame so the discrete AI steps read as walking.
- * Colour + label come from the faction doctrine; a red ⚔️ flags an actively-hunting unit.
+ *
+ * The body is the shared chibi IsometricCharacter (same style as the hero), tinted +
+ * kitted per faction so ASF raiders / PAA peacekeepers / WC scavengers read as actual
+ * characters rather than faceless mechs. The enemy-only overlays — boss crown, HP bar,
+ * name label, and a ground threat aura (red while hunting) — live on top.
  */
 function EnemyUnitMesh({ enemy, size, target }: { enemy: FactionEnemy; size: number; target: [number, number, number] }) {
   const ref = React.useRef<THREE.Group>(null);
@@ -439,90 +464,59 @@ function EnemyUnitMesh({ enemy, size, target }: { enemy: FactionEnemy; size: num
     g.position.x += (target[0] - g.position.x) * 0.2;
     g.position.y += (target[1] - g.position.y) * 0.2;
     g.position.z += (target[2] - g.position.z) * 0.2;
-    // Face the direction of travel.
+    // Face the direction of travel (the whole unit — character + overlays — rotates).
     const dx = target[0] - g.position.x, dz = target[2] - g.position.z;
     if (dx * dx + dz * dz > 1e-4) g.rotation.y = Math.atan2(dx, dz);
   });
   const doc = DOCTRINE[enemy.faction];
   const boss = enemy.role === 'boss';
-  const cs = size * (boss ? 0.5 : 0.32); // faction champions are visibly larger
   const hpPct = Math.max(0, enemy.hp / enemy.maxHp);
   const hunting = enemy.state === 'pursue' || enemy.state === 'attack';
+  const moving = enemy.state === 'pursue' || enemy.state === 'patrol' || enemy.state === 'retreat';
+
+  // Chibi body sizing. IsometricCharacter's native top-of-head ≈ hexSize × 1.6 (feet at
+  // y=0); scale the wrapper so a grunt lands a touch under the hero and a boss towers.
+  const CHAR_NATIVE_TOP = 1.6;
+  const targetH = size * (boss ? 1.3 : 0.85);
+  const charScale = targetH / (size * CHAR_NATIVE_TOP);
+  const topY = targetH; // world height of the head after scaling
+
+  const gender = enemyHash(enemy.id) % 2 === 0 ? 'MALE' : 'FEMALE';
+  const auraColor = hunting ? '#ff3b3b' : doc.color;
+
   return (
     <group ref={ref} frustumCulled={false}>
+      {/* Chibi character body (same rig/style as the hero), faction-tinted + kitted.
+          facingAngle is left undefined so it inherits this group's travel rotation. */}
+      <group scale={charScale} frustumCulled={false}>
+        <IsometricCharacter
+          gender={gender}
+          colors={ENEMY_FACTION_COLORS[enemy.faction]}
+          hexSize={size}
+          faction={enemy.faction}
+          isMoving={moving}
+        />
+      </group>
+
+      {/* Ground threat aura — doctrine-coloured, flares red while actively hunting. */}
+      <mesh position={[0, 0.04, 0]} rotation={[-Math.PI / 2, 0, 0]} frustumCulled={false}>
+        <ringGeometry args={[targetH * 0.34, targetH * 0.46, 20]} />
+        <meshBasicMaterial color={auraColor} transparent opacity={hunting ? 0.55 : 0.25} side={THREE.DoubleSide} />
+      </mesh>
+
       {/* Boss crown — marks the faction champion ("the faction player"). */}
       {boss && (
-        <mesh position={[0, cs * 2.15, 0]} rotation={[Math.PI, 0, 0]}>
-          <coneGeometry args={[cs * 0.34, cs * 0.4, 5]} />
+        <mesh position={[0, topY + size * 0.12, 0]} rotation={[Math.PI, 0, 0]}>
+          <coneGeometry args={[size * 0.17, size * 0.2, 5]} />
           <meshStandardMaterial color="#ffd24a" emissive="#8a6a10" emissiveIntensity={0.5} roughness={0.4} metalness={0.6} flatShading />
         </mesh>
       )}
-      {/* Legs — thigh + knee joint + shin + boot */}
-      {[0.22, -0.22].map((lx, li) => (
-        <group key={li} position={[cs * lx, 0, 0]}>
-          <mesh position={[0, cs * 0.5, 0]} castShadow><cylinderGeometry args={[cs * 0.1, cs * 0.12, cs * 0.5, 6]} /><meshStandardMaterial color="#20242b" roughness={0.7} flatShading /></mesh>
-          <mesh position={[0, cs * 0.28, 0]} castShadow><sphereGeometry args={[cs * 0.12, 6, 6]} /><meshStandardMaterial color="#2f353d" metalness={0.3} roughness={0.5} flatShading /></mesh>
-          <mesh position={[0, cs * 0.1, 0]} castShadow><cylinderGeometry args={[cs * 0.09, cs * 0.1, cs * 0.4, 6]} /><meshStandardMaterial color="#181b21" roughness={0.8} flatShading /></mesh>
-          <mesh position={[0, cs * -0.05, cs * 0.08]} castShadow><boxGeometry args={[cs * 0.2, cs * 0.12, cs * 0.34]} /><meshStandardMaterial color="#101216" roughness={0.9} flatShading /></mesh>
-        </group>
-      ))}
-      {/* Hips */}
-      <mesh position={[0, cs * 0.72, 0]} castShadow><boxGeometry args={[cs * 0.56, cs * 0.24, cs * 0.4]} /><meshStandardMaterial color="#1c2028" roughness={0.75} flatShading /></mesh>
-      {/* Torso — faction-coloured */}
-      <mesh position={[0, cs * 1.05, 0]} castShadow><capsuleGeometry args={[cs * 0.4, cs * 0.55, 6, 12]} /><meshStandardMaterial color={doc.color} roughness={0.55} emissive={doc.color} emissiveIntensity={hunting ? 0.5 : 0.2} flatShading /></mesh>
-      {/* Chest plate + core light */}
-      <mesh position={[0, cs * 1.12, cs * 0.34]} castShadow><boxGeometry args={[cs * 0.5, cs * 0.6, cs * 0.16]} /><meshStandardMaterial color="#16191f" metalness={0.5} roughness={0.4} flatShading /></mesh>
-      <mesh position={[0, cs * 1.18, cs * 0.43]}><octahedronGeometry args={[cs * 0.11, 0]} /><meshStandardMaterial color={doc.color} emissive={doc.color} emissiveIntensity={hunting ? 1.4 : 0.8} flatShading /></mesh>
-      {/* Shoulder pauldrons */}
-      {[0.5, -0.5].map((sx, si) => (
-        <mesh key={si} position={[cs * sx, cs * 1.42, 0]} rotation={[0, 0, sx > 0 ? -0.3 : 0.3]} castShadow><icosahedronGeometry args={[cs * 0.22, 0]} /><meshStandardMaterial color="#2a2f38" metalness={0.4} roughness={0.5} flatShading /></mesh>
-      ))}
-      {/* Backpack / power unit */}
-      <mesh position={[0, cs * 1.15, -cs * 0.38]} castShadow><boxGeometry args={[cs * 0.4, cs * 0.5, cs * 0.22]} /><meshStandardMaterial color="#20242b" metalness={0.3} roughness={0.7} flatShading /></mesh>
-      {/* Neck */}
-      <mesh position={[0, cs * 1.52, 0]} castShadow><cylinderGeometry args={[cs * 0.12, cs * 0.14, cs * 0.18, 6]} /><meshStandardMaterial color="#15181d" flatShading /></mesh>
-      {/* Head + visor + antenna */}
-      <mesh position={[0, cs * 1.75, 0]} castShadow><sphereGeometry args={[cs * 0.3, 10, 10]} /><meshStandardMaterial color="#15181d" roughness={0.6} metalness={0.3} flatShading /></mesh>
-      <mesh position={[0, cs * 1.78, cs * 0.24]}><boxGeometry args={[cs * 0.34, cs * 0.1, cs * 0.06]} /><meshBasicMaterial color={hunting ? '#ff3b3b' : '#ffd24a'} /></mesh>
-      <mesh position={[cs * 0.24, cs * 2.02, 0]} rotation={[0, 0, -0.3]}><cylinderGeometry args={[cs * 0.015, cs * 0.02, cs * 0.32, 4]} /><meshStandardMaterial color="#555" metalness={0.5} /></mesh>
-      <mesh position={[cs * 0.29, cs * 2.18, 0]}><sphereGeometry args={[cs * 0.045, 6, 6]} /><meshBasicMaterial color={hunting ? '#ff3b3b' : doc.color} /></mesh>
-      {/* Arms — upper arm + forearm */}
-      {[0.5, -0.5].map((ax, ai) => (
-        <group key={ai} position={[cs * ax, cs * 1.2, 0]}>
-          <mesh position={[0, -cs * 0.18, 0]} rotation={[0, 0, ax > 0 ? -0.2 : 0.2]} castShadow><cylinderGeometry args={[cs * 0.09, cs * 0.1, cs * 0.5, 6]} /><meshStandardMaterial color="#20242b" roughness={0.7} flatShading /></mesh>
-        </group>
-      ))}
-      {/* Weapon arm + faction weapon */}
-      <mesh position={[cs * 0.55, cs * 1.05, cs * 0.2]} rotation={[0.4, 0, -0.5]} castShadow><cylinderGeometry args={[cs * 0.08, cs * 0.08, cs * 0.8, 6]} /><meshStandardMaterial color="#2a2f38" flatShading /></mesh>
-      {/* Faction-specific gear (GDD doctrines: PAA peacekeeper / ASF raider / WC scavenger) */}
-      {enemy.faction === 'PAA' && (
-        <>
-          {/* Peacekeeper shield */}
-          <mesh position={[-cs * 0.6, cs * 1.05, cs * 0.25]} rotation={[0, 0.5, 0]} castShadow><cylinderGeometry args={[cs * 0.32, cs * 0.32, cs * 0.06, 6]} /><meshStandardMaterial color={doc.color} emissive={doc.color} emissiveIntensity={0.4} metalness={0.4} roughness={0.4} flatShading /></mesh>
-          {/* Non-lethal stun baton tip */}
-          <mesh position={[cs * 0.75, cs * 1.45, cs * 0.45]}><sphereGeometry args={[cs * 0.08, 6, 6]} /><meshBasicMaterial color="#8ffbe0" /></mesh>
-        </>
-      )}
-      {enemy.faction === 'ASF' && (
-        <>
-          {/* Raider rifle barrel + muzzle */}
-          <mesh position={[cs * 0.72, cs * 1.28, cs * 0.55]} rotation={[1.3, 0, 0]} castShadow><boxGeometry args={[cs * 0.1, cs * 0.7, cs * 0.12]} /><meshStandardMaterial color="#15181d" metalness={0.5} roughness={0.5} flatShading /></mesh>
-          <mesh position={[cs * 0.72, cs * 1.6, cs * 0.72]}><coneGeometry args={[cs * 0.06, cs * 0.14, 5]} /><meshBasicMaterial color={hunting ? '#ff5a2a' : '#e0574a'} /></mesh>
-          {/* Spiked pauldron */}
-          <mesh position={[cs * 0.5, cs * 1.58, 0]}><coneGeometry args={[cs * 0.1, cs * 0.3, 5]} /><meshStandardMaterial color="#3a1a18" roughness={0.8} flatShading /></mesh>
-        </>
-      )}
-      {enemy.faction === 'WC' && (
-        <>
-          {/* Scavenged asymmetric plate + antenna dish */}
-          <mesh position={[-cs * 0.48, cs * 1.2, cs * 0.28]} rotation={[0, 0, 0.4]} castShadow><boxGeometry args={[cs * 0.3, cs * 0.36, cs * 0.08]} /><meshStandardMaterial color="#7a6a3a" roughness={0.9} metalness={0.2} flatShading /></mesh>
-          <mesh position={[-cs * 0.2, cs * 1.6, -cs * 0.34]} rotation={[-0.5, 0, 0]}><cylinderGeometry args={[cs * 0.14, cs * 0.02, cs * 0.06, 6]} /><meshStandardMaterial color="#9a8a4a" metalness={0.3} roughness={0.7} flatShading /></mesh>
-        </>
-      )}
+
       {/* HP bar */}
-      <mesh position={[0, cs * 2.4, 0]}><boxGeometry args={[cs * 1.3, cs * 0.16, cs * 0.05]} /><meshBasicMaterial color="#300000" /></mesh>
-      <mesh position={[-(cs * 1.3) * (1 - hpPct) / 2, cs * 2.4, cs * 0.04]}><boxGeometry args={[Math.max(0.001, cs * 1.3 * hpPct), cs * 0.12, cs * 0.05]} /><meshBasicMaterial color={hunting ? '#ff4d4d' : '#ffa24d'} /></mesh>
-      <Text position={[0, cs * (boss ? 2.9 : 3.0), 0]} fontSize={size * (boss ? 0.32 : 0.26)} color={boss ? '#ffd24a' : doc.color} anchorX="center" anchorY="middle" outlineWidth={size * 0.02} outlineColor="#000">
+      <mesh position={[0, topY + size * 0.3, 0]}><boxGeometry args={[size * 0.66, size * 0.08, size * 0.025]} /><meshBasicMaterial color="#300000" /></mesh>
+      <mesh position={[-(size * 0.66) * (1 - hpPct) / 2, topY + size * 0.3, size * 0.02]}><boxGeometry args={[Math.max(0.001, size * 0.66 * hpPct), size * 0.06, size * 0.025]} /><meshBasicMaterial color={hunting ? '#ff4d4d' : '#ffa24d'} /></mesh>
+
+      <Text position={[0, topY + size * 0.5, 0]} fontSize={size * (boss ? 0.32 : 0.26)} color={boss ? '#ffd24a' : doc.color} anchorX="center" anchorY="middle" outlineWidth={size * 0.02} outlineColor="#000">
         {boss ? `👑 ${enemy.faction} Commander Lv${enemy.level}` : `${hunting ? '⚔️ ' : ''}${enemy.faction} ${doc.label} Lv${enemy.level}`}
       </Text>
     </group>
@@ -2345,7 +2339,7 @@ export default function SoloMissionMap3D({
     centerR: centerAxial.r,
     heroAttack: Math.round((heroAttack + petCombatBonus) * combatAtkMult),
     incomingDamageScale: combatIncomingScale,
-    onHeroDamage: (amt) => onDamageHP?.(amt),
+    onHeroDamage: (amt) => applyIncomingDamageRef.current(amt),
     awardXp: awardHeroXp,
     awardShards: awardFactionPoints, // camp clears grant Faction Points
     onCombat: ({ campQ, campR, toCreep, toHero }) => {
@@ -2479,7 +2473,7 @@ export default function SoloMissionMap3D({
   const {
     enemies: factionEnemies, nearbyEnemy: nearbyFactionEnemy,
     attackNearby: attackNearbyEnemy, strikeNearby: strikeNearbyEnemy,
-    provoke: provokeEnemies, threat: enemyThreat,
+    applyEnemyEffect, provoke: provokeEnemies, threat: enemyThreat,
   } = useFactionEnemies({
     tiles,
     heroQ: hero.pos.q,
@@ -2493,7 +2487,7 @@ export default function SoloMissionMap3D({
     incomingDamageScale: combatIncomingScale,
     enabled: !autoMultiplayer, // solo PvE only — duels are handled by useDuel
     paused: !!inputPaused,     // freeze combat while the skill-tree overlay is open
-    onHeroDamage: (amt) => onDamageHP?.(amt),
+    onHeroDamage: (amt) => applyIncomingDamageRef.current(amt),
     awardXp: awardHeroXp,
     awardFactionPoints,
     onEvent: (ev) => {
@@ -2516,6 +2510,68 @@ export default function SoloMissionMap3D({
   enemyProvokeRef.current = provokeEnemies;
   const attackNearbyEnemyRef = React.useRef(attackNearbyEnemy); attackNearbyEnemyRef.current = attackNearbyEnemy;
   const strikeNearbyEnemyRef = React.useRef(strikeNearbyEnemy); strikeNearbyEnemyRef.current = strikeNearbyEnemy;
+  const applyEnemyEffectRef = React.useRef(applyEnemyEffect); applyEnemyEffectRef.current = applyEnemyEffect;
+
+  // ── Hero status-effect layer (GDD skill buffs/debuffs) ──────────────────────
+  // Self-targeted skill effects become timed hero buffs; the map applies their
+  // aggregate (shield absorb, regen, atk/def bonus, stealth). Enemy-targeted effects
+  // (burst/stun/pacify) are dispatched straight to the enemy hook.
+  const heroEffectsRef = React.useRef<ActiveEffect[]>([]);
+  const heroShieldRef = React.useRef(0);
+  const heroAtkBonusRef = React.useRef(0);
+  const heroDefBonusRef = React.useRef(0);
+  const heroStealthRef = React.useRef(false);
+
+  const refreshEffectAggregate = React.useCallback(() => {
+    heroEffectsRef.current = pruneEffects(heroEffectsRef.current, performance.now());
+    const agg = aggregateEffects(heroEffectsRef.current, heroShieldRef.current);
+    heroAtkBonusRef.current = agg.atkBonus;
+    heroDefBonusRef.current = agg.defBonus;
+    heroStealthRef.current = agg.stealthed;
+  }, []);
+
+  // Incoming damage passes through defence buffs + the shield pool before reaching HP.
+  const applyIncomingDamage = React.useCallback((amt: number) => {
+    let dmg = Math.max(0, amt);
+    if (heroDefBonusRef.current > 0) dmg = Math.max(1, dmg - heroDefBonusRef.current);
+    if (heroShieldRef.current > 0 && dmg > 0) {
+      const absorbed = Math.min(heroShieldRef.current, dmg);
+      heroShieldRef.current -= absorbed; dmg -= absorbed;
+      if (absorbed > 0) { const hw = axialToWorld({ q: heroPosRef.current.q, r: heroPosRef.current.r }, hexSize); spawnCombatText(hw.x, hw.z, `🛡️ -${Math.round(absorbed)}`, '#7aa2ff'); }
+    }
+    if (dmg > 0) onDamageHP?.(Math.round(dmg));
+  }, [hexSize, onDamageHP]);
+  const applyIncomingDamageRef = React.useRef(applyIncomingDamage); applyIncomingDamageRef.current = applyIncomingDamage;
+
+  // Apply a self-targeted skill effect as a timed hero buff.
+  const applySelfBuff = React.useCallback((eff: SkillEffect, icon: string) => {
+    const now = performance.now();
+    const hw = axialToWorld({ q: heroPosRef.current.q, r: heroPosRef.current.r }, hexSize);
+    const push = (kind: ActiveEffect['kind'], magnitude: number, ms: number) =>
+      heroEffectsRef.current.push({ kind, magnitude, expiresAt: now + ms, label: kind, icon });
+    switch (eff.kind) {
+      case 'shield':  heroShieldRef.current += eff.magnitude; push('shield', eff.magnitude, eff.durationMs ?? 6000); spawnCombatText(hw.x, hw.z, `${icon} +${eff.magnitude} shield`, '#7aa2ff'); break;
+      case 'regen':   push('regen', eff.magnitude, eff.durationMs ?? 6000); spawnCombatText(hw.x, hw.z, `${icon} regen`, '#7fd66b'); break;
+      case 'atkBuff': push('atkBuff', eff.magnitude, eff.durationMs ?? 8000); spawnCombatText(hw.x, hw.z, `${icon} +${eff.magnitude} ATK`, '#ffd24a'); break;
+      case 'defBuff': push('defBuff', eff.magnitude, eff.durationMs ?? 8000); spawnCombatText(hw.x, hw.z, `${icon} +${eff.magnitude} DEF`, '#7aa2ff'); break;
+      case 'haste':   onRestoreEP?.(20); push('haste', eff.magnitude, eff.durationMs ?? 6000); spawnCombatText(hw.x, hw.z, `${icon} haste`, '#8fe3ff'); break;
+      case 'stealth': push('stealth', 1, eff.durationMs ?? 5000); spawnCombatText(hw.x, hw.z, `${icon} stealth`, '#c4b5fd'); break;
+      default: break;
+    }
+    refreshEffectAggregate();
+  }, [hexSize, onRestoreEP, refreshEffectAggregate]);
+  const applySelfBuffRef = React.useRef(applySelfBuff); applySelfBuffRef.current = applySelfBuff;
+
+  // Buff heartbeat: prune expired buffs, tick regen, and clear a spent shield pool.
+  React.useEffect(() => {
+    const id = window.setInterval(() => {
+      refreshEffectAggregate();
+      const agg = aggregateEffects(heroEffectsRef.current, heroShieldRef.current);
+      if (agg.regenPerSec > 0) onHealHP?.(Math.max(1, Math.round(agg.regenPerSec * 0.5)));
+      if (heroShieldRef.current <= 0) heroEffectsRef.current = heroEffectsRef.current.filter(e => e.kind !== 'shield');
+    }, 500);
+    return () => window.clearInterval(id);
+  }, [refreshEffectAggregate, onHealHP]);
 
   // Interact with the nearby refugee camp (H): loot rivals in one action; for your own
   // faction's camp, deliver as much of the required resource as you're carrying.
@@ -2722,31 +2778,38 @@ export default function SoloMissionMap3D({
     onDrainEP?.(ABILITY_EP_COST);
 
     const icon = ability.icon ?? '✨';
-    const idl = id.toLowerCase();
-    if (abilityMode === 'offense') {
-      // A burst scaled by attack — hits a rival duelist in range first, else a creep camp.
-      const power = Math.round((heroAttack + petCombatBonus) * (combatAtkMult + 0.6)) + 12;
+    // Drive the cast from the skill's GDD effect (store/skillData). Passives with no
+    // effect fall back to a mode-based strike/heal.
+    const eff = skillEffectFor(id);
+
+    if (eff?.target === 'enemy' && eff.kind === 'burst') {
+      // Damage burst — hits a rival duelist in range first, else an enemy / creep camp.
+      const power = Math.round((heroAttack + petCombatBonus) * (combatAtkMult + 0.3)) + eff.magnitude + heroAtkBonusRef.current;
       if (duelActive && duelRemote && axialDistance(hero.pos, duelRemote.pos) <= 2) {
-        duelCastAbility(icon, hero.pos);   // opponent sees the cast
-        duelAttackRemote(power, hero.pos); // with attacker pos for range validation
+        duelCastAbility(icon, hero.pos);
+        duelAttackRemote(power, hero.pos);
         const rw = axialToWorld(duelRemote.pos, hexSize);
         spawnCombatText(rw.x, rw.z, `${icon} -${power}`, '#ffd24a');
-      } else if (strikeNearbyEnemyRef.current(power).hit) {
-        spawnCombatText(hw.x, hw.z, `${icon} -${power}`, '#ffd24a');
-      } else if (strikeNearbyRef.current(power).hit) {
+      } else if (strikeNearbyEnemyRef.current(power).hit || strikeNearbyRef.current(power).hit) {
         spawnCombatText(hw.x, hw.z, `${icon} -${power}`, '#ffd24a');
       } else {
         spawnCombatText(hw.x, hw.z, `${icon} (no target)`, '#9aa4b2');
       }
+    } else if (eff?.target === 'enemy') {
+      // Control debuff — stun / pacify / slow the nearest enemy, plus light damage.
+      const dmg = Math.round((heroAttack + petCombatBonus) * combatAtkMult * 0.4) + heroAtkBonusRef.current;
+      const hit = strikeNearbyEnemyRef.current(dmg).hit;
+      const controlled = applyEnemyEffectRef.current(eff.kind as 'stun' | 'pacify' | 'slow', eff.magnitude, 2);
+      spawnCombatText(hw.x, hw.z, (hit || controlled) ? `${icon} ${eff.kind}` : `${icon} (no target)`, (hit || controlled) ? '#c4b5fd' : '#9aa4b2');
+    } else if (eff) {
+      // Self buff (shield / regen / haste / atk-def / stealth).
+      applySelfBuffRef.current(eff, icon);
+      if (eff.kind === 'stealth') applyEnemyEffectRef.current('pacify', eff.durationMs ?? 5000, 3); // vanish → nearby enemies lose you
+    } else if (abilityMode === 'offense') {
+      const power = Math.round((heroAttack + petCombatBonus) * (combatAtkMult + 0.6)) + 12 + heroAtkBonusRef.current;
+      spawnCombatText(hw.x, hw.z, (strikeNearbyEnemyRef.current(power).hit || strikeNearbyRef.current(power).hit) ? `${icon} -${power}` : `${icon} (no target)`, '#ffd24a');
     } else {
-      // Defensive: spend energy to recover / protect.
-      if (idl.includes('support') || idl.includes('heal') || idl.includes('bond') || idl.includes('pet')) {
-        onHealHP?.(40); spawnCombatText(hw.x, hw.z, `${icon} +40 HP`, '#7fd66b');
-      } else if (idl.includes('shield') || idl.includes('defense') || idl.includes('zone') || idl.includes('mobility')) {
-        onHealHP?.(28); spawnCombatText(hw.x, hw.z, `${icon} +28 HP`, '#7fd66b');
-      } else {
-        onHealHP?.(20); spawnCombatText(hw.x, hw.z, `${icon} +20 HP`, '#7fd66b');
-      }
+      onHealHP?.(28); spawnCombatText(hw.x, hw.z, `${icon} +28 HP`, '#7fd66b');
     }
 
     // Start cooldown on a successful cast.
@@ -3366,8 +3429,9 @@ export default function SoloMissionMap3D({
         duelFightRef.current();     // rival duelist if adjacent
         return;
       }
-      // ─── TERRAFORM (T) — invest a resource at the terraformer ──────────
-      if (k === 't') {
+      // ─── TERRAFORM (Y) — invest a resource at the terraformer ──────────
+      // (Moved off T so T can serve as the 4th offensive ability slot.)
+      if (k === 'y') {
         if (e.repeat) return;
         investTerraformRef.current();
         return;
@@ -3378,8 +3442,9 @@ export default function SoloMissionMap3D({
         captureNearbyRef.current();
         return;
       }
-      // ─── TOGGLE OUTPOST CONTROL-ZONE OVERLAY (Y) ───────────────────────
-      if (k === 'y') {
+      // ─── TOGGLE OUTPOST CONTROL-ZONE OVERLAY (O) ───────────────────────
+      // (Moved off Y, which now triggers Terraform.)
+      if (k === 'o') {
         if (e.repeat) return;
         setShowOutpostZones(v => !v);
         return;
@@ -3393,13 +3458,16 @@ export default function SoloMissionMap3D({
       // (Pet-pack supplies are now used via the number keys 1–8, alongside hero
       //  items — each unique item has its own key. See the ITEM ACTIVATION block.)
 
-      // ─── ABILITY ACTIVATION (QWER) — uses the ACTIVE mode's ability set ─
-      const abilityMap: Record<string, string> = { q: 'q', w: 'w', e: 'e', r: 'r' };
-      if (abilityMap[k]) {
+      // ─── ABILITY ACTIVATION — uses the ACTIVE mode's ability set ────────
+      // Offensive keys are Q/E/R/T (NOT W — that's movement); defensive keys are
+      // Z/X/C/V. Resolve the pressed key against the active set's own key labels
+      // (case-insensitive) so BOTH sets fire and neither collides with WASD.
+      // (Previously hard-coded to QWER and compared upper-vs-lower case, so no
+      //  offensive ability ever activated and the defensive set had no handler.)
+      const abilityHit = abilitySlotsRef.current.find(a => a.key?.toLowerCase() === k);
+      if (abilityHit) {
         if (e.repeat) return;
-        const slotKey = abilityMap[k].toUpperCase();
-        const ability = abilitySlotsRef.current.find(a => a.key === slotKey);
-        if (ability) activateAbilityRef.current(ability.id);
+        activateAbilityRef.current(abilityHit.id);
         return;
       }
       

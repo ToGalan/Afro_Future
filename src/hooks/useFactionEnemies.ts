@@ -43,6 +43,7 @@ export interface FactionEnemy {
   wanderQ: number; wanderR: number;
   attackReadyAt: number;   // performance.now() ms — next time this unit may strike
   provokedUntil: number;   // performance.now() ms — ignore leash while > now
+  stunnedUntil?: number;   // performance.now() ms — frozen (no move/attack) while > now (stun/pacify/slow)
 }
 
 export interface GuardPost { key: string; q: number; r: number; faction: FactionKey }
@@ -288,6 +289,8 @@ export function useFactionEnemies({
 
       const next = cur.map(en => {
         if (en.hp <= 0) return en;
+        // Stunned / pacified (player debuff): frozen — cannot move or strike this tick.
+        if (en.stunnedUntil && en.stunnedUntil > now) return en;
         const doc = DOCTRINE[en.faction];
         const dHero = axialDist(en.q, en.r, h.q, h.r);
         const dHome = axialDist(en.q, en.r, en.homeQ, en.homeR);
@@ -415,6 +418,32 @@ export function useFactionEnemies({
     return applyHeroDamage(power, 2);
   }, [applyHeroDamage]);
 
+  // Player debuff: freeze the nearest enemy in reach (stun/pacify/slow from a skill).
+  // Pacify also clears its aggression. Returns whether a target was affected.
+  const applyEnemyEffect = useCallback((kind: 'stun' | 'pacify' | 'slow', durationMs: number, reach = 2): boolean => {
+    const cur = enemiesRef.current;
+    const h = heroRef.current;
+    const now = performance.now();
+    let idx = -1, best = Infinity;
+    for (let i = 0; i < cur.length; i++) {
+      const en = cur[i];
+      if (en.hp <= 0) continue;
+      const d = axialDist(en.q, en.r, h.q, h.r);
+      if (d <= reach && d < best) { idx = i; best = d; }
+    }
+    if (idx < 0) return false;
+    const next = cur.slice();
+    const en = next[idx];
+    next[idx] = {
+      ...en,
+      stunnedUntil: Math.max(en.stunnedUntil || 0, now + durationMs),
+      provokedUntil: kind === 'pacify' ? 0 : en.provokedUntil,
+    };
+    enemiesRef.current = next;
+    setEnemies(next);
+    return true;
+  }, []);
+
   // Mission reaction: provoke same-faction units near a point (loot/capture/aggression).
   const provoke = useCallback((q: number, r: number, fk: FactionKey | undefined, radius = 6) => {
     const now = performance.now();
@@ -440,5 +469,5 @@ export function useFactionEnemies({
     return { total: enemies.length, hunting, byFaction };
   }, [enemies]);
 
-  return { enemies, nearbyEnemy, attackNearby, strikeNearby, provoke, threat };
+  return { enemies, nearbyEnemy, attackNearby, strikeNearby, applyEnemyEffect, provoke, threat };
 }

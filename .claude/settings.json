@@ -24,7 +24,14 @@
       "Bash(grep -vi \"MissionScreen\\\\|MissionMap\\\\|SoloMission\\\\|import\\\\|//\")",
       "mcp__claude_ai_Google_Drive__search_files",
       "mcp__claude_ai_Google_Drive__read_file_content",
-      "Bash(echo \"EXIT: $?\")"
+      "Bash(echo \"EXIT: $?\")",
+      "Bash(npx vite *)",
+      "Bash(python -c \"import PyPDF2\")",
+      "Bash(pdfinfo \"Afro-Future Rising GDD.pdf\")",
+      "Bash(python -c \"import pypdf; r=pypdf.PdfReader\\('Afro-Future Rising GDD.pdf'\\); print\\('pages',len\\(r.pages\\)\\)\")",
+      "Bash(pip install *)",
+      "Bash(python -c \"import pypdf; r=pypdf.PdfReader\\('Afro-Future Rising GDD.pdf'\\); print\\('PAGES',len\\(r.pages\\)\\)\")",
+      "Bash(python -c ' *)"
     ]
   }
 }

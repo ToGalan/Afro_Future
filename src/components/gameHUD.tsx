@@ -223,7 +223,10 @@ const Slot = React.memo(function Slot({ icon = '', hotkey, qty, cooldown, maxCoo
   );
 });
 
-const AB_KEYS = ['Q', 'W', 'E', 'R'];
+// Fallback hotkey labels for EMPTY ability slots (filled slots use the ability's
+// own `.key`). Must mirror AB_KEYS_OFF/AB_KEYS_DEF in useSkillsProgress.ts.
+const AB_KEYS_OFFENSE = ['Q', 'E', 'R', 'T'];
+const AB_KEYS_DEFENSE = ['Z', 'X', 'C', 'V'];
 const IT_KEYS = ['1', '2', '3', '4', '5', '6', '7', '8'];
 
 // Consolidated icon mapping for all inventory displays. Resource glyphs mirror
@@ -388,7 +391,7 @@ export const GameHUD: React.FC<GameHUDProps> = ({
                     ? 'bg-emerald-900/70 ring-emerald-400'
                     : 'bg-[#1c2838] ring-white/10 hover:ring-emerald-400/50 opacity-50 hover:opacity-80'
                 }`}
-                title="Toggle outpost control zones (Y)"
+                title="Toggle outpost control zones (O)"
               >🗺️</button>
             )}
           </div>
@@ -431,9 +434,12 @@ export const GameHUD: React.FC<GameHUDProps> = ({
                 }`}>
                   {Array.from({ length: 4 }, (_, i) => {
                     const a = abilitySlots[i];
+                    // Filled slots use the ability's own key; empty slots fall back to
+                    // the active mode's key layout (offense Q/E/R/T, defense Z/X/C/V).
+                    const fallbackKey = (abilityMode === 'defense' ? AB_KEYS_DEFENSE : AB_KEYS_OFFENSE)[i];
                     return a
-                      ? <Slot key={a.id} icon={a.icon || '✦'} hotkey={AB_KEYS[i]} cooldown={a.cooldown} maxCooldown={a.maxCooldown} disabled={a.disabled} onClick={() => onAbility && onAbility(a.id)} />
-                      : <Slot key={`ab-e-${i}`} hotkey={AB_KEYS[i]} disabled />;
+                      ? <Slot key={a.id} icon={a.icon || '✦'} hotkey={a.key?.toUpperCase() || fallbackKey} cooldown={a.cooldown} maxCooldown={a.maxCooldown} disabled={a.disabled} onClick={() => onAbility && onAbility(a.id)} />
+                      : <Slot key={`ab-e-${i}`} hotkey={fallbackKey} disabled />;
                   })}
                 </div>
               </div>
@@ -662,7 +668,7 @@ export const GameHUD: React.FC<GameHUDProps> = ({
                     
                     {/* Offensive Abilities */}
                     <div className="mb-4">
-                      <div className="text-xs font-semibold opacity-60 mb-2">⚔️ OFFENSIVE (Q/W/E/R)</div>
+                      <div className="text-xs font-semibold opacity-60 mb-2">⚔️ OFFENSIVE (Q/E/R/T)</div>
                       <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-2">
                         {abilities.slice(0, 4).map((ab, i) => (
                           <div key={i} className="bg-black/30 rounded-lg p-2 sm:p-3 text-center">

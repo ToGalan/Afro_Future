@@ -1,15 +1,19 @@
 import { create } from 'zustand';
-import { makeTree, deriveTraits, sumSkillStats } from './skillData';
+import {
+  makeTree, deriveTraits, sumSkillStats, sumSkillCost,
+  SKILL_POINTS_BASE, SKILL_POINTS_PER_LEVEL, SKILL_POINTS_BONUS_PER_5, PLAYER_LEVEL_CAP,
+  type SkillNode,
+} from './skillData';
 
 export interface AbilityLoadout {
-  offensive: (string | null)[];  // 4 slots for Q/W/E/R
-  defensive: (string | null)[];  // 4 slots for defensive abilities
+  offensive: (string | null)[];  // 4 slots for Q/E/R/T
+  defensive: (string | null)[];  // 4 slots for Z/X/C/V
 }
 
 export interface SkillState {
   level: number;
   unlocked: string[]; // grid skill ids
-  spent: number;
+  spent: number;      // total skill-POINT cost of unlocked nodes (not node count)
   basePoints: number; // starting pool
   bonusPer5: number;  // bonus every 5 levels
   unlock: (id: string) => void;
@@ -37,11 +41,10 @@ const TREE_BY_ID = new Map(TREE.map(n => [n.id, n]));
 function deriveStats(unlocked: string[]): { attack: number; defense: number; utility: number } {
   return sumSkillStats(unlocked, TREE);
 }
-// Which ability bar an unlocked skill auto-slots into (so it shows in the HUD).
-function abilityCategory(type: string | undefined): 'offensive' | 'defensive' | null {
-  if (type === 'spell' || type === 'weapon' || type === 'ability' || type === 'stat') return 'offensive';
-  if (type === 'buff' || type === 'zone') return 'defensive';
-  return null;
+// Which ability bar an unlocked skill auto-slots into (only ACTIVE/castable skills).
+function abilityBar(node: SkillNode | undefined): 'offensive' | 'defensive' | null {
+  if (!node || !node.active) return null;
+  return node.bar ?? null;
 }
 
 const INIT_UNLOCKED = ['root'];
@@ -52,8 +55,8 @@ export const useSkillStore = create<SkillState>((set) => ({
   level: 1,
   unlocked: INIT_UNLOCKED,
   spent: 0,
-  basePoints: 3,   // starting points at level 1
-  bonusPer5: 2,    // extra points every 5th level (on top of 1/level)
+  basePoints: SKILL_POINTS_BASE,
+  bonusPer5: SKILL_POINTS_BONUS_PER_5,
   unlockOrder: [],
   attack: INIT_STATS.attack,
   defense: INIT_STATS.defense,
@@ -70,10 +73,10 @@ export const useSkillStore = create<SkillState>((set) => ({
   hydrate: (data) => set((state) => {
     const nextUnlocked = Array.isArray(data.unlocked) && data.unlocked.length ? data.unlocked : state.unlocked;
     const nextOrder = Array.isArray(data.unlockOrder) ? data.unlockOrder : state.unlockOrder;
-    const nextLevel = typeof data.level === 'number' ? Math.max(1, data.level) : state.level;
+    const nextLevel = typeof data.level === 'number' ? Math.max(1, Math.min(PLAYER_LEVEL_CAP, data.level)) : state.level;
     const stats = deriveStats(nextUnlocked);
     const traits = deriveTraits(nextUnlocked, TREE);
-    const spent = Math.max(0, nextUnlocked.length - 1); // exclude root
+    const spent = sumSkillCost(nextUnlocked, TREE);
     const nextLoadout: AbilityLoadout = data.abilityLoadout ? {
       offensive: Array.isArray(data.abilityLoadout.offensive) && data.abilityLoadout.offensive.length === 4 ? data.abilityLoadout.offensive : state.abilityLoadout.offensive,
       defensive: Array.isArray(data.abilityLoadout.defensive) && data.abilityLoadout.defensive.length === 4 ? data.abilityLoadout.defensive : state.abilityLoadout.defensive,
@@ -94,21 +97,23 @@ export const useSkillStore = create<SkillState>((set) => ({
   }),
   unlock: (id: string) => set(state => {
     if (state.unlocked.includes(id)) return state;
-    if (availablePoints(state) <= 0) { console.debug('[skillStore.unlock] no points', { id }); return state; }
+    const node = TREE_BY_ID.get(id);
+    if (!node) return state;
+    const cost = node.cost || 0;
+    if (availablePoints(state) < cost) { console.debug('[skillStore.unlock] not enough points', { id, cost }); return state; }
     const nextUnlocked = [...state.unlocked, id];
     const nextOrder = [...state.unlockOrder, id];
     const stats = deriveStats(nextUnlocked);
     const traits = deriveTraits(nextUnlocked, TREE);
-    // Auto-slot the newly unlocked skill into a free ability slot so it shows in the
-    // HUD immediately (the player can reassign in the skills modal).
+    // Auto-slot a newly unlocked ACTIVE skill into a free bar slot so it shows in the HUD.
     let abilityLoadout = state.abilityLoadout;
-    const cat = abilityCategory(TREE_BY_ID.get(id)?.type);
-    if (cat) {
-      const slots = [...state.abilityLoadout[cat]] as (string | null)[];
+    const bar = abilityBar(node);
+    if (bar) {
+      const slots = [...state.abilityLoadout[bar]] as (string | null)[];
       const free = slots.indexOf(null);
-      if (free >= 0 && !slots.includes(id)) { slots[free] = id; abilityLoadout = { ...state.abilityLoadout, [cat]: slots }; }
+      if (free >= 0 && !slots.includes(id)) { slots[free] = id; abilityLoadout = { ...state.abilityLoadout, [bar]: slots }; }
     }
-    return { unlocked: nextUnlocked, unlockOrder: nextOrder, spent: state.spent + 1, abilityLoadout, ...stats, primaryBranch: traits.topBranch, primaryType: traits.topType, traitTags: traits.tags } as Partial<SkillState> as SkillState;
+    return { unlocked: nextUnlocked, unlockOrder: nextOrder, spent: state.spent + cost, abilityLoadout, ...stats, primaryBranch: traits.topBranch, primaryType: traits.topType, traitTags: traits.tags } as Partial<SkillState> as SkillState;
   }),
   respec: () => set(state => {
     if (!state.unlockOrder.length) return state;
@@ -117,14 +122,15 @@ export const useSkillStore = create<SkillState>((set) => ({
     const traits = deriveTraits(resetUnlocked, TREE);
     return { unlocked: resetUnlocked, unlockOrder: [], spent: 0, ...stats, primaryBranch: traits.topBranch, primaryType: traits.topType, traitTags: traits.tags, abilityLoadout: { offensive: [null, null, null, null], defensive: [null, null, null, null] } } as Partial<SkillState> as SkillState;
   }),
-  setLevel: (lvl: number) => set(() => ({ level: Math.max(1, lvl) })),
+  setLevel: (lvl: number) => set(() => ({ level: Math.max(1, Math.min(PLAYER_LEVEL_CAP, lvl)) })),
   reset: () => set({ level: 1, unlocked: ['root'], unlockOrder: [], spent: 0, attack: 0, defense: 0, utility: 0, traitTags: [], primaryBranch: undefined, primaryType: undefined, abilityLoadout: { offensive: [null, null, null, null], defensive: [null, null, null, null] } }),
 }));
 
-// Scaling economy: 3 base + 1 per level + a bonus every 5th level. Ties directly to
-// the XP economy — gaining XP levels you up, which grants points to spend here.
+// Scaling economy: BASE + PER_LEVEL/level + a bonus every 5th level. `spent` is the total
+// skill-POINT cost of unlocked nodes, so rising per-node costs (skillData.skillCostForLevel)
+// pace how much of the grid a player can afford at a given level.
 export function availablePoints(state: SkillState) {
   const lvl = Math.max(1, state.level);
   const bonusBlocks = Math.floor((lvl - 1) / 5);
-  return state.basePoints + (lvl - 1) + bonusBlocks * state.bonusPer5 - state.spent;
+  return state.basePoints + (lvl - 1) * SKILL_POINTS_PER_LEVEL + bonusBlocks * state.bonusPer5 - state.spent;
 }

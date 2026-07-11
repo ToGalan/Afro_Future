@@ -1,40 +1,45 @@
 import React, { useMemo, useState, useEffect, useRef } from 'react';
 import { useSkillStore, availablePoints } from '../store/skillStore';
-import { BRANCHES, makeTree, deriveTraits } from '../store/skillData';
+import { makeTree, deriveTraits, sumSkillStats } from '../store/skillData';
 
-// Skill system types
-export type SkillType = 'spell' | 'buff' | 'stat' | 'ability' | 'weapon' | 'trade' | 'zone' | 'root';
+// Skill system types — GDD skill categories (see store/skillData.ts).
+export type SkillType =
+  | 'attack' | 'defense' | 'mobility' | 'stealth'
+  | 'pet' | 'faction' | 'vitality' | 'utility' | 'root';
 
 interface SkillNode {
-  id: string; label: string; description: string; type: SkillType; tier: number; branch: number; requires?: string[]; counters?: string[]; faction?: 'PAA' | 'ASF' | 'WC';
+  id: string; label: string; description: string; type: SkillType; level: number; tier: number; branch: number; cost: number; active?: boolean; bar?: 'offensive' | 'defensive'; requires?: string[]; counters?: string[]; faction?: 'PAA' | 'ASF' | 'WC';
 }
 interface PositionedNode extends SkillNode { x: number; y: number; }
 
+const CATEGORY_COLORS: Record<SkillType, string> = {
+  attack:   '#f87171',
+  defense:  '#60a5fa',
+  mobility: '#34d399',
+  stealth:  '#a78bfa',
+  pet:      '#fbbf24',
+  faction:  '#f472b6',
+  vitality: '#fb7185',
+  utility:  '#22d3ee',
+  root:     '#9ca3af',
+};
+function branchColor(t: SkillType) { return CATEGORY_COLORS[t] ?? '#9ca3af'; }
 
-function branchColor(t: SkillType) {
-  if (t === 'spell') return '#60a5fa';
-  if (t === 'buff') return '#34d399';
-  if (t === 'stat') return '#f472b6';
-  if (t === 'ability') return '#fbbf24';
-  if (t === 'weapon') return '#a78bfa';
-  if (t === 'trade') return '#fb923c';
-  if (t === 'zone') return '#f87171';
-  return '#9ca3af';
-}
-
-
-function layoutSnowflake(nodes: SkillNode[], size: number): PositionedNode[] {
-  const cx = size/2; const cy = size/2;
-  const maxTier = Math.max(...nodes.map(n=>n.tier));
-  const perBranchAngle = (2*Math.PI)/BRANCHES.length;
-  const radiusStep = (size*0.5)/Math.max(1,maxTier);
+// GDD skill GRID: 100 nodes laid out level 1→100 in a boustrophedon (snake) so that
+// consecutive levels are always adjacent and the linear prereq chain reads as one path.
+const GRID_COLS = 10;
+function layoutGrid(nodes: SkillNode[], size: number): PositionedNode[] {
+  const marginX = 70, marginTop = 120, marginBottom = 60;
+  const rows = Math.ceil((nodes.filter(n => n.level > 0).length) / GRID_COLS);
+  const cellW = (size - 2 * marginX) / (GRID_COLS - 1);
+  const cellH = (size - marginTop - marginBottom) / Math.max(1, rows - 1);
   return nodes.map(n => {
-    if (n.id === 'root') return { ...n, x: cx, y: cy };
-    const branchAngle = n.branch >= 0 ? n.branch * perBranchAngle : 0;
-    const jitter = n.id.includes('_core') ? 0 : ((parseInt(n.id.replace(/\D/g,'')) % 7) - 3) * (Math.PI/180) * 5;
-    const angle = branchAngle + jitter;
-    const r = radiusStep * n.tier + (n.id.includes('_core') ? 0 : 20);
-    return { ...n, x: cx + Math.cos(angle)*r, y: cy + Math.sin(angle)*r };
+    if (n.id === 'root') return { ...n, x: marginX, y: marginTop - 70 };
+    const idx = n.level - 1;
+    const row = Math.floor(idx / GRID_COLS);
+    let col = idx % GRID_COLS;
+    if (row % 2 === 1) col = GRID_COLS - 1 - col; // snake
+    return { ...n, x: marginX + col * cellW, y: marginTop + row * cellH };
   });
 }
 
@@ -62,11 +67,11 @@ export default function SnowflakeSkillTree({ initialLevel = 1, onClose }: Snowfl
   React.useEffect(()=>{ if (initialLevel > level) setLevelGlobal(initialLevel);},[initialLevel, level, setLevelGlobal]);
   const nodes = useMemo(()=>makeTree(),[]);
   const size = 1200;
-  const laid = useMemo(()=>layoutSnowflake(nodes,size),[nodes]);
+  const laid = useMemo(()=>layoutGrid(nodes,size),[nodes]);
 
   function clamp(v:number,a:number,b:number){ return Math.min(b, Math.max(a,v)); }
-  function canUnlock(id:string){ const node = nodes.find(n=>n.id===id); if(!node) return false; if(unlocked.includes(id)) return false; if(!node.requires||node.requires.length===0) return true; return node.requires.every(r=>unlocked.includes(r)); }
-  function unlockReason(id:string){ const node = nodes.find(n=>n.id===id); if(!node) return 'Missing node'; if(unlocked.includes(id)) return 'Already unlocked'; if(node.requires && node.requires.some(r=>!unlocked.includes(r))) return 'Missing prereq'; const st = useSkillStore.getState(); const avail = availablePoints(st); if(avail<=0) return 'No points'; return 'Unlockable'; }
+  function canUnlock(id:string){ const node = nodes.find(n=>n.id===id); if(!node) return false; if(unlocked.includes(id)) return false; if(node.level > level) return false; if(!node.requires||node.requires.length===0) return true; return node.requires.every(r=>unlocked.includes(r)); }
+  function unlockReason(id:string){ const node = nodes.find(n=>n.id===id); if(!node) return 'Missing node'; if(unlocked.includes(id)) return 'Already unlocked'; if(node.requires && node.requires.some(r=>!unlocked.includes(r))) return 'Missing prereq'; if(node.level > level) return `Requires level ${node.level}`; const st = useSkillStore.getState(); const avail = availablePoints(st); if(avail < node.cost) return `Need ${node.cost} pts`; return 'Unlockable'; }
   function onWheel(e:React.WheelEvent){ e.preventDefault(); setScale(s=>clamp(s - e.deltaY*0.0015,1.0,2.5)); }
   // Track if movement exceeded a small threshold to differentiate drag vs click
   const dragThreshold = 5;
@@ -101,16 +106,15 @@ export default function SnowflakeSkillTree({ initialLevel = 1, onClose }: Snowfl
   const holdingRef = useRef(false);
   const rafRef = useRef<number | null>(null);
   const holdStartRef = useRef<number | null>(null);
-  // Determine which branch cores are next unlockable (tier1 core nodes that are locked but requirements satisfied)
+  // The next node in the linear grid that is unlockable right now (prereq + level met).
   const nextCores = useMemo(()=>{
-    return laid.filter(n=> n.id.endsWith('_core') && !unlocked.includes(n.id) && canUnlock(n.id)).map(n=>n.id);
-  },[laid, unlocked]);
+    const next = laid.filter(n=> n.level>0 && !unlocked.includes(n.id) && canUnlock(n.id)).sort((a,b)=>a.level-b.level)[0];
+    return next ? [next.id] : [];
+  },[laid, unlocked, level]);
   // Compute projected stats / traits when hovering an unlockable node
   const hoverProjection = useMemo(()=>{
     if(!hoverId) return null; if(!canUnlock(hoverId)) return null; const st = useSkillStore.getState(); const nextUnlocked = [...st.unlocked, hoverId];
-    // derive stats like in store
-    let attack=0, defense=0, utility=0;
-    nextUnlocked.forEach(id=>{ if (id.includes('combat') || id.includes('weapon')) attack += 2; if (id.includes('defense') || id.includes('shield')) defense += 2; if (id.includes('support') || id.includes('leadership') || id.includes('mobility')) utility += 2; if (id.includes('terraform') || id.includes('technologist')) utility += 1; });
+    const { attack, defense, utility } = sumSkillStats(nextUnlocked, nodes);
     const traitProj = deriveTraits(nextUnlocked, nodes);
     return { attack, defense, utility, traitProj };
   },[hoverId, nodes, canUnlock]);
@@ -196,7 +200,7 @@ export default function SnowflakeSkillTree({ initialLevel = 1, onClose }: Snowfl
                   <line key={i} x1={l.from.x} y1={l.from.y} x2={l.to.x} y2={l.to.y} stroke={unlocked.includes(l.to.id) ? branchColor(l.to.type) : '#6b7280'} strokeWidth={2} />
                 ))}
                 {laid.map(n=>{
-                  const color = branchColor(n.type); const isUnlocked = unlocked.includes(n.id); const r = n.id==='root'?22: n.tier===1?14:11;
+                  const color = branchColor(n.type); const isUnlocked = unlocked.includes(n.id); const r = n.id==='root'?22: n.type==='faction'?15: n.active?13:11;
                   const isCoreHighlight = nextCores.includes(n.id);
                   const isHoldingThis = holdTarget === n.id && holdingRef.current;
                   return (
@@ -221,17 +225,13 @@ export default function SnowflakeSkillTree({ initialLevel = 1, onClose }: Snowfl
                       {showDetail ? (
                         <>
                           <text y={-r-8} textAnchor="middle" fontSize={11} fill="#e5e7eb">{n.label}</text>
-                          {n.faction && <text y={r+12} textAnchor="middle" fontSize={9} fill="#9ca3af">{n.faction}</text>}
+                          <text y={r+13} textAnchor="middle" fontSize={9} fill="#9ca3af">{n.id!=='root' ? `L${n.level} · ${n.cost}pt` : ''}</text>
                         </>
-                      ) : (<text y={4} textAnchor="middle" fontSize={8} fill="#cbd5e1">{n.tier}</text>)}
+                      ) : (<text y={3} textAnchor="middle" fontSize={9} fill="#cbd5e1">{n.id==='root'?'':n.level}</text>)}
                     </g>
                   );
                 })}
-                {BRANCHES.map((b,i)=>{ const angle = (2*Math.PI*i)/BRANCHES.length; const x = size/2 + Math.cos(angle)*(size*0.46); const y = size/2 + Math.sin(angle)*(size*0.46); return (
-                  <g key={b.id} transform={`translate(${x},${y})`}>
-                    <text textAnchor="middle" fontSize={showDetail?12:14} fill="#9ca3af">{b.name}</text>
-                  </g>
-                );})}
+                <text x={size/2} y={70} textAnchor="middle" fontSize={22} fill="#e5e7eb" fontWeight={600}>GDD Skill Grid · Levels 1–100</text>
               </g>
             </svg>
             {hoverProjection && hoverId && (
@@ -260,7 +260,7 @@ export default function SnowflakeSkillTree({ initialLevel = 1, onClose }: Snowfl
                           }} 
                         />
                       </div>
-                      <span className="opacity-60 text-[10px]">Points after unlock: {ptsLeft-1 >= 0 ? ptsLeft-1 : 0}</span>
+                      <span className="opacity-60 text-[10px]">Cost: {laid.find(n=>n.id===hoverId)?.cost ?? 1} pt · Points after: {Math.max(0, ptsLeft - (laid.find(n=>n.id===hoverId)?.cost ?? 1))}</span>
                     </div>
                     <div className="relative w-12 h-12 flex items-center justify-center">
                       <svg width={48} height={48} className="block">
@@ -325,13 +325,14 @@ export default function SnowflakeSkillTree({ initialLevel = 1, onClose }: Snowfl
             <div className="mt-4 text-xs opacity-70">Choosing different branches creates unique player traits. Zoom out for snowflake view; zoom in to drag and inspect details.</div>
           </div>
           <div className="mt-3 grid grid-cols-2 gap-2 text-xs">
-            <LegendItem color={branchColor('spell')} label="Spell" />
-            <LegendItem color={branchColor('buff')} label="Buff" />
-            <LegendItem color={branchColor('stat')} label="Stat" />
-            <LegendItem color={branchColor('ability')} label="Ability" />
-            <LegendItem color={branchColor('weapon')} label="Weapon" />
-            <LegendItem color={branchColor('trade')} label="Trade" />
-            <LegendItem color={branchColor('zone')} label="Zone Control" />
+            <LegendItem color={branchColor('attack')} label="Combat" />
+            <LegendItem color={branchColor('defense')} label="Defense" />
+            <LegendItem color={branchColor('mobility')} label="Mobility" />
+            <LegendItem color={branchColor('stealth')} label="Stealth" />
+            <LegendItem color={branchColor('pet')} label="Pet Bond" />
+            <LegendItem color={branchColor('faction')} label="Faction" />
+            <LegendItem color={branchColor('vitality')} label="Vitality" />
+            <LegendItem color={branchColor('utility')} label="Utility" />
           </div>
         </div>
       </div>

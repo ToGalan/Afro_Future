@@ -14,29 +14,19 @@
 
 import { useState, useCallback, useRef, useEffect, useMemo } from 'react';
 import { useSkillStore } from '../store/skillStore';
+import { skillIconFor } from '../store/skillData';
 import { chromeSyncSet } from '../services/chromeSync';
 import { computeEffectiveStats } from '../services/playerStats';
 import { factionAbilityBonus } from '../services/factionAbilities';
 
-// ── Icon helper (mirrors App.tsx skillIconFn) ────────────────────────────────
-function skillIconFn(id: string): string {
-  if (id.includes('combat')) return '⚔️';
-  if (id.includes('support')) return '✚';
-  if (id.includes('pet') || id.includes('bond')) return '🐾';
-  if (id.includes('weapon')) return '🔫';
-  if (id.includes('spell') || id.includes('spellcraft')) return '✨';
-  if (id.includes('defense') || id.includes('shield')) return '🛡️';
-  if (id.includes('mobility')) return '🦶';
-  if (id.includes('leadership')) return '🗣️';
-  if (id.includes('terraform')) return '🌍';
-  if (id.includes('technologist') || id.includes('techno')) return '🧪';
-  if (id.includes('merchant') || id.includes('trade')) return '💱';
-  if (id.includes('looting')) return '📦';
-  return '⬢';
-}
+// ── Icon helper — delegates to the GDD grid's category → icon map ─────────────
+function skillIconFn(id: string): string { return skillIconFor(id); }
 
 const BASE_COOLDOWN = 8; // seconds
-const AB_KEYS_OFF = ['q', 'w', 'e', 'r'] as const;
+// Offensive ability hotkeys. NOTE: 'w' is intentionally avoided — it drives WASD
+// movement (move North), so a W-bound ability could never fire. Q/E/R/T is a
+// contiguous top-row cluster that sits clear of the movement keys.
+const AB_KEYS_OFF = ['q', 'e', 'r', 't'] as const;
 const AB_KEYS_DEF = ['z', 'x', 'c', 'v'] as const;
 
 // ── Types ────────────────────────────────────────────────────────────────────

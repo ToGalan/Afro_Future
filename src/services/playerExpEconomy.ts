@@ -38,7 +38,7 @@ export const PLAYER_EXP_CONFIG: PlayerExpConfig = {
   scalingFactor: 1.15,            // 15% increase per level
   softCapLevel: 25,              // Curve softens at level 25
   softCapMultiplier: 1.05,       // Only 5% growth after soft cap
-  maxLevel: 50,                  // Hard cap at level 50 (per GDD: levels 1–50)
+  maxLevel: 100,                 // Hard cap at level 100 (GDD grid L1–50, extended to 100)
 };
 
 /**
