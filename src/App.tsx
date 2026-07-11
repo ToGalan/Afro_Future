@@ -4,6 +4,7 @@ import { useSkillStore, availablePoints } from './store/skillStore';
 import { computeEffectiveStats, STAT_META } from './services/playerStats';
 import { getTotalXpForLevel, getXpForNextLevel, getLevelFromXp } from './services/playerExpEconomy';
 import { abilitiesForFaction, factionAbilityBonus, type FactionAbility } from './services/factionAbilities';
+import { getPetSpecies, derivePetStats } from './services/petSpecies';
 import { makeTree } from './store/skillData';
 import { GROUP_ORDER, getVariantsByGroup } from './assets/threeParts';
 import { buildAvatarConfig } from './services/avatarConfig';
@@ -580,8 +581,8 @@ export default function App() {
             const f = setupFaction ?? 'PAA';
             const a = setupArchetype ?? 'FEMALE';
             const names: Record<Faction, Record<Archetype, string>> = {
-              PAA: { MALE: 'Kwame', FEMALE: 'Makena' },
-              ASF: { MALE: 'Zuberi', FEMALE: 'Nia' },
+              PAA: { MALE: 'Kwame', FEMALE: 'Nia' },
+              ASF: { MALE: 'Zuberi', FEMALE: 'Makena' },
               WC: { MALE: 'Jonathan', FEMALE: 'Emily' },
             };
               return names[f][a];
@@ -951,7 +952,13 @@ function MissionScreen({ onExit, onOpenSkillTree, activeLoadout, autoMultiplayer
   ],[shards, available]);
 
   const loadout = activeLoadoutRaw || { name:'Hero', faction:'PAA', level: skillState.level, portraitUrl: undefined, pet:{ type:'CYBER_DOG', level:1, role:'SCOUT' } } as any;
-  const pet = loadout.pet ? { name: loadout.pet.type === 'CYBER_DOG' ? 'Cyber-Dog' : 'Cyber-Cat', level: loadout.pet.level || 1, hp: { current: 50, max: 50 }, ep: { current: 30, max: 30 }, icon: '🐾', portraitUrl: PetIcon[loadout.pet.type] } : undefined;
+  const pet = loadout.pet ? (() => {
+    const species = getPetSpecies(loadout.pet.type);
+    const lvl = loadout.pet.level || 1;
+    const stats = derivePetStats(loadout.pet.type, lvl);
+    const maxHp = Math.round(stats.health);
+    return { name: species.name, level: lvl, hp: { current: maxHp, max: maxHp }, ep: { current: 30, max: 30 }, icon: '🐾', portraitUrl: PetIcon[loadout.pet.type] };
+  })() : undefined;
 
   const [sessionStartTime] = React.useState(() => Date.now());
   // Skill tree opens as an OVERLAY on top of the live mission (not a navigation), so the
@@ -1452,8 +1459,8 @@ function FirstTimeFlow({ faction, archetype, pet, onFaction, onArchetype, onPet,
                 const img = chosenFaction ? getCharacterPortrait(chosenFaction, g) : (g === 'MALE' ? CharacterPortrait.MALE : CharacterPortrait.FEMALE);
                 const active = archetype === g;
                 const nameMap: Record<Faction, Record<Archetype, string>> = {
-                  PAA: { MALE: 'Kwame', FEMALE: 'Makena' },
-                  ASF: { MALE: 'Zuberi', FEMALE: 'Nia' },
+                  PAA: { MALE: 'Kwame', FEMALE: 'Nia' },
+                  ASF: { MALE: 'Zuberi', FEMALE: 'Makena' },
                   WC: { MALE: 'Jonathan', FEMALE: 'Emily' },
                 };
                 const label = chosenFaction ? nameMap[chosenFaction][g] : (g === 'MALE' ? 'Male' : 'Female');

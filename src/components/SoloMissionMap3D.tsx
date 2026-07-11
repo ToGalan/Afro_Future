@@ -367,27 +367,53 @@ function CreepCampMesh({ camp, size }: { camp: CreepCamp; size: number }) {
         const hpPct = Math.max(0, c.hp / c.maxHp);
         return (
           <group key={c.id} position={[x, 0, z]} rotation={[0, ang, 0]}>
-            {/* Body */}
-            <mesh position={[0, cs * 0.95, 0]} castShadow>
-              <icosahedronGeometry args={[cs * 0.7, 0]} />
+            {/* Lower body / haunches */}
+            <mesh position={[0, cs * 0.6, -cs * 0.08]} castShadow><dodecahedronGeometry args={[cs * 0.5, 0]} /><meshStandardMaterial color="#47182a" roughness={0.8} flatShading /></mesh>
+            {/* Chest / torso */}
+            <mesh position={[0, cs * 0.98, 0]} castShadow>
+              <icosahedronGeometry args={[cs * 0.66, 0]} />
               <meshStandardMaterial color="#5a2233" roughness={0.7} emissive="#3a0d18" emissiveIntensity={0.35} flatShading />
             </mesh>
-            {/* Glowing eyes */}
-            <mesh position={[cs * 0.22, cs * 1.05, cs * 0.5]}><sphereGeometry args={[cs * 0.1, 6, 6]} /><meshBasicMaterial color="#ff3b3b" /></mesh>
-            <mesh position={[-cs * 0.22, cs * 1.05, cs * 0.5]}><sphereGeometry args={[cs * 0.1, 6, 6]} /><meshBasicMaterial color="#ff3b3b" /></mesh>
-            {/* Horns */}
-            <mesh position={[cs * 0.32, cs * 1.4, -cs * 0.1]} rotation={[0, 0, -0.5]} castShadow><coneGeometry args={[cs * 0.12, cs * 0.5, 5]} /><meshStandardMaterial color="#2a0e16" roughness={0.8} flatShading /></mesh>
-            <mesh position={[-cs * 0.32, cs * 1.4, -cs * 0.1]} rotation={[0, 0, 0.5]} castShadow><coneGeometry args={[cs * 0.12, cs * 0.5, 5]} /><meshStandardMaterial color="#2a0e16" roughness={0.8} flatShading /></mesh>
-            {/* Back spikes */}
-            {[0.15, -0.15].map((sx, si) => (
-              <mesh key={si} position={[cs * sx, cs * 1.25, -cs * 0.5]} rotation={[-0.6, 0, 0]} castShadow><coneGeometry args={[cs * 0.09, cs * 0.36, 4]} /><meshStandardMaterial color="#3a1622" roughness={0.85} flatShading /></mesh>
+            {/* Cyber shoulder plates */}
+            {[0.5, -0.5].map((px, pi) => (
+              <mesh key={pi} position={[cs * px, cs * 1.15, -cs * 0.05]} rotation={[0, 0, px > 0 ? -0.4 : 0.4]} castShadow><octahedronGeometry args={[cs * 0.24, 0]} /><meshStandardMaterial color="#241018" metalness={0.5} roughness={0.5} flatShading /></mesh>
             ))}
-            {/* Clawed arms */}
-            <mesh position={[cs * 0.6, cs * 0.85, cs * 0.1]} rotation={[0, 0, -0.9]} castShadow><cylinderGeometry args={[cs * 0.09, cs * 0.11, cs * 0.7, 5]} /><meshStandardMaterial color="#4a1c2b" roughness={0.75} flatShading /></mesh>
-            <mesh position={[-cs * 0.6, cs * 0.85, cs * 0.1]} rotation={[0, 0, 0.9]} castShadow><cylinderGeometry args={[cs * 0.09, cs * 0.11, cs * 0.7, 5]} /><meshStandardMaterial color="#4a1c2b" roughness={0.75} flatShading /></mesh>
-            {/* Legs */}
-            <mesh position={[cs * 0.26, cs * 0.32, 0]} castShadow><cylinderGeometry args={[cs * 0.1, cs * 0.1, cs * 0.64, 5]} /><meshStandardMaterial color="#3a1622" flatShading /></mesh>
-            <mesh position={[-cs * 0.26, cs * 0.32, 0]} castShadow><cylinderGeometry args={[cs * 0.1, cs * 0.1, cs * 0.64, 5]} /><meshStandardMaterial color="#3a1622" flatShading /></mesh>
+            {/* Head + snout/maw */}
+            <mesh position={[0, cs * 1.28, cs * 0.12]} castShadow><icosahedronGeometry args={[cs * 0.34, 0]} /><meshStandardMaterial color="#4a1c2b" roughness={0.7} flatShading /></mesh>
+            <mesh position={[0, cs * 1.16, cs * 0.4]} rotation={[0.5, 0, 0]} castShadow><coneGeometry args={[cs * 0.2, cs * 0.4, 6]} /><meshStandardMaterial color="#3a1622" roughness={0.75} flatShading /></mesh>
+            {/* Fangs */}
+            {[0.09, -0.09].map((fx, fi) => (
+              <mesh key={fi} position={[cs * fx, cs * 1.02, cs * 0.5]} rotation={[Math.PI, 0, 0]}><coneGeometry args={[cs * 0.04, cs * 0.16, 4]} /><meshStandardMaterial color="#e8dcc0" flatShading /></mesh>
+            ))}
+            {/* Glowing eyes */}
+            <mesh position={[cs * 0.16, cs * 1.34, cs * 0.36]}><sphereGeometry args={[cs * 0.09, 8, 8]} /><meshBasicMaterial color="#ff3b3b" /></mesh>
+            <mesh position={[-cs * 0.16, cs * 1.34, cs * 0.36]}><sphereGeometry args={[cs * 0.09, 8, 8]} /><meshBasicMaterial color="#ff3b3b" /></mesh>
+            {/* Horns (paired, swept) */}
+            {[[0.32, -0.5], [-0.32, 0.5]].map(([hx, rz], hi) => (
+              <mesh key={hi} position={[cs * hx, cs * 1.55, -cs * 0.05]} rotation={[-0.3, 0, rz]} castShadow><coneGeometry args={[cs * 0.11, cs * 0.52, 6]} /><meshStandardMaterial color="#2a0e16" roughness={0.8} flatShading /></mesh>
+            ))}
+            {/* Glowing cyber spine implants */}
+            {[0.45, 0.7, 0.95].map((sy, si) => (
+              <mesh key={si} position={[0, cs * sy, -cs * 0.42]}><octahedronGeometry args={[cs * (0.12 - si * 0.015), 0]} /><meshStandardMaterial color="#ff5a3c" emissive="#ff2a10" emissiveIntensity={0.9} flatShading /></mesh>
+            ))}
+            {/* Tail */}
+            <mesh position={[0, cs * 0.5, -cs * 0.6]} rotation={[0.8, 0, 0]} castShadow><coneGeometry args={[cs * 0.14, cs * 0.7, 6]} /><meshStandardMaterial color="#3a1622" roughness={0.85} flatShading /></mesh>
+            {/* Clawed arms — upper + forearm + claws */}
+            {[0.62, -0.62].map((ax, ai) => (
+              <group key={ai} position={[cs * ax, cs * 0.85, cs * 0.1]} rotation={[0, 0, ax > 0 ? -0.9 : 0.9]}>
+                <mesh castShadow><cylinderGeometry args={[cs * 0.09, cs * 0.11, cs * 0.6, 6]} /><meshStandardMaterial color="#4a1c2b" roughness={0.75} flatShading /></mesh>
+                {[-0.08, 0, 0.08].map((clx, ci) => (
+                  <mesh key={ci} position={[cs * clx, -cs * 0.42, cs * 0.06]} rotation={[0.4, 0, 0]}><coneGeometry args={[cs * 0.03, cs * 0.2, 4]} /><meshStandardMaterial color="#d8ccb0" flatShading /></mesh>
+                ))}
+              </group>
+            ))}
+            {/* Legs — thigh + clawed foot */}
+            {[0.26, -0.26].map((lx, li) => (
+              <group key={li} position={[cs * lx, 0, 0]}>
+                <mesh position={[0, cs * 0.32, 0]} castShadow><cylinderGeometry args={[cs * 0.1, cs * 0.12, cs * 0.6, 6]} /><meshStandardMaterial color="#3a1622" roughness={0.8} flatShading /></mesh>
+                <mesh position={[0, cs * 0.04, cs * 0.08]} castShadow><boxGeometry args={[cs * 0.2, cs * 0.1, cs * 0.3]} /><meshStandardMaterial color="#2a0e16" flatShading /></mesh>
+              </group>
+            ))}
             {/* HP bar */}
             <mesh position={[0, cs * 1.95, 0]}><boxGeometry args={[cs * 1.2, cs * 0.16, cs * 0.05]} /><meshBasicMaterial color="#300000" /></mesh>
             <mesh position={[-(cs * 1.2) * (1 - hpPct) / 2, cs * 1.95, cs * 0.04]}><boxGeometry args={[Math.max(0.001, cs * 1.2 * hpPct), cs * 0.12, cs * 0.05]} /><meshBasicMaterial color="#ff4d4d" /></mesh>
@@ -431,16 +457,68 @@ function EnemyUnitMesh({ enemy, size, target }: { enemy: FactionEnemy; size: num
           <meshStandardMaterial color="#ffd24a" emissive="#8a6a10" emissiveIntensity={0.5} roughness={0.4} metalness={0.6} flatShading />
         </mesh>
       )}
-      {/* Legs */}
-      <mesh position={[cs * 0.22, cs * 0.35, 0]} castShadow><cylinderGeometry args={[cs * 0.11, cs * 0.11, cs * 0.7, 5]} /><meshStandardMaterial color="#20242b" flatShading /></mesh>
-      <mesh position={[-cs * 0.22, cs * 0.35, 0]} castShadow><cylinderGeometry args={[cs * 0.11, cs * 0.11, cs * 0.7, 5]} /><meshStandardMaterial color="#20242b" flatShading /></mesh>
+      {/* Legs — thigh + knee joint + shin + boot */}
+      {[0.22, -0.22].map((lx, li) => (
+        <group key={li} position={[cs * lx, 0, 0]}>
+          <mesh position={[0, cs * 0.5, 0]} castShadow><cylinderGeometry args={[cs * 0.1, cs * 0.12, cs * 0.5, 6]} /><meshStandardMaterial color="#20242b" roughness={0.7} flatShading /></mesh>
+          <mesh position={[0, cs * 0.28, 0]} castShadow><sphereGeometry args={[cs * 0.12, 6, 6]} /><meshStandardMaterial color="#2f353d" metalness={0.3} roughness={0.5} flatShading /></mesh>
+          <mesh position={[0, cs * 0.1, 0]} castShadow><cylinderGeometry args={[cs * 0.09, cs * 0.1, cs * 0.4, 6]} /><meshStandardMaterial color="#181b21" roughness={0.8} flatShading /></mesh>
+          <mesh position={[0, cs * -0.05, cs * 0.08]} castShadow><boxGeometry args={[cs * 0.2, cs * 0.12, cs * 0.34]} /><meshStandardMaterial color="#101216" roughness={0.9} flatShading /></mesh>
+        </group>
+      ))}
+      {/* Hips */}
+      <mesh position={[0, cs * 0.72, 0]} castShadow><boxGeometry args={[cs * 0.56, cs * 0.24, cs * 0.4]} /><meshStandardMaterial color="#1c2028" roughness={0.75} flatShading /></mesh>
       {/* Torso — faction-coloured */}
-      <mesh position={[0, cs * 1.05, 0]} castShadow><capsuleGeometry args={[cs * 0.4, cs * 0.55, 4, 8]} /><meshStandardMaterial color={doc.color} roughness={0.55} emissive={doc.color} emissiveIntensity={hunting ? 0.5 : 0.2} flatShading /></mesh>
-      {/* Head + visor */}
-      <mesh position={[0, cs * 1.75, 0]} castShadow><sphereGeometry args={[cs * 0.3, 8, 8]} /><meshStandardMaterial color="#15181d" roughness={0.6} flatShading /></mesh>
+      <mesh position={[0, cs * 1.05, 0]} castShadow><capsuleGeometry args={[cs * 0.4, cs * 0.55, 6, 12]} /><meshStandardMaterial color={doc.color} roughness={0.55} emissive={doc.color} emissiveIntensity={hunting ? 0.5 : 0.2} flatShading /></mesh>
+      {/* Chest plate + core light */}
+      <mesh position={[0, cs * 1.12, cs * 0.34]} castShadow><boxGeometry args={[cs * 0.5, cs * 0.6, cs * 0.16]} /><meshStandardMaterial color="#16191f" metalness={0.5} roughness={0.4} flatShading /></mesh>
+      <mesh position={[0, cs * 1.18, cs * 0.43]}><octahedronGeometry args={[cs * 0.11, 0]} /><meshStandardMaterial color={doc.color} emissive={doc.color} emissiveIntensity={hunting ? 1.4 : 0.8} flatShading /></mesh>
+      {/* Shoulder pauldrons */}
+      {[0.5, -0.5].map((sx, si) => (
+        <mesh key={si} position={[cs * sx, cs * 1.42, 0]} rotation={[0, 0, sx > 0 ? -0.3 : 0.3]} castShadow><icosahedronGeometry args={[cs * 0.22, 0]} /><meshStandardMaterial color="#2a2f38" metalness={0.4} roughness={0.5} flatShading /></mesh>
+      ))}
+      {/* Backpack / power unit */}
+      <mesh position={[0, cs * 1.15, -cs * 0.38]} castShadow><boxGeometry args={[cs * 0.4, cs * 0.5, cs * 0.22]} /><meshStandardMaterial color="#20242b" metalness={0.3} roughness={0.7} flatShading /></mesh>
+      {/* Neck */}
+      <mesh position={[0, cs * 1.52, 0]} castShadow><cylinderGeometry args={[cs * 0.12, cs * 0.14, cs * 0.18, 6]} /><meshStandardMaterial color="#15181d" flatShading /></mesh>
+      {/* Head + visor + antenna */}
+      <mesh position={[0, cs * 1.75, 0]} castShadow><sphereGeometry args={[cs * 0.3, 10, 10]} /><meshStandardMaterial color="#15181d" roughness={0.6} metalness={0.3} flatShading /></mesh>
       <mesh position={[0, cs * 1.78, cs * 0.24]}><boxGeometry args={[cs * 0.34, cs * 0.1, cs * 0.06]} /><meshBasicMaterial color={hunting ? '#ff3b3b' : '#ffd24a'} /></mesh>
-      {/* Weapon arm */}
-      <mesh position={[cs * 0.55, cs * 1.05, cs * 0.2]} rotation={[0.4, 0, -0.5]} castShadow><cylinderGeometry args={[cs * 0.08, cs * 0.08, cs * 0.8, 5]} /><meshStandardMaterial color="#2a2f38" flatShading /></mesh>
+      <mesh position={[cs * 0.24, cs * 2.02, 0]} rotation={[0, 0, -0.3]}><cylinderGeometry args={[cs * 0.015, cs * 0.02, cs * 0.32, 4]} /><meshStandardMaterial color="#555" metalness={0.5} /></mesh>
+      <mesh position={[cs * 0.29, cs * 2.18, 0]}><sphereGeometry args={[cs * 0.045, 6, 6]} /><meshBasicMaterial color={hunting ? '#ff3b3b' : doc.color} /></mesh>
+      {/* Arms — upper arm + forearm */}
+      {[0.5, -0.5].map((ax, ai) => (
+        <group key={ai} position={[cs * ax, cs * 1.2, 0]}>
+          <mesh position={[0, -cs * 0.18, 0]} rotation={[0, 0, ax > 0 ? -0.2 : 0.2]} castShadow><cylinderGeometry args={[cs * 0.09, cs * 0.1, cs * 0.5, 6]} /><meshStandardMaterial color="#20242b" roughness={0.7} flatShading /></mesh>
+        </group>
+      ))}
+      {/* Weapon arm + faction weapon */}
+      <mesh position={[cs * 0.55, cs * 1.05, cs * 0.2]} rotation={[0.4, 0, -0.5]} castShadow><cylinderGeometry args={[cs * 0.08, cs * 0.08, cs * 0.8, 6]} /><meshStandardMaterial color="#2a2f38" flatShading /></mesh>
+      {/* Faction-specific gear (GDD doctrines: PAA peacekeeper / ASF raider / WC scavenger) */}
+      {enemy.faction === 'PAA' && (
+        <>
+          {/* Peacekeeper shield */}
+          <mesh position={[-cs * 0.6, cs * 1.05, cs * 0.25]} rotation={[0, 0.5, 0]} castShadow><cylinderGeometry args={[cs * 0.32, cs * 0.32, cs * 0.06, 6]} /><meshStandardMaterial color={doc.color} emissive={doc.color} emissiveIntensity={0.4} metalness={0.4} roughness={0.4} flatShading /></mesh>
+          {/* Non-lethal stun baton tip */}
+          <mesh position={[cs * 0.75, cs * 1.45, cs * 0.45]}><sphereGeometry args={[cs * 0.08, 6, 6]} /><meshBasicMaterial color="#8ffbe0" /></mesh>
+        </>
+      )}
+      {enemy.faction === 'ASF' && (
+        <>
+          {/* Raider rifle barrel + muzzle */}
+          <mesh position={[cs * 0.72, cs * 1.28, cs * 0.55]} rotation={[1.3, 0, 0]} castShadow><boxGeometry args={[cs * 0.1, cs * 0.7, cs * 0.12]} /><meshStandardMaterial color="#15181d" metalness={0.5} roughness={0.5} flatShading /></mesh>
+          <mesh position={[cs * 0.72, cs * 1.6, cs * 0.72]}><coneGeometry args={[cs * 0.06, cs * 0.14, 5]} /><meshBasicMaterial color={hunting ? '#ff5a2a' : '#e0574a'} /></mesh>
+          {/* Spiked pauldron */}
+          <mesh position={[cs * 0.5, cs * 1.58, 0]}><coneGeometry args={[cs * 0.1, cs * 0.3, 5]} /><meshStandardMaterial color="#3a1a18" roughness={0.8} flatShading /></mesh>
+        </>
+      )}
+      {enemy.faction === 'WC' && (
+        <>
+          {/* Scavenged asymmetric plate + antenna dish */}
+          <mesh position={[-cs * 0.48, cs * 1.2, cs * 0.28]} rotation={[0, 0, 0.4]} castShadow><boxGeometry args={[cs * 0.3, cs * 0.36, cs * 0.08]} /><meshStandardMaterial color="#7a6a3a" roughness={0.9} metalness={0.2} flatShading /></mesh>
+          <mesh position={[-cs * 0.2, cs * 1.6, -cs * 0.34]} rotation={[-0.5, 0, 0]}><cylinderGeometry args={[cs * 0.14, cs * 0.02, cs * 0.06, 6]} /><meshStandardMaterial color="#9a8a4a" metalness={0.3} roughness={0.7} flatShading /></mesh>
+        </>
+      )}
       {/* HP bar */}
       <mesh position={[0, cs * 2.4, 0]}><boxGeometry args={[cs * 1.3, cs * 0.16, cs * 0.05]} /><meshBasicMaterial color="#300000" /></mesh>
       <mesh position={[-(cs * 1.3) * (1 - hpPct) / 2, cs * 2.4, cs * 0.04]}><boxGeometry args={[Math.max(0.001, cs * 1.3 * hpPct), cs * 0.12, cs * 0.05]} /><meshBasicMaterial color={hunting ? '#ff4d4d' : '#ffa24d'} /></mesh>
@@ -532,19 +610,60 @@ function RefugeeCampMarker({ size, done, label, icon, mode, subtitle }: { size: 
   const tents = loot ? ['#7a4a3a', '#8a4030', '#6a3a2a'] : ['#b8895a', '#a8734a', '#c79968'];
   const flame = done ? '#7fd66b' : loot ? '#ff5a3c' : '#ff9a3c';
   const titleCol = done ? '#a7e8b6' : loot ? '#ffb59a' : '#ffdca3';
+  const poleCol = loot ? '#2a1c16' : '#5a4636';
+  // Tent: conical canopy + ridge pole + dark entrance flap + peg ring.
   const tent = (x: number, z: number, rot: number, col: string) => (
     <group position={[x, 0, z]} rotation={[0, rot, 0]}>
-      <mesh position={[0, S * 0.32, 0]} castShadow><coneGeometry args={[S * 0.42, S * 0.64, 4]} /><meshStandardMaterial color={col} roughness={0.9} flatShading /></mesh>
+      <mesh position={[0, S * 0.36, 0]} castShadow><coneGeometry args={[S * 0.44, S * 0.72, 7]} /><meshStandardMaterial color={col} roughness={0.9} flatShading /></mesh>
+      {/* entrance flap */}
+      <mesh position={[0, S * 0.2, S * 0.4]} rotation={[0.2, 0, 0]}><coneGeometry args={[S * 0.14, S * 0.42, 3]} /><meshStandardMaterial color="#1a120c" roughness={1} flatShading /></mesh>
+      {/* ridge pole tip */}
+      <mesh position={[0, S * 0.74, 0]}><cylinderGeometry args={[S * 0.02, S * 0.02, S * 0.16, 4]} /><meshStandardMaterial color={poleCol} roughness={0.8} /></mesh>
+      {/* peg base */}
+      <mesh position={[0, S * 0.02, 0]}><cylinderGeometry args={[S * 0.46, S * 0.48, S * 0.04, 7]} /><meshStandardMaterial color="#2a2118" roughness={1} flatShading /></mesh>
     </group>
+  );
+  // Stacked supply crate.
+  const crate = (x: number, z: number, col = '#8a6a3a') => (
+    <group position={[x, 0, z]}>
+      <mesh position={[0, S * 0.11, 0]} castShadow><boxGeometry args={[S * 0.24, S * 0.22, S * 0.24]} /><meshStandardMaterial color={col} roughness={0.85} flatShading /></mesh>
+      <mesh position={[0, S * 0.3, 0]} rotation={[0, 0.4, 0]} castShadow><boxGeometry args={[S * 0.18, S * 0.16, S * 0.18]} /><meshStandardMaterial color={col} roughness={0.85} flatShading /></mesh>
+    </group>
+  );
+  // Fuel/water barrel.
+  const barrel = (x: number, z: number, col: string) => (
+    <mesh position={[x, S * 0.16, z]} castShadow><cylinderGeometry args={[S * 0.12, S * 0.12, S * 0.32, 8]} /><meshStandardMaterial color={col} metalness={0.3} roughness={0.6} flatShading /></mesh>
   );
   return (
     <group>
       {tent(-S * 0.5, 0, Math.PI / 4, tents[0])}
       {tent(S * 0.55, S * 0.2, -Math.PI / 5, tents[1])}
       {tent(0, -S * 0.6, Math.PI / 3, tents[2])}
+      {/* supplies scattered around the settlement */}
+      {crate(S * 0.7, -S * 0.55, loot ? '#6a4030' : '#8a6a3a')}
+      {barrel(-S * 0.72, -S * 0.4, loot ? '#5a2a22' : '#3a6a5a')}
+      {barrel(-S * 0.5, -S * 0.62, loot ? '#4a2018' : '#2f5a4a')}
+      {/* Aid camps fly a med cross; rival camps show a scavenged loot pile + spikes */}
+      {loot ? (
+        <>
+          <mesh position={[S * 0.4, S * 0.14, S * 0.5]} rotation={[0, 0.5, 0]} castShadow><dodecahedronGeometry args={[S * 0.2, 0]} /><meshStandardMaterial color="#5a4a2a" roughness={0.9} flatShading /></mesh>
+          <mesh position={[-S * 0.85, S * 0.3, S * 0.3]} rotation={[0, 0, 0.2]}><coneGeometry args={[S * 0.05, S * 0.6, 4]} /><meshStandardMaterial color="#2a1a16" roughness={0.9} flatShading /></mesh>
+        </>
+      ) : (
+        <group position={[S * 0.75, S * 0.55, S * 0.35]}>
+          <mesh><boxGeometry args={[S * 0.34, S * 0.12, S * 0.06]} /><meshStandardMaterial color="#e8f4f0" emissive="#4fd6a0" emissiveIntensity={0.5} flatShading /></mesh>
+          <mesh><boxGeometry args={[S * 0.12, S * 0.34, S * 0.06]} /><meshStandardMaterial color="#e8f4f0" emissive="#4fd6a0" emissiveIntensity={0.5} flatShading /></mesh>
+        </group>
+      )}
       {/* campfire */}
-      <mesh position={[0, S * 0.06, S * 0.35]}><cylinderGeometry args={[S * 0.18, S * 0.22, S * 0.08, 6]} /><meshStandardMaterial color="#3a2a1e" roughness={1} /></mesh>
-      <mesh ref={fireRef} position={[0, S * 0.22, S * 0.35]}><coneGeometry args={[S * 0.1, S * 0.28, 5]} /><meshBasicMaterial color={flame} /></mesh>
+      <mesh position={[0, S * 0.06, S * 0.35]}><cylinderGeometry args={[S * 0.18, S * 0.22, S * 0.08, 8]} /><meshStandardMaterial color="#3a2a1e" roughness={1} flatShading /></mesh>
+      {/* stones ring */}
+      {[0, 1, 2, 3, 4].map(i => { const a = (i / 5) * Math.PI * 2; return (
+        <mesh key={i} position={[Math.cos(a) * S * 0.2, S * 0.05, S * 0.35 + Math.sin(a) * S * 0.2]}><dodecahedronGeometry args={[S * 0.05, 0]} /><meshStandardMaterial color="#555049" roughness={1} flatShading /></mesh>
+      ); })}
+      {/* logs */}
+      <mesh position={[0, S * 0.05, S * 0.35]} rotation={[Math.PI / 2, 0, 0.4]}><cylinderGeometry args={[S * 0.03, S * 0.03, S * 0.34, 5]} /><meshStandardMaterial color="#2a1c12" roughness={1} flatShading /></mesh>
+      <mesh ref={fireRef} position={[0, S * 0.22, S * 0.35]}><coneGeometry args={[S * 0.1, S * 0.28, 6]} /><meshBasicMaterial color={flame} /></mesh>
       <Text position={[0, S * 1.8, 0]} fontSize={S * 0.3} color={titleCol} anchorX="center" anchorY="middle" outlineWidth={S * 0.03} outlineColor="#000">
         {done ? 'Camp Cleared ✓' : `${icon} ${label}`}
       </Text>

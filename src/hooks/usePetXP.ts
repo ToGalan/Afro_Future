@@ -16,21 +16,26 @@ import type { ProgressPatch } from './usePlayerProfile';
 export interface UsePetXPReturn {
   petXp: number;
   petLevel: number;
+  /** Bonding progression (GDD "Bonding and Skills") — gates species abilities. */
+  petBond: number;
   /** XP still needed before next level-up. 0 at max level. */
   xpToNext: number;
   /**
-   * Award +1 pet XP and +0.5 hero XP (called every 40 hero tile moves).
+   * Award +1 pet XP, +0.5 bond and +0.5 hero XP (called every 40 hero tile moves).
    * @param currentHeroXp  current hero.xp from profile
    * @param heroLevel      current hero.level from profile
    */
   gainXPOnMove: (currentHeroXp: number, heroLevel: number) => void;
   /**
-   * Award +5 hero XP on item collect (flower / mushroom). No pet XP.
+   * Award +5 hero XP and +1 pet bond on item collect (the pet fetches/retrieves).
    * @param currentHeroXp  current hero.xp from profile
    * @param heroLevel      current hero.level from profile
    */
   gainXPOnCollect: (currentHeroXp: number, heroLevel: number) => void;
 }
+
+/** Bond climbs slowly toward Soulbound (120); clamp so it never overflows. */
+const BOND_CAP = 120;
 
 export function usePetXP({
   uid,
@@ -47,9 +52,12 @@ export function usePetXP({
 }): UsePetXPReturn {
   const [petXp, setPetXp] = useState(() => profile?.progress?.pet?.xp ?? 0);
   const [petLevel, setPetLevel] = useState(() => profile?.progress?.pet?.level ?? 1);
+  const [petBond, setPetBond] = useState(() => profile?.progress?.pet?.bond ?? 0);
 
   // Stable refs so callbacks never go stale
   const petLevelRef = useRef(petLevel);
+  const petXpRef = useRef(petXp);
+  const petBondRef = useRef(petBond);
   const petTypeRef = useRef<string | undefined>(profile?.progress?.pet?.type);
 
   // Sync once per uid when profile first loads
@@ -59,14 +67,20 @@ export function usePetXP({
     syncedUidRef.current = profile.uid;
     const savedXp = profile.progress?.pet?.xp ?? 0;
     const savedLevel = profile.progress?.pet?.level ?? 1;
+    const savedBond = profile.progress?.pet?.bond ?? 0;
     setPetXp(savedXp);
     setPetLevel(savedLevel);
+    setPetBond(savedBond);
     petLevelRef.current = savedLevel;
+    petXpRef.current = savedXp;
+    petBondRef.current = savedBond;
     petTypeRef.current = profile.progress?.pet?.type;
   }, [profile]);
 
-  // Keep petLevelRef in sync when state changes externally
+  // Keep refs in sync when state changes externally
   useEffect(() => { petLevelRef.current = petLevel; }, [petLevel]);
+  useEffect(() => { petXpRef.current = petXp; }, [petXp]);
+  useEffect(() => { petBondRef.current = petBond; }, [petBond]);
 
   /** Compute level-ups from raw XP total and current level. */
   const applyLevelUps = (rawXp: number, level: number): { xp: number; level: number } => {
@@ -83,6 +97,10 @@ export function usePetXP({
 
   const gainXPOnMove = useCallback(
     (currentHeroXp: number, heroLevel: number) => {
+      // Bonding grows slowly the more you travel together (GDD "Bonding and Skills").
+      const bond = Math.min(BOND_CAP, petBondRef.current + 0.5);
+      petBondRef.current = bond;
+      setPetBond(bond);
       setPetXp(prev => {
         const { xp, level } = applyLevelUps(prev + 1, petLevelRef.current);
         if (level !== petLevelRef.current) {
@@ -90,11 +108,12 @@ export function usePetXP({
           setPetLevel(level);
           console.log(`[PetXP] Level up → ${level}`);
         }
-        // Only patch xp/level — do NOT include traits/unlockedSkillIds/unlockOrder here.
+        petXpRef.current = xp;
+        // Only patch xp/level/bond — do NOT include traits/unlockedSkillIds/unlockOrder here.
         // mergeProgress spreads the existing hero, so sending empty arrays would WIPE the
         // player's unlocked skills on every move (and persist the wipe to the account).
         saveProgress({
-          pet: { xp, level, type: petTypeRef.current },
+          pet: { xp, level, bond, type: petTypeRef.current },
           hero: {
             xp: currentHeroXp + 0.5,
             level: heroLevel,
@@ -110,7 +129,12 @@ export function usePetXP({
 
   const gainXPOnCollect = useCallback(
     (currentHeroXp: number, heroLevel: number) => {
+      // The pet retrieves the item → bonding bump (GDD "fetching items … strengthen bond").
+      const bond = Math.min(BOND_CAP, petBondRef.current + 1);
+      petBondRef.current = bond;
+      setPetBond(bond);
       saveProgress({
+        pet: { xp: petXpRef.current, level: petLevelRef.current, bond, type: petTypeRef.current },
         hero: {
           xp: currentHeroXp + 5,
           level: heroLevel,
@@ -123,6 +147,7 @@ export function usePetXP({
   return {
     petXp,
     petLevel,
+    petBond,
     xpToNext: getXpForNextPetLevel(petLevel),
     gainXPOnMove,
     gainXPOnCollect,

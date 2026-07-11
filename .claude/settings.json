@@ -21,7 +21,10 @@
       "Bash(xargs ls -la)",
       "Bash(sort -k5 -n)",
       "Bash(timeout 300 npx vite build)",
-      "Bash(grep -vi \"MissionScreen\\\\|MissionMap\\\\|SoloMission\\\\|import\\\\|//\")"
+      "Bash(grep -vi \"MissionScreen\\\\|MissionMap\\\\|SoloMission\\\\|import\\\\|//\")",
+      "mcp__claude_ai_Google_Drive__search_files",
+      "mcp__claude_ai_Google_Drive__read_file_content",
+      "Bash(echo \"EXIT: $?\")"
     ]
   }
 }

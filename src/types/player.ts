@@ -20,6 +20,7 @@ export interface PlayerProgress {
     type?: string;            // pet archetype key
     level: number;
     xp: number;               // accumulated XP for leveling (starts at 0)
+    bond?: number;            // bonding progression (GDD "Bonding and Skills") — gates abilities
   };
   skillTokens?: {
     earned: number;

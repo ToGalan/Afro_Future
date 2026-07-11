@@ -7,6 +7,7 @@ export interface PetLoadout {
   type: PetType;
   level: number;
   role: 'SCOUT' | 'SUPPORT' | 'BURST';
+  bond?: number; // bonding progression (GDD "Bonding and Skills")
   cosmetics: Record<string, string>;
 }
 

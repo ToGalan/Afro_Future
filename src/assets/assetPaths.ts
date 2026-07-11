@@ -45,11 +45,11 @@ export const ImageAssets = {
     // Faction-specific exemplars
     PAA: {
       MALE: p('/assets/img/Kwame_Male_PAA.png'),
-      FEMALE: p('/assets/img/Makena_Female_PAA.png'),
+      FEMALE: p('/assets/img/Nia_Female_PAA.png'),
     },
     ASF: {
       MALE: p('/assets/img/Zuberi_Male_ASF.png'),
-      FEMALE: p('/assets/img/Nia_Female_ASF.png'),
+      FEMALE: p('/assets/img/Makena_Female_ASF.png'),
     },
     WC: {
       MALE: p('/assets/img/Jonathan_Male_WC.png'),
