@@ -15,6 +15,12 @@ export type MinimapData = {
   petPos?: { q: number; r: number };
   hexSize: number;
   mapBounds: { minX: number; maxX: number; minZ: number; maxZ: number };
+  // Strategic-territory overlay (outpost/region control).
+  ownedTileKeys?: Set<string>;    // tiles claimed by a player-owned outpost
+  outposts?: { q: number; r: number; owned: boolean }[];
+  ownerColor?: string;            // player faction colour for owned territory
+  controlRevision?: number;       // changes when ownership/control changes → redraw
+  control?: { regionsControlled: number; regionCount: number };
 };
 
 const TERRAIN_DIM: Record<string, string> = {
@@ -39,7 +45,7 @@ const MinimapCanvas = React.memo(
       if (canvas.height !== ch) canvas.height = ch;
       const ctx = canvas.getContext('2d');
       if (!ctx) return;
-      const { exploredKeys, visibleKeys, tileTypes, heroPos, petPos, hexSize, mapBounds } = data;
+      const { exploredKeys, visibleKeys, tileTypes, heroPos, petPos, hexSize, mapBounds, ownedTileKeys, outposts, ownerColor, control } = data;
       const { minX, maxX, minZ, maxZ } = mapBounds;
       const rx = (maxX - minX) || 1;
       const rz = (maxZ - minZ) || 1;
@@ -63,6 +69,30 @@ const MinimapCanvas = React.memo(
         const [px, py] = toCanvas(q, r);
         ctx.fillRect(Math.round(px), Math.round(py), 2, 2);
       }
+      // Territory ownership wash — tiles claimed by a player-owned outpost (fog-gated).
+      if (ownedTileKeys && ownerColor && ownedTileKeys.size) {
+        ctx.globalAlpha = 0.5;
+        ctx.fillStyle = ownerColor;
+        for (const key of ownedTileKeys) {
+          if (!exploredKeys.has(key)) continue;
+          const ci = key.indexOf(',');
+          const q = parseInt(key.slice(0, ci));
+          const r = parseInt(key.slice(ci + 1));
+          const [px, py] = toCanvas(q, r);
+          ctx.fillRect(Math.round(px), Math.round(py), 2, 2);
+        }
+        ctx.globalAlpha = 1;
+      }
+      // Outpost markers — owned = faction colour, neutral = grey (discovered only).
+      if (outposts) {
+        for (const o of outposts) {
+          if (!exploredKeys.has(`${o.q},${o.r}`)) continue;
+          const [px, py] = toCanvas(o.q, o.r);
+          ctx.fillStyle = o.owned ? (ownerColor ?? '#fbbf24') : '#c9ced6';
+          ctx.strokeStyle = '#0a140e'; ctx.lineWidth = 1;
+          ctx.beginPath(); ctx.arc(px, py, 2.6, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
+        }
+      }
       // Pet marker
       if (petPos) {
         const [px, py] = toCanvas(petPos.q, petPos.r);
@@ -80,12 +110,18 @@ const MinimapCanvas = React.memo(
       ctx.fillStyle = 'rgba(255,255,255,0.35)';
       ctx.font = 'bold 10px sans-serif';
       ctx.fillText('N', cw - 14, 13);
+      // Region-control readout (bottom-left).
+      if (control && control.regionCount > 0) {
+        ctx.fillStyle = control.regionsControlled > 0 ? (ownerColor ?? 'rgba(255,255,255,0.7)') : 'rgba(255,255,255,0.55)';
+        ctx.font = 'bold 9px sans-serif';
+        ctx.fillText(`⚑ ${control.regionsControlled}/${control.regionCount}`, 4, ch - 5);
+      }
     }, [data]); // eslint-disable-line react-hooks/exhaustive-deps
 
     // Redraw when data changes
     React.useEffect(() => { draw(); },
       // eslint-disable-next-line react-hooks/exhaustive-deps
-      [data.exploredRevision, data.visibleKeys, data.heroPos.q, data.heroPos.r, data.petPos?.q, data.petPos?.r]);
+      [data.exploredRevision, data.visibleKeys, data.heroPos.q, data.heroPos.r, data.petPos?.q, data.petPos?.r, data.controlRevision]);
 
     // Also redraw when container resizes (e.g. window resize changes 20vw width)
     React.useEffect(() => {
@@ -110,7 +146,8 @@ const MinimapCanvas = React.memo(
     prev.data.heroPos.q === next.data.heroPos.q &&
     prev.data.heroPos.r === next.data.heroPos.r &&
     prev.data.petPos?.q === next.data.petPos?.q &&
-    prev.data.petPos?.r === next.data.petPos?.r,
+    prev.data.petPos?.r === next.data.petPos?.r &&
+    prev.data.controlRevision === next.data.controlRevision,
 );
 
 export interface GameHUDProps {
@@ -246,7 +283,7 @@ const ITEM_TOOLTIPS: Record<string, string> = {
   '🍄': 'Mushroom - Restore 5 EP',
   '⬢': 'Ore - Restore 12 EP',
   '⚡': 'Energy - Restore 20 EP',
-  '🌿': 'Bio - Heal 22 HP',
+  '🌿': 'Bio - Heal 50 HP',
   '🧪': 'Potion - Restore 50 HP',
   '📦': 'Consumable Item'
 };

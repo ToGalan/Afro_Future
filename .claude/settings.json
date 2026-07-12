@@ -31,7 +31,8 @@
       "Bash(python -c \"import pypdf; r=pypdf.PdfReader\\('Afro-Future Rising GDD.pdf'\\); print\\('pages',len\\(r.pages\\)\\)\")",
       "Bash(pip install *)",
       "Bash(python -c \"import pypdf; r=pypdf.PdfReader\\('Afro-Future Rising GDD.pdf'\\); print\\('PAGES',len\\(r.pages\\)\\)\")",
-      "Bash(python -c ' *)"
+      "Bash(python -c ' *)",
+      "Bash(grep -nA2 \"RESOURCE_DEFS.*=.*{\" src/hooks/useCollectibles.ts)"
     ]
   }
 }

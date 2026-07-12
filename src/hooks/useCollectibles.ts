@@ -30,7 +30,7 @@ interface MinTile { q: number; r: number; type: TileType; resource?: ResourceTyp
 export const RESOURCE_DEFS: Record<ResourceType, { icon: string; effect: string; hp: number; ep: number; xp: number; label: string }> = {
   ore:    { icon: '⬢', effect: 'ore',    hp: 0,  ep: 12, xp: 15, label: 'Ore' },     // valuable mineral — big XP + energy
   energy: { icon: '⚡', effect: 'energy', hp: 0,  ep: 20, xp: 6,  label: 'Energy' },  // restores EP
-  bio:    { icon: '🌿', effect: 'heal',   hp: 22, ep: 0,  xp: 6,  label: 'Bio' },     // heals HP
+  bio:    { icon: '🌿', effect: 'heal',   hp: 50, ep: 0,  xp: 6,  label: 'Bio' },     // heals HP
 };
 
 // ── Inventory item matches PlayerProgress.heroInventory / petInventory ───────

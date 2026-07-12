@@ -1,9 +1,11 @@
 /**
- * useOutposts — capturable outposts + region control (GDD macro loop).
+ * useOutposts — capturable outposts + strategic region control (GDD macro loop).
  *
- * Outposts are strategic tiles scattered across the map. Standing adjacent and
- * choosing to capture flips a neutral outpost to the player. Outposts are grouped
- * into regions; controlling every outpost in a region grants a control bonus.
+ * Outposts are strategic tiles scattered across the map. Standing adjacent and choosing
+ * to capture flips a neutral outpost to the player. Each outpost owns a Voronoi territory
+ * (the nearest-outpost tiles), so capturing claims a contiguous chunk of ground. Outposts
+ * are grouped into NAMED regions; controlling every outpost in a region grants a control
+ * bonus (the "eXpand/eXploit" payoff). This is the 4X/MOBA backbone of the map.
  */
 import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 
@@ -16,17 +18,30 @@ export interface Outpost {
   owner: 'neutral' | 'player';
 }
 
+/** A named strategic region grouping several outposts. */
+export interface RegionInfo {
+  id: number;
+  name: string;
+  total: number;
+  owned: number;
+  controlled: boolean;   // player owns every outpost in the region
+  centroid: { q: number; r: number };
+}
+
+// Afro-futurist region names, assigned by spatial bucket (index → name).
+const REGION_NAMES = [
+  'Verdant Reach', 'Sunspire', 'Cobalt Steppe',
+  'Ashen Delta', 'Ironbloom', 'Emberwaste',
+  'Duskmere', 'Palewood', 'Zenith Flats',
+];
+const REGION_COLS = 3;
+const REGION_ROWS = 3;
+
 function axialDist(aq: number, ar: number, bq: number, br: number): number {
   return (Math.abs(aq - bq) + Math.abs(ar - br) + Math.abs(aq + ar - bq - br)) / 2;
 }
 function hash(q: number, r: number): number {
   return Math.abs(Math.sin(q * 33.7 + r * 71.3) * 24634.6345) % 1;
-}
-// Coarse region id from the tile's quadrant relative to the map centre.
-function regionOf(q: number, r: number, cq: number, cr: number): number {
-  const bx = q >= cq ? 1 : 0;
-  const bz = r >= cr ? 1 : 0;
-  return bx + bz * 2; // 0..3 quadrants
 }
 
 interface UseOutpostsOptions {
@@ -45,42 +60,81 @@ export function useOutposts({ tiles, heroQ, heroR, centerQ, centerR, onCapture }
   // outposts' territories tile the ENTIRE map, so capturing an outpost claims a
   // contiguous chunk of ground.
   const [territory, setTerritory] = useState<Map<string, string>>(new Map());
+  // Region metadata (names, centroids). Ownership counts are derived live from `outposts`.
+  const [regionMeta, setRegionMeta] = useState<Map<number, { name: string; centroid: { q: number; r: number } }>>(new Map());
 
   const outpostsRef = useRef(outposts); outpostsRef.current = outposts;
   const heroRef = useRef({ q: heroQ, r: heroR }); heroRef.current = { q: heroQ, r: heroR };
   const onCaptureRef = useRef(onCapture); onCaptureRef.current = onCapture;
 
-  // Generate outposts once tiles load — spread out, away from spawn — then assign the
-  // whole map to the nearest outpost so territories cover every tile.
+  // Generate outposts once tiles load — spread out, away from spawn — then group them into
+  // named regions (3×3 spatial buckets over the outpost span) and assign every tile to its
+  // nearest outpost so territories cover the whole map.
   useEffect(() => {
     if (!tiles.length) return;
-    const m = new Map<string, Outpost>();
+
+    // 1) Candidate outpost coords: sparse, walkable, away from spawn.
+    const coords: { q: number; r: number }[] = [];
     for (const t of tiles) {
       if (t.type === 'water' || t.type === 'mountain') continue;
-      const dist = axialDist(t.q, t.r, centerQ, centerR);
-      if (dist < 6) continue;
-      if (hash(t.q, t.r) >= 0.007) continue; // sparse → each owns a sizeable territory
-      m.set(`${t.q},${t.r}`, { key: `${t.q},${t.r}`, q: t.q, r: t.r, region: regionOf(t.q, t.r, centerQ, centerR), owner: 'neutral' });
+      if (axialDist(t.q, t.r, centerQ, centerR) < 6) continue;
+      if (hash(t.q, t.r) >= 0.007) continue;
+      coords.push({ q: t.q, r: t.r });
+    }
+    if (!coords.length) { setOutposts(new Map()); setTerritory(new Map()); setRegionMeta(new Map()); return; }
+
+    // 2) Region bucketing: a 3×3 grid over the outposts' bounding box. Only non-empty
+    //    buckets become regions; ids are remapped to a contiguous 0..k range.
+    const qs = coords.map(c => c.q), rs = coords.map(c => c.r);
+    const minQ = Math.min(...qs), maxQ = Math.max(...qs), minR = Math.min(...rs), maxR = Math.max(...rs);
+    const spanQ = (maxQ - minQ + 1) / REGION_COLS, spanR = (maxR - minR + 1) / REGION_ROWS;
+    const bucketOf = (q: number, r: number) => {
+      const cx = Math.min(REGION_COLS - 1, Math.floor((q - minQ) / spanQ));
+      const cy = Math.min(REGION_ROWS - 1, Math.floor((r - minR) / spanR));
+      return cy * REGION_COLS + cx; // 0..8
+    };
+    const bucketIds = new Set(coords.map(c => bucketOf(c.q, c.r)));
+    const remap = new Map<number, number>();
+    Array.from(bucketIds).sort((a, b) => a - b).forEach((b, i) => remap.set(b, i));
+
+    // 3) Build outposts with their remapped region id.
+    const m = new Map<string, Outpost>();
+    for (const c of coords) {
+      const region = remap.get(bucketOf(c.q, c.r))!;
+      const key = `${c.q},${c.r}`;
+      m.set(key, { key, q: c.q, r: c.r, region, owner: 'neutral' });
     }
     setOutposts(m);
 
-    // Nearest-outpost assignment for every tile (Voronoi). Positions are fixed, so this
-    // runs once; only ownership flips afterward.
+    // 4) Region metadata: name (by bucket index) + centroid (avg of member outposts).
+    const meta = new Map<number, { name: string; centroid: { q: number; r: number } }>();
+    const acc = new Map<number, { sq: number; sr: number; n: number; bucket: number }>();
+    for (const o of m.values()) {
+      const a = acc.get(o.region) || { sq: 0, sr: 0, n: 0, bucket: bucketOf(o.q, o.r) };
+      a.sq += o.q; a.sr += o.r; a.n++; acc.set(o.region, a);
+    }
+    for (const [id, a] of acc) {
+      meta.set(id, {
+        name: REGION_NAMES[a.bucket % REGION_NAMES.length] ?? `Region ${id + 1}`,
+        centroid: { q: Math.round(a.sq / a.n), r: Math.round(a.sr / a.n) },
+      });
+    }
+    setRegionMeta(meta);
+
+    // 5) Nearest-outpost assignment for every tile (Voronoi). Positions are fixed, so this
+    //    runs once; only ownership flips afterward.
     const outs = Array.from(m.values());
     const terr = new Map<string, string>();
-    if (outs.length) {
-      for (const t of tiles) {
-        let best = outs[0].key;
-        let bestD = Infinity;
-        for (const o of outs) {
-          const d = axialDist(t.q, t.r, o.q, o.r);
-          if (d < bestD) { bestD = d; best = o.key; }
-        }
-        terr.set(`${t.q},${t.r}`, best);
+    for (const t of tiles) {
+      let best = outs[0].key, bestD = Infinity;
+      for (const o of outs) {
+        const d = axialDist(t.q, t.r, o.q, o.r);
+        if (d < bestD) { bestD = d; best = o.key; }
       }
+      terr.set(`${t.q},${t.r}`, best);
     }
     setTerritory(terr);
-    console.log('[outposts] Generated', m.size, 'outposts;', terr.size, 'tiles partitioned');
+    console.log('[outposts] Generated', m.size, 'outposts in', meta.size, 'regions;', terr.size, 'tiles partitioned');
   }, [tiles, centerQ, centerR]);
 
   const engagedKey = useCallback((): string | null => {
@@ -114,16 +168,41 @@ export function useOutposts({ tiles, heroQ, heroR, centerQ, centerR, onCapture }
     return true;
   }, [engagedKey]);
 
+  // Nearest player-owned outpost to a point — the respawn anchor (null → fall back to base).
+  const nearestOwnedOutpost = useCallback((q: number, r: number): Outpost | null => {
+    let best: Outpost | null = null, bestD = Infinity;
+    for (const o of outpostsRef.current.values()) {
+      if (o.owner !== 'player') continue;
+      const d = axialDist(q, r, o.q, o.r);
+      if (d < bestD) { bestD = d; best = o; }
+    }
+    return best;
+  }, []);
+
+  // Live region roster with ownership counts (drives labels + regional bonuses).
+  const regions = useMemo<RegionInfo[]>(() => {
+    const counts = new Map<number, { total: number; owned: number }>();
+    for (const o of outposts.values()) {
+      const c = counts.get(o.region) || { total: 0, owned: 0 };
+      c.total++; if (o.owner === 'player') c.owned++;
+      counts.set(o.region, c);
+    }
+    const list: RegionInfo[] = [];
+    for (const [id, c] of counts) {
+      const meta = regionMeta.get(id);
+      list.push({
+        id, name: meta?.name ?? `Region ${id + 1}`,
+        total: c.total, owned: c.owned, controlled: c.total > 0 && c.owned === c.total,
+        centroid: meta?.centroid ?? { q: centerQ, r: centerR },
+      });
+    }
+    return list.sort((a, b) => a.id - b.id);
+  }, [outposts, regionMeta, centerQ, centerR]);
+
   const control = useMemo(() => {
     const all = Array.from(outposts.values());
     const owned = all.filter(o => o.owner === 'player').length;
-    const regions = new Map<number, { total: number; owned: number }>();
-    for (const o of all) {
-      const r = regions.get(o.region) || { total: 0, owned: 0 };
-      r.total++; if (o.owner === 'player') r.owned++;
-      regions.set(o.region, r);
-    }
-    const regionsControlled = Array.from(regions.values()).filter(r => r.total > 0 && r.owned === r.total).length;
+    const regionsControlled = regions.filter(r => r.controlled).length;
     // Share of the map (by tiles) whose controlling outpost is player-owned.
     let ownedTiles = 0;
     for (const outKey of territory.values()) {
@@ -131,8 +210,8 @@ export function useOutposts({ tiles, heroQ, heroR, centerQ, centerR, onCapture }
     }
     const totalTiles = territory.size;
     const tilePct = totalTiles ? Math.round((ownedTiles / totalTiles) * 100) : 0;
-    return { owned, total: all.length, regionsControlled, regionCount: regions.size, ownedTiles, totalTiles, tilePct };
-  }, [outposts, territory]);
+    return { owned, total: all.length, regionsControlled, regionCount: regions.length, ownedTiles, totalTiles, tilePct };
+  }, [outposts, territory, regions]);
 
-  return { outposts, nearbyOutpost, captureNearby, control, territory };
+  return { outposts, nearbyOutpost, captureNearby, control, territory, regions, nearestOwnedOutpost };
 }

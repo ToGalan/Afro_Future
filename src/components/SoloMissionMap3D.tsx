@@ -2406,7 +2406,10 @@ export default function SoloMissionMap3D({
   };
 
   // ── Outposts / region control ────────────────────────────────────────────────
-  const { outposts, nearbyOutpost, captureNearby, control: outpostControl, territory: outpostTerritory } = useOutposts({
+  const {
+    outposts, nearbyOutpost, captureNearby, control: outpostControl,
+    territory: outpostTerritory, regions: outpostRegions, nearestOwnedOutpost,
+  } = useOutposts({
     tiles,
     heroQ: hero.pos.q,
     heroR: hero.pos.r,
@@ -2416,8 +2419,15 @@ export default function SoloMissionMap3D({
       awardFactionPoints(regionCleared ? 6 : 2); awardHeroXp(regionCleared ? 40 : 15);
       // Seizing contested ground draws a response from any rival units in the area.
       enemyProvokeRef.current?.(heroPosRef.current.q, heroPosRef.current.r, undefined, 7);
+      const hw = axialToWorld({ q: heroPosRef.current.q, r: heroPosRef.current.r }, hexSize);
+      if (regionCleared) spawnCombatText(hw.x, hw.z, '🚩 Region controlled!', '#ffd24a');
     },
   });
+  // Refs so the passive income/respawn loops read live control state without re-subscribing.
+  const outpostControlRef = React.useRef(outpostControl); outpostControlRef.current = outpostControl;
+  const outpostTerritoryRef = React.useRef(outpostTerritory); outpostTerritoryRef.current = outpostTerritory;
+  const outpostsRef2 = React.useRef(outposts); outpostsRef2.current = outposts;
+  const nearestOwnedOutpostRef = React.useRef(nearestOwnedOutpost); nearestOwnedOutpostRef.current = nearestOwnedOutpost;
   // ── Refugee camps — faction-specific side missions + resource rewards ─────────
   // Grant a gathered resource straight into the hero inventory (stacks by type).
   const grantResource = React.useCallback((type: keyof typeof RESOURCE_DEFS, amount: number) => {
@@ -2959,7 +2969,21 @@ export default function SoloMissionMap3D({
     [heroVisible, petVisible],
   );
   
-  // Push minimap data to parent whenever explored / visibility / positions change
+  // Territory ownership for the minimap: tiles claimed by a player-owned outpost, plus a
+  // compact outpost list. Recomputed only when outposts/territory change (not each move).
+  const ownedTileKeys = useMemo(() => {
+    const s = new Set<string>();
+    for (const [tileKey, outKey] of outpostTerritory) if (outposts.get(outKey)?.owner === 'player') s.add(tileKey);
+    return s;
+  }, [outpostTerritory, outposts]);
+  const minimapOutposts = useMemo(
+    () => Array.from(outposts.values()).map(o => ({ q: o.q, r: o.r, owned: o.owner === 'player' })),
+    [outposts],
+  );
+  // A single scalar that changes whenever ownership/control changes → triggers redraw.
+  const controlRevision = outpostControl.owned * 100 + outpostControl.regionsControlled;
+
+  // Push minimap data to parent whenever explored / visibility / positions / control change
   useEffect(() => {
     if (!onMapUpdate) return;
     onMapUpdate({
@@ -2971,10 +2995,15 @@ export default function SoloMissionMap3D({
       petPos: pet.pos,
       hexSize,
       mapBounds,
+      ownedTileKeys,
+      outposts: minimapOutposts,
+      ownerColor: heroColors.primary,
+      controlRevision,
+      control: { regionsControlled: outpostControl.regionsControlled, regionCount: outpostControl.regionCount },
     });
   // mapBounds and tileTypesMap are stable after initial tile generation
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [exploredCount, minimapVisibleKeys, hero.pos.q, hero.pos.r, pet.pos.q, pet.pos.r, onMapUpdate]);
+  }, [exploredCount, minimapVisibleKeys, hero.pos.q, hero.pos.r, pet.pos.q, pet.pos.r, onMapUpdate, controlRevision, ownedTileKeys, minimapOutposts]);
   useEffect(() => {
     let changed = false;
     const mark = (tileKey: string) => {
@@ -3296,21 +3325,44 @@ export default function SoloMissionMap3D({
     const hp = heroVitals?.hp.current ?? 1;
     if (hp <= 0 && !diedRef.current) {
       diedRef.current = true;
-      // Teleport to the base/spawn hub and refill HP + EP.
-      setHero(h => ({ ...h, pos: { ...baseAxial } }));
-      saveProgress({ heroPosition: { ...baseAxial } });
-      updateHeroPosition({ ...baseAxial });
+      // Respawn at the NEAREST player-owned outpost (a forward spawn point — the payoff
+      // of capturing territory); fall back to the base/spawn hub if none is owned.
+      const own = nearestOwnedOutpostRef.current?.(heroPosRef.current.q, heroPosRef.current.r);
+      const spawn = own ? { q: own.q, r: own.r } : { ...baseAxial };
+      setHero(h => ({ ...h, pos: { ...spawn } }));
+      saveProgress({ heroPosition: { ...spawn } });
+      updateHeroPosition({ ...spawn });
       setRecenterSignal(s => s + 1);
       onHealHP?.(999999);
       onRestoreEP?.(999999);
       setDeathBanner(true);
       setTimeout(() => setDeathBanner(false), 1600);
-      console.log('[death] Hero defeated — respawned at base');
+      console.log(`[death] Hero defeated — respawned at ${own ? 'owned outpost ' + own.key : 'base'}`);
     } else if (hp > 0 && diedRef.current) {
       diedRef.current = false;
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [heroVitals?.hp.current]);
+
+  // ── Territory economy (4X "eXploit"): owned outposts yield resources every few
+  //    seconds; controlled regions add a bonus; standing on owned ground slowly heals
+  //    the hero (home-turf regen). Reads live control state via refs. ────────────────
+  const grantResourceRef = React.useRef(grantResource); grantResourceRef.current = grantResource;
+  React.useEffect(() => {
+    const id = window.setInterval(() => {
+      if (inputPausedRef.current) return; // paused with the overlay open
+      const ctrl = outpostControlRef.current;
+      if (ctrl.owned > 0) {
+        const gain = ctrl.owned + ctrl.regionsControlled * 2; // +2 per fully-controlled region
+        grantResourceRef.current('ore', gain);
+      }
+      const hp = heroPosRef.current;
+      const outKey = outpostTerritoryRef.current.get(`${hp.q},${hp.r}`);
+      if (outKey && outpostsRef2.current.get(outKey)?.owner === 'player') onHealHP?.(6);
+    }, 4000);
+    return () => window.clearInterval(id);
+  }, [onHealHP]);
+
   const lastSpaceRef = React.useRef(0);
   useEffect(() => {
     function onSpace(e: KeyboardEvent) {
@@ -3620,14 +3672,19 @@ export default function SoloMissionMap3D({
                           <meshBasicMaterial color="#000" transparent opacity={0.38} depthWrite={false} />
                         </mesh>
                       )}
-                      {/* Outpost control zone — each tile tinted by its controlling outpost's
-                          owner (faction colour if captured, grey if neutral). Border tiles are
-                          brighter so the territory perimeters read across the whole map. */}
-                      {showOutpostZones && (inVision || explored) && outpostTerritory.has(key) && (() => {
+                      {/* Territory ownership — each tile tinted by its controlling outpost's
+                          owner (faction colour if captured, grey if neutral). Owned ground is
+                          always shown faintly so the map reads as claimed territory; the 'O'
+                          overlay reveals the FULL partition (incl. neutral) with bright borders. */}
+                      {(inVision || explored) && outpostTerritory.has(key) && (() => {
                         const owned = outposts.get(outpostTerritory.get(key)!)?.owner === 'player';
+                        // Without the overlay, only owned tiles tint (ownership feedback).
+                        if (!showOutpostZones && !owned) return null;
                         const onBorder = zoneBoundary.has(key);
                         const col = owned ? heroColors.primary : '#8a8f96';
-                        const op = owned ? (onBorder ? 0.4 : 0.16) : (onBorder ? 0.24 : 0.06);
+                        const op = showOutpostZones
+                          ? (owned ? (onBorder ? 0.42 : 0.16) : (onBorder ? 0.24 : 0.06))
+                          : (onBorder ? 0.30 : 0.10); // always-on owned tint
                         return (
                           <mesh rotation={[0, Math.PI / 6, 0]} position={[0, tileTop + 0.05, 0]} renderOrder={13}>
                             <cylinderGeometry args={[hexSize * (onBorder ? 1 : 0.9), hexSize * (onBorder ? 1 : 0.9), 0.02, 6]} />
@@ -3744,6 +3801,19 @@ export default function SoloMissionMap3D({
                     </group>
                   );
                 })}
+                {/* Region name + control labels (revealed with the 'O' territory overlay). */}
+                {showOutpostZones && outpostRegions.map(rg => {
+                  const rkey = `${rg.centroid.q},${rg.centroid.r}`;
+                  if (!exploredRef.current.has(rkey) && !minimapVisibleKeys.has(rkey)) return null;
+                  const rw = axialToWorld({ q: rg.centroid.q, r: rg.centroid.r }, hexSize);
+                  return (
+                    <Text key={`region-${rg.id}`} position={[rw.x, hexSize * 2.4, rw.z]} fontSize={hexSize * 0.6}
+                      color={rg.controlled ? heroColors.primary : '#e5e7eb'} anchorX="center" anchorY="middle"
+                      outlineWidth={hexSize * 0.03} outlineColor="#000">
+                      {`${rg.controlled ? '🚩 ' : ''}${rg.name}  ${rg.owned}/${rg.total}`}
+                    </Text>
+                  );
+                })}
                 {/* Refugee camps (fog-gated) — faction side missions */}
                 {Array.from(refugeeCamps.values()).map(c => {
                   const rkey = `${c.q},${c.r}`;
@@ -3812,6 +3882,12 @@ export default function SoloMissionMap3D({
               {/* Exploration objective tracker */}
               <div className="absolute top-10 left-2 px-3 py-2 rounded-lg bg-black/60 text-xs text-white border border-white/10 font-medium tracking-wide">
                 Explore: {exploredCount}/{explorationGoal} {explorationComplete ? '✓' : ''}
+              </div>
+              {/* Territory control readout (4X/MOBA macro state). Press O for region map. */}
+              <div className="absolute top-[4.6rem] left-2 px-3 py-2 rounded-lg bg-black/60 text-xs text-white border border-white/10 font-medium tracking-wide flex items-center gap-2">
+                <span style={{ color: heroColors.primary }}>🚩 {outpostControl.regionsControlled}/{outpostControl.regionCount} regions</span>
+                <span className="opacity-70">· {outpostControl.owned}/{outpostControl.total} outposts</span>
+                <span className="opacity-70">· {outpostControl.tilePct}% land</span>
               </div>
               
               {/* Terrain / resource tooltip on hover */}
