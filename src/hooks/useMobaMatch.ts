@@ -29,9 +29,9 @@ import {
   type MatchPlayerInfo, type MatchRoom,
 } from '../services/matchSignaling';
 import {
-  createMatch, applyCapture, applyScoreTick, applyElimination, evaluateWinner,
+  createMatch, applyCapture, applyScoreTick, applyElimination, applyObjective, evaluateWinner,
   FACTIONS, MOBA_MODES, MOBA_SCORING,
-  type Faction, type MobaMode, type MatchState, type MatchOutpost,
+  type Faction, type MobaMode, type MatchState, type MatchOutpost, type MobaObjective,
 } from '../services/mobaMatch';
 
 const TICK_HZ = 15;
@@ -274,6 +274,10 @@ export function useMobaMatch(opts: MobaOpts = {}) {
       const h = heroesRef.current.get(from);
       const o = ms.outposts[m.key];
       if (h && o && axialDist(h.pos, o) <= 1) applyCapture(ms, m.key, h.faction);
+    } else if (m.t === 'obj' && ms) {
+      // eXploit objective completed by a guest (terraform / refugee / resource).
+      const h = heroesRef.current.get(from);
+      if (h) applyObjective(ms, h.faction, m.kind as MobaObjective);
     } else if (m.t === 'hit' && ms) {
       // Relay a hit to its target; validate attacker proximity.
       const attacker = heroesRef.current.get(from);
@@ -429,6 +433,13 @@ export function useMobaMatch(opts: MobaOpts = {}) {
       }
     } else guestRef.current?.send({ t: 'dead' });
   }, []);
+  /** Report an eXploit objective (terraform/refugee/resource) for MY faction. */
+  const reportObjective = useCallback((kind: MobaObjective) => {
+    if (roleRef.current === 'host') {
+      const ms = matchRef.current; const myFac = myFactionRef.current;
+      if (ms && myFac) applyObjective(ms, myFac, kind);
+    } else guestRef.current?.send({ t: 'obj', kind });
+  }, []);
 
   useEffect(() => () => cleanup(), [cleanup]);
 
@@ -442,6 +453,6 @@ export function useMobaMatch(opts: MobaOpts = {}) {
     // lobby
     host, join, setFaction, startMatch, leave,
     // in-match
-    setLocalSnapshot, requestCapture, attack, castAbility, reportLocalDeath,
+    setLocalSnapshot, requestCapture, attack, castAbility, reportLocalDeath, reportObjective,
   };
 }

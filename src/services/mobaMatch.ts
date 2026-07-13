@@ -62,10 +62,25 @@ export const MOBA_SCORING = {
   regionControlBonus: 25,
   /** Score for eliminating an enemy hero. */
   eliminationScore: 5,
+  // ── eXploit objectives (economy pillar) — the 4X loop now feeds the MOBA score ──
+  /** Terraforming a region (healing the land). */
+  terraformScore: 20,
+  /** Completing a refugee-camp mission (aid delivered / rival cache raided). */
+  refugeeCampScore: 15,
+  /** Gathering a resource node (ore/energy/bio). */
+  resourceScore: 2,
   /** Seconds between scoring ticks. */
   tickSeconds: 5,
   /** First faction to reach this total score wins the match. */
   targetScore: 300,
+};
+
+/** eXploit-pillar objectives that grant faction score outside of capture/kills. */
+export type MobaObjective = 'terraform' | 'refugee' | 'resource';
+const OBJECTIVE_SCORE: Record<MobaObjective, number> = {
+  terraform: MOBA_SCORING.terraformScore,
+  refugee: MOBA_SCORING.refugeeCampScore,
+  resource: MOBA_SCORING.resourceScore,
 };
 
 // ── Match state ────────────────────────────────────────────────────────────────
@@ -196,6 +211,14 @@ export function applyScoreTick(state: MatchState): void {
 /** Record an elimination: award score to the killer's faction. */
 export function applyElimination(state: MatchState, killerFaction: Faction): void {
   state.score[killerFaction] += MOBA_SCORING.eliminationScore;
+}
+
+/** Award an eXploit-pillar objective (terraform / refugee camp / resource) to a faction.
+ *  Returns the score delta so callers can surface it. */
+export function applyObjective(state: MatchState, faction: Faction, kind: MobaObjective): number {
+  const delta = OBJECTIVE_SCORE[kind] ?? 0;
+  state.score[faction] += delta;
+  return delta;
 }
 
 /**

@@ -76,8 +76,10 @@ interface UseRefugeeCampsOptions {
   centerQ: number;
   centerR: number;
   faction?: string;
-  /** Fired when a camp mission is completed (aid delivered in full, or loot seized). */
-  onComplete?: (camp: RefugeeCamp) => void;
+  /** Fired when a camp mission is resolved. `approach` is HOW the player chose to resolve
+   *  it — aid (help), negotiate (diplomacy), or loot (force) — so the caller can apply the
+   *  right reward, reputation, and consequences. */
+  onComplete?: (camp: RefugeeCamp, approach: 'aid' | 'negotiate' | 'loot') => void;
 }
 
 export function useRefugeeCamps({ tiles, heroQ, heroR, centerQ, centerR, faction, onComplete }: UseRefugeeCampsOptions) {
@@ -157,11 +159,11 @@ export function useRefugeeCamps({ tiles, heroQ, heroR, centerQ, centerR, faction
     const done: RefugeeCamp = { ...c, delivered, completed };
     const next = new Map(campsRef.current); next.set(key, done);
     setCamps(next);
-    if (completed) { onCompleteRef.current?.(done); console.log(`[refugee] Aid complete at ${key}`); }
+    if (completed) { onCompleteRef.current?.(done, 'aid'); console.log(`[refugee] Aid complete at ${key}`); }
     return { accepted, completed };
   }, [engagedKey]);
 
-  // LOOT: seize the rival camp in one action.
+  // LOOT: seize the rival camp by force in one action (rich reward, provokes defenders).
   const lootNearby = useCallback((): RefugeeCamp | null => {
     const key = engagedKey();
     if (!key) return null;
@@ -170,8 +172,23 @@ export function useRefugeeCamps({ tiles, heroQ, heroR, centerQ, centerR, faction
     const done: RefugeeCamp = { ...c, completed: true };
     const next = new Map(campsRef.current); next.set(key, done);
     setCamps(next);
-    onCompleteRef.current?.(done);
+    onCompleteRef.current?.(done, 'loot');
     console.log(`[refugee] Looted ${c.campFaction} camp at ${key}`);
+    return done;
+  }, [engagedKey]);
+
+  // NEGOTIATE: resolve a rival camp peacefully (tactical diplomacy) — a modest, safe reward
+  // and NO provoked defenders. The GDD-canon alternative to looting.
+  const negotiateNearby = useCallback((): RefugeeCamp | null => {
+    const key = engagedKey();
+    if (!key) return null;
+    const c = campsRef.current.get(key);
+    if (!c || c.completed || c.mode !== 'loot') return null;
+    const done: RefugeeCamp = { ...c, completed: true };
+    const next = new Map(campsRef.current); next.set(key, done);
+    setCamps(next);
+    onCompleteRef.current?.(done, 'negotiate');
+    console.log(`[refugee] Negotiated peace with ${c.campFaction} camp at ${key}`);
     return done;
   }, [engagedKey]);
 
@@ -180,5 +197,5 @@ export function useRefugeeCamps({ tiles, heroQ, heroR, centerQ, centerR, faction
     return { done: all.filter(c => c.completed).length, total: all.length };
   }, [camps]);
 
-  return { camps, nearbyCamp, deliverToNearby, lootNearby, progress };
+  return { camps, nearbyCamp, deliverToNearby, lootNearby, negotiateNearby, progress };
 }

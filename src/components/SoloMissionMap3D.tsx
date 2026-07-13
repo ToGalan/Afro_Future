@@ -16,7 +16,8 @@ import { useFactionEnemies, DOCTRINE, type FactionEnemy, type GuardPost } from '
 import { useDuel, type RemoteHero } from '../hooks/useDuel';
 import { watchOpenRooms } from '../services/duelSignaling';
 import { useMobaMatch, type MobaHero } from '../hooks/useMobaMatch';
-import type { Faction } from '../services/mobaMatch';
+import { MOBA_SCORING, type Faction } from '../services/mobaMatch';
+import { PLAYSTYLES, PLAYSTYLE_ORDER, emptyReputation, dominantPlaystyle, type Playstyle, type PlaystyleReputation } from '../services/playstyles';
 import { useSkillStore } from '../store/skillStore';
 import { skillEffectFor, type SkillEffect } from '../store/skillData';
 import { pruneEffects, aggregateEffects, type ActiveEffect } from '../services/statusEffects';
@@ -818,6 +819,7 @@ function RemoteMobaHero({ uid, bufRef, hero, hexSize }: {
   const petRef = React.useRef<THREE.Group>(null);
   const curPos = React.useRef(new THREE.Vector3());
   const inited = React.useRef(false);
+  const derivedFacing = React.useRef(0); // fallback facing for heroes that don't transmit one (AI)
   const fc = FACTION_COLORS[hero.faction] ?? FACTION_COLORS.PAA;
   const colors = React.useMemo(() => ({ primary: fc.primary, secondary: fc.secondary, skin: '#8d5524' }), [fc.primary, fc.secondary]);
   useFrame((_, delta) => {
@@ -827,9 +829,13 @@ function RemoteMobaHero({ uid, bufRef, hero, hexSize }: {
     const w = axialToWorld(buf.pos, hexSize);
     const target = new THREE.Vector3(w.x, 0.48, w.z);
     if (!inited.current) { curPos.current.copy(target); inited.current = true; }
+    // Derive a facing from actual movement (matches the local hero's atan2(dx,dz) convention)
+    // so AI heroes — which don't send a facing — still turn to face where they walk.
+    const dx = target.x - curPos.current.x, dz = target.z - curPos.current.z;
+    if (Math.abs(dx) > 0.002 || Math.abs(dz) > 0.002) derivedFacing.current = Math.atan2(dx, dz);
     curPos.current.lerp(target, k);
     groupRef.current.position.copy(curPos.current);
-    const tRot = buf.facing ?? 0;
+    const tRot = buf.facing ?? derivedFacing.current;
     let d = ((tRot - groupRef.current.rotation.y + Math.PI) % (Math.PI * 2)) - Math.PI;
     if (d < -Math.PI) d += Math.PI * 2;
     groupRef.current.rotation.y += d * k;
@@ -2413,9 +2419,10 @@ export default function SoloMissionMap3D({
     onHeroDamage: (amt) => applyIncomingDamageRef.current(amt),
     awardXp: awardHeroXp,
     awardShards: awardFactionPoints, // camp clears grant Faction Points
-    onCombat: ({ campQ, campR, toCreep, toHero }) => {
+    onCombat: ({ campQ, campR, toCreep, toHero, killed }) => {
       if (toCreep > 0) { const cw = axialToWorld({ q: campQ, r: campR }, hexSize); spawnCombatText(cw.x, cw.z, `-${toCreep}`, '#ffd24a'); }
-      if (toHero > 0) { const hw = axialToWorld({ q: hero.pos.q, r: hero.pos.r }, hexSize); spawnCombatText(hw.x, hw.z, `-${toHero}`, '#ff5555'); } },
+      if (toHero > 0) { const hw = axialToWorld({ q: hero.pos.q, r: hero.pos.r }, hexSize); spawnCombatText(hw.x, hw.z, `-${toHero}`, '#ff5555'); }
+      if (killed > 0) recordPlaystyleRef.current('dominate'); }, // combat kills → Conqueror path
   });
   // Stable ref so the keydown 'F' handler always calls the current attack action.
   const attackNearbyRef = React.useRef(attackNearbyCamp);
@@ -2470,7 +2477,7 @@ export default function SoloMissionMap3D({
     if (consumed) {
       setTerraformProgress(p => {
         const np = Math.min(100, p + 12);
-        if (np >= 100 && p < 100) { awardHeroXp(60); awardFactionPoints(5); terraformRegion(); console.log('[terraform] Region terraformed! +60 XP, +5 FP'); }
+        if (np >= 100 && p < 100) { awardHeroXp(60); awardFactionPoints(5); terraformRegion(); if (mobaActiveRef.current) mobaReportObjectiveRef.current('terraform'); console.log('[terraform] Region terraformed! +60 XP, +5 FP'); }
         return np;
       });
     }
@@ -2511,27 +2518,38 @@ export default function SoloMissionMap3D({
     });
   }, [setLocalHeroInventory]);
 
-  const { camps: refugeeCamps, nearbyCamp: nearbyRefugeeCamp, deliverToNearby: deliverRefugee, lootNearby: lootRefugee, progress: refugeeProgress } = useRefugeeCamps({
+  const { camps: refugeeCamps, nearbyCamp: nearbyRefugeeCamp, deliverToNearby: deliverRefugee, lootNearby: lootRefugee, negotiateNearby: negotiateRefugee, progress: refugeeProgress } = useRefugeeCamps({
     tiles,
     heroQ: hero.pos.q,
     heroR: hero.pos.r,
     centerQ: centerAxial.q,
     centerR: centerAxial.r,
     faction: factionName,
-    onComplete: (camp) => {
-      // AID: standing only (the resources were the cost). LOOT: seize the rival's cache.
-      if (camp.mode === 'loot' && camp.loot.amount > 0) {
+    onComplete: (camp, approach) => {
+      // The player's CHOSEN approach (GDD: help / negotiate / loot) drives the outcome,
+      // reward, reputation, and consequences — not the camp's faction.
+      const cw = axialToWorld({ q: camp.q, r: camp.r }, hexSize);
+      const resLbl = RESOURCE_DEFS[camp.loot.resource].label;
+      if (approach === 'loot' && camp.loot.amount > 0) {
         grantResource(camp.loot.resource, camp.loot.amount);
-        const cw = axialToWorld({ q: camp.q, r: camp.r }, hexSize);
-        spawnCombatText(cw.x, cw.z, `+${camp.loot.amount} ${RESOURCE_DEFS[camp.loot.resource].label}`, '#ffd24a');
-        // Raiding a rival cache enrages that faction's defenders nearby.
-        enemyProvokeRef.current?.(camp.q, camp.r, factionKey(camp.campFaction), 8);
-      } else {
-        const cw = axialToWorld({ q: camp.q, r: camp.r }, hexSize);
-        spawnCombatText(cw.x, cw.z, `Camp aided ✓`, '#7fd66b');
+        spawnCombatText(cw.x, cw.z, `🔥 +${camp.loot.amount} ${resLbl}`, '#fb923c');
+        enemyProvokeRef.current?.(camp.q, camp.r, factionKey(camp.campFaction), 8); // raiding enrages defenders
+        recordPlaystyleRef.current('loot');
+        awardHeroXp(camp.reward.xp); awardFactionPoints(camp.reward.fp);
+      } else if (approach === 'negotiate') {
+        // Tactical diplomacy — a modest, peaceful share; NO provoked defenders; extra standing.
+        const gain = Math.max(1, Math.round(camp.loot.amount * 0.5));
+        grantResource(camp.loot.resource, gain);
+        spawnCombatText(cw.x, cw.z, `🕊️ Peace · +${gain} ${resLbl}`, '#7dd3fc');
+        recordPlaystyleRef.current('negotiate');
+        awardHeroXp(Math.round(camp.reward.xp * 0.8)); awardFactionPoints(camp.reward.fp + 2);
+      } else { // aid / help — heal the camp, build standing
+        spawnCombatText(cw.x, cw.z, `✚ Camp aided`, '#7fd66b');
+        recordPlaystyleRef.current('help');
+        awardHeroXp(camp.reward.xp); awardFactionPoints(camp.reward.fp);
       }
-      awardHeroXp(camp.reward.xp);
-      awardFactionPoints(camp.reward.fp);
+      // Feed the competitive score: force → economy bucket, help/diplomacy → refugee bucket.
+      if (mobaActiveRef.current) mobaReportObjectiveRef.current(approach === 'loot' ? 'resource' : 'refugee');
     },
   });
 
@@ -2658,21 +2676,25 @@ export default function SoloMissionMap3D({
   // faction's camp, deliver as much of the required resource as you're carrying.
   const localHeroInventoryRef = React.useRef(localHeroInventory); localHeroInventoryRef.current = localHeroInventory;
   const nearbyRefugeeCampRef = React.useRef(nearbyRefugeeCamp); nearbyRefugeeCampRef.current = nearbyRefugeeCamp;
-  const handleRefugeeInteract = React.useCallback(() => {
+  // Resolve the adjacent refugee camp with the player's CHOSEN approach (GDD strategy layer):
+  //   help     — deliver aid to your own faction's camp (build standing).
+  //   negotiate— tactical diplomacy at a rival camp (peaceful, modest reward, no reprisal).
+  //   loot     — seize a rival camp by force (rich reward, enrages its defenders).
+  const resolveRefugee = React.useCallback((approach: 'help' | 'negotiate' | 'loot') => {
     const camp = nearbyRefugeeCampRef.current;
     if (!camp) return;
-    if (camp.mode === 'loot') { lootRefugee(); return; }
-    // Aid: deliver held units of the required resource.
+    const hw = axialToWorld({ q: hero.pos.q, r: hero.pos.r }, hexSize);
+    if (camp.mode === 'loot') {
+      if (approach === 'loot') lootRefugee();
+      else negotiateRefugee();                 // any non-force choice → peaceful resolution
+      return;
+    }
+    // Own-faction camp → HELP by delivering the required resource.
     const resType = camp.required.resource;
     const held = localHeroInventoryRef.current.filter(i => i.type === resType).reduce((s, i) => s + (i.quantity || 0), 0);
     const need = Math.max(0, camp.required.amount - camp.delivered);
     const give = Math.min(held, need);
-    const hw = axialToWorld({ q: hero.pos.q, r: hero.pos.r }, hexSize);
-    if (give <= 0) {
-      spawnCombatText(hw.x, hw.z, `Need ${need} ${RESOURCE_DEFS[resType].label}`, '#ff8888');
-      return;
-    }
-    // Consume exactly `give` of the resource from the hero inventory.
+    if (give <= 0) { spawnCombatText(hw.x, hw.z, `Need ${need} ${RESOURCE_DEFS[resType].label}`, '#ff8888'); return; }
     setLocalHeroInventory(prev => {
       let remaining = give;
       return prev.map(i => {
@@ -2684,7 +2706,12 @@ export default function SoloMissionMap3D({
     const res = deliverRefugee(give);
     if (res && !res.completed) spawnCombatText(hw.x, hw.z, `Delivered ${give} ${RESOURCE_DEFS[resType].label}`, '#7fd66b');
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [deliverRefugee, lootRefugee, hexSize, setLocalHeroInventory]);
+  }, [deliverRefugee, lootRefugee, negotiateRefugee, hexSize, setLocalHeroInventory]);
+  const resolveRefugeeRef = React.useRef(resolveRefugee); resolveRefugeeRef.current = resolveRefugee;
+  // H key = the peaceful default (help your camp / negotiate a rival's); force is a click-choice.
+  const handleRefugeeInteract = React.useCallback(() => {
+    resolveRefugeeRef.current(nearbyRefugeeCampRef.current?.mode === 'loot' ? 'negotiate' : 'help');
+  }, []);
 
   // Refs so the keydown handler always calls the current actions.
   const investTerraformRef = React.useRef(investTerraform); investTerraformRef.current = investTerraform;
@@ -2788,6 +2815,23 @@ export default function SoloMissionMap3D({
   const mobaActiveRef = React.useRef(mobaActive); mobaActiveRef.current = mobaActive;
   const mobaSetSnapshotRef = React.useRef(moba.setLocalSnapshot); mobaSetSnapshotRef.current = moba.setLocalSnapshot;
   const mobaRequestCaptureRef = React.useRef(moba.requestCapture); mobaRequestCaptureRef.current = moba.requestCapture;
+  const mobaReportObjectiveRef = React.useRef(moba.reportObjective); mobaReportObjectiveRef.current = moba.reportObjective;
+
+  // ── Strategy playstyles (GDD): the player's emergent approach across interactions ──────
+  // Every dynamic decision (help / negotiate / scavenge / loot / dominate) accretes into a
+  // reputation that names the player's path (Healer / Diplomat / Scavenger / Raider / Conqueror).
+  const [reputation, setReputation] = useState<PlaystyleReputation>(emptyReputation);
+  const recordPlaystyle = React.useCallback((p: Playstyle) => {
+    setReputation(prev => ({ ...prev, [p]: prev[p] + 1 }));
+  }, []);
+  const recordPlaystyleRef = React.useRef(recordPlaystyle); recordPlaystyleRef.current = recordPlaystyle;
+  const dominantStyle = React.useMemo(() => dominantPlaystyle(reputation), [reputation]);
+  // Gathering a world resource node is the "scavenge" approach.
+  const handleCollectWithStyle = React.useCallback(
+    (flowerKey: string | null, mushroomKey: string | null, resource?: { key: string; type: 'ore' | 'energy' | 'bio' } | null) => {
+      if (resource) recordPlaystyle('scavenge');
+      handleCollect(flowerKey, mushroomKey, resource);
+    }, [handleCollect, recordPlaystyle]);
   // Factions already claimed by OTHER players (for lobby dedupe).
   const mobaTakenFactions = React.useMemo(() => {
     const s = new Set<Faction>();
@@ -2801,6 +2845,17 @@ export default function SoloMissionMap3D({
     for (const [k, owner] of Object.entries(moba.outpostOwners)) m.set(k, owner as Faction | 'neutral');
     return m;
   }, [moba.outpostOwners]);
+
+  // 4X campaign score — a running point total for solo play, using the SAME weights as the
+  // competitive MOBA so both ladders read consistently (eXpand: outposts/regions;
+  // eXploit: terraform/refugee camps; eXterminate: tracked via kills where available).
+  const fourXScore = React.useMemo(() => {
+    const s = MOBA_SCORING;
+    return outpostControl.owned * s.captureBonus
+      + outpostControl.regionsControlled * s.regionControlBonus
+      + (terraformDone ? s.terraformScore : 0)
+      + refugeeProgress.done * s.refugeeCampScore;
+  }, [outpostControl.owned, outpostControl.regionsControlled, terraformDone, refugeeProgress.done]);
 
   // Auto-open the MOBA lobby when launched from the MOBA mode.
   const mobaAutoRef = React.useRef(false);
@@ -3724,7 +3779,7 @@ export default function SoloMissionMap3D({
     nearbyResourceRef={nearbyResourceRef}
     collectingFlowerRef={collectingFlowerRef}
     collectingMushroomRef={collectingMushroomRef}
-    handleCollect={handleCollect}
+    handleCollect={handleCollectWithStyle}
     abilitySlots={abilitySlots}
     setAbilitySlots={setAbilitySlots}
   />
@@ -4133,35 +4188,73 @@ export default function SoloMissionMap3D({
                 const held = localHeroInventory.filter(i => i.type === c.required.resource).reduce((s, i) => s + (i.quantity || 0), 0);
                 const resLbl = RESOURCE_DEFS[c.required.resource]?.label ?? '';
                 return (
-                  <div className="fixed top-40 left-1/2 -translate-x-1/2 z-40 max-w-[94vw]">
-                    <div className={`px-4 py-2 rounded-xl border text-xs sm:text-sm font-bold backdrop-blur-sm shadow-lg flex flex-wrap items-center justify-center gap-x-2 gap-y-1 text-center ${
-                      loot ? 'bg-orange-900/80 border-orange-400/60 text-orange-100' : 'bg-emerald-900/80 border-emerald-400/60 text-emerald-100'
-                    }`}>
-                      {c.mission.icon} {c.mission.title}
-                      {loot
-                        ? <span className="opacity-80 font-normal">— {c.mission.desc}</span>
-                        : <span className="opacity-80 font-normal">— {c.delivered}/{c.required.amount} {resLbl} delivered · holding {held}</span>
-                      }
-                      <span className={`px-1.5 py-0.5 rounded font-bold ${loot ? 'bg-orange-700' : 'bg-emerald-700'}`}>H</span> to {c.mission.verb.toLowerCase()}
+                  <div className="fixed top-40 left-1/2 -translate-x-1/2 z-40 max-w-[94vw] pointer-events-auto">
+                    <div className="px-4 py-2.5 rounded-xl border bg-[#0c1219]/90 border-white/15 text-xs sm:text-sm backdrop-blur-sm shadow-lg text-center space-y-2">
+                      <div className="font-bold flex flex-wrap items-center justify-center gap-x-2">
+                        <span>{c.mission.icon} {c.mission.title}</span>
+                        <span className="opacity-70 font-normal">
+                          {loot ? `— ${FACTION_LABEL[c.campFaction]} camp` : `— ${c.delivered}/${c.required.amount} ${resLbl} · holding ${held}`}
+                        </span>
+                      </div>
+                      {/* Player DECIDES the approach (GDD strategy layer) */}
+                      <div className="flex flex-wrap items-center justify-center gap-2">
+                        {loot ? (
+                          <>
+                            <button onClick={() => resolveRefugeeRef.current('negotiate')} title={PLAYSTYLES.negotiate.desc}
+                              className="px-3 py-1.5 rounded-lg font-bold bg-sky-700/80 hover:bg-sky-600 ring-1 ring-sky-400/40">🕊️ Negotiate</button>
+                            <button onClick={() => resolveRefugeeRef.current('loot')} title={PLAYSTYLES.loot.desc}
+                              className="px-3 py-1.5 rounded-lg font-bold bg-orange-700/80 hover:bg-orange-600 ring-1 ring-orange-400/40">🔥 Loot</button>
+                          </>
+                        ) : (
+                          <button onClick={() => resolveRefugeeRef.current('help')} title={PLAYSTYLES.help.desc}
+                            className="px-3 py-1.5 rounded-lg font-bold bg-emerald-700/80 hover:bg-emerald-600 ring-1 ring-emerald-400/40">✚ Help — deliver {resLbl}</button>
+                        )}
+                      </div>
+                      <div className="text-[10px] opacity-50"><span className="px-1 rounded bg-white/10 font-bold">H</span> = {loot ? 'negotiate' : 'help'} (peaceful default)</div>
                     </div>
                   </div>
                 );
               })()}
 
-              {/* Objectives panel (top-left) */}
-              <div className="fixed top-32 left-3 z-30 px-3 py-2 rounded-xl bg-[#0c1219]/85 ring-1 ring-white/10 text-[11px] pointer-events-none shadow-lg space-y-1">
-                <div className="uppercase tracking-wide opacity-50 text-[9px]">Objectives</div>
-                <div className="flex items-center gap-2"><span>🌱</span><span className="opacity-70">Terraform</span><span className="ml-auto font-semibold tabular-nums">{terraformDone ? '✓' : `${terraformProgress}%`}</span></div>
-                <div className="flex items-center gap-2"><span>🚩</span><span className="opacity-70">Outposts</span><span className="ml-auto font-semibold tabular-nums">{outpostControl.owned}/{outpostControl.total}</span></div>
-                <div className="flex items-center gap-2"><span>🗺️</span><span className="opacity-70">Regions</span><span className="ml-auto font-semibold tabular-nums">{outpostControl.regionsControlled}/{outpostControl.regionCount}</span></div>
-                <div className="flex items-center gap-2"><span>🟩</span><span className="opacity-70">Territory</span><span className="ml-auto font-semibold tabular-nums">{outpostControl.tilePct}%</span></div>
-                <div className="flex items-center gap-2"><span>⛺</span><span className="opacity-70">Refugee camps</span><span className="ml-auto font-semibold tabular-nums">{refugeeProgress.done}/{refugeeProgress.total}</span></div>
-                {localPetInventory.length > 0 && (
-                  <div className="flex items-center gap-2 pt-1 mt-1 border-t border-white/10"><span>🐾</span><span className="opacity-70">Pet pack</span><span className="ml-auto font-semibold tabular-nums">{localPetInventory.reduce((s, i) => s + (i.quantity || 0), 0)}</span><span className="px-1 py-0.5 rounded bg-white/10 text-[9px] font-bold">1–8</span></div>
-                )}
-                {duelActive && (
-                  <div className="flex items-center gap-2 pt-1 mt-1 border-t border-white/10"><span>⚔️</span><span className="opacity-70">Duel</span><span className="ml-auto font-semibold tabular-nums">{duel.status === 'connected' ? `${duel.myScore}–${duel.oppScore}` : duel.status}</span></div>
-                )}
+              {/* ── Civ-style top yield bar — full width, yields left, identity right ────── */}
+              <div className="fixed top-0 left-0 right-0 z-30 pointer-events-none">
+                <div className="flex items-center justify-between gap-2 px-3 py-1 bg-gradient-to-b from-[#0a0f16]/95 to-[#0a0f16]/75 border-b border-white/10 shadow-lg text-[12px] text-gray-100 overflow-x-auto no-scrollbar">
+                  {/* Left cluster: yields */}
+                  <div className="flex items-center gap-x-3 gap-y-0.5 flex-nowrap">
+                    <div className="flex items-center gap-1.5" title="4X campaign score — outposts, regions, terraforming & refugee camps">
+                      <span>🏆</span><span className="opacity-50 hidden md:inline">Score</span><span className="font-extrabold tabular-nums text-amber-300">{fourXScore}</span>
+                    </div>
+                    <div className="flex items-center gap-1.5" title="Unspent skill points — open the skill tree to invest">
+                      <span>⭐</span><span className="opacity-50 hidden md:inline">Skill</span>
+                      <span className={`font-extrabold tabular-nums ${(skillPoints ?? 0) > 0 ? 'text-emerald-300' : 'text-gray-300'}`}>{skillPoints ?? 0}</span>
+                    </div>
+                    <span className="w-px h-4 bg-white/15" />
+                    <div className="flex items-center gap-1" title="Terraform progress"><span>🌱</span><span className="font-semibold tabular-nums">{terraformDone ? '✓' : `${terraformProgress}%`}</span></div>
+                    <div className="flex items-center gap-1" title="Outposts owned"><span>🚩</span><span className="font-semibold tabular-nums">{outpostControl.owned}/{outpostControl.total}</span></div>
+                    <div className="flex items-center gap-1" title="Regions controlled"><span>🗺️</span><span className="font-semibold tabular-nums">{outpostControl.regionsControlled}/{outpostControl.regionCount}</span></div>
+                    <div className="flex items-center gap-1" title="Territory held"><span>🟩</span><span className="font-semibold tabular-nums">{outpostControl.tilePct}%</span></div>
+                    <div className="flex items-center gap-1" title="Refugee camps completed"><span>⛺</span><span className="font-semibold tabular-nums">{refugeeProgress.done}/{refugeeProgress.total}</span></div>
+                    {localPetInventory.length > 0 && (
+                      <div className="flex items-center gap-1" title="Pet pack supplies (hotkeys 1–8)"><span>🐾</span><span className="font-semibold tabular-nums">{localPetInventory.reduce((s, i) => s + (i.quantity || 0), 0)}</span></div>
+                    )}
+                    {duelActive && (
+                      <><span className="w-px h-4 bg-white/15" /><div className="flex items-center gap-1" title="Duel score"><span>⚔️</span><span className="font-semibold tabular-nums">{duel.status === 'connected' ? `${duel.myScore}–${duel.oppScore}` : duel.status}</span></div></>
+                    )}
+                  </div>
+                  {/* Right cluster: emergent playstyle identity + faction */}
+                  <div className="flex items-center gap-3 flex-nowrap">
+                    {dominantStyle && (
+                      <div className="flex items-center gap-1.5" title={`Your emergent playstyle — ${PLAYSTYLES[dominantStyle].desc}`} style={{ color: PLAYSTYLES[dominantStyle].color }}>
+                        <span>{PLAYSTYLES[dominantStyle].icon}</span><span className="font-bold whitespace-nowrap">{PLAYSTYLES[dominantStyle].title}</span>
+                      </div>
+                    )}
+                    <span className="w-px h-4 bg-white/15" />
+                    <div className="flex items-center gap-1.5" title={FACTION_LABEL[heroFaction as string] ?? String(heroFaction)}>
+                      <span className="w-2 h-2 rounded-full" style={{ background: FACTION_COLORS[heroFaction as string]?.primary ?? '#8a8f96' }} />
+                      <span className="font-bold" style={{ color: FACTION_COLORS[heroFaction as string]?.label ?? '#e5e7eb' }}>{String(heroFaction)}</span>
+                    </div>
+                  </div>
+                </div>
               </div>
 
               {/* ── 1v1 PvP Duel: launcher button + lobby + result ─────────────── */}
@@ -4305,7 +4398,7 @@ export default function SoloMissionMap3D({
 
               {/* Shared 3-faction scoreboard (top-center) while a match is live. */}
               {mobaMode && mobaActive && (
-                <div className="fixed top-3 left-1/2 -translate-x-1/2 z-40 pointer-events-none">
+                <div className="fixed top-12 left-1/2 -translate-x-1/2 z-40 pointer-events-none">
                   <div className="flex items-center gap-2 px-3 py-1.5 rounded-xl bg-[#0c1219]/90 ring-1 ring-white/12 shadow-lg">
                     {(['PAA','ASF','WC'] as Faction[]).map(f => (
                       <div key={f} className={`flex items-center gap-1.5 px-2 py-0.5 rounded-lg ${moba.myFaction === f ? 'bg-white/10 ring-1 ring-white/25' : ''}`}>
