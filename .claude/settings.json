@@ -40,7 +40,8 @@
       "Bash(grep -iE \"^esbuild$\")",
       "Bash(node -e \"const j=require\\('./firebase.json'\\); console.log\\(j.emulators?JSON.stringify\\(j.emulators,null,2\\):'NONE configured'\\)\")",
       "Bash(firebase --version)",
-      "Bash(git checkout *)"
+      "Bash(git checkout *)",
+      "WebFetch(domain:afuture.netlify.app)"
     ]
   }
 }
