@@ -1,14 +1,21 @@
 import { SkillType } from '../components/SnowflakeSkillTree';
+import type { StatBlock } from '../services/playerStats';
 
 /**
- * Snowflake skill tree — a 12-branch radial "snowflake" of skills, re-themed to the
+ * Snowflake skill tree — a 12-branch radial "snowflake" of skills, themed to the
  * Afro-Future Rising GDD (story + missions): cybernetics, hacking/diplomacy, stealth,
  * healing/terraforming, factions and pet bonding — no generic fantasy spells.
  *
- * Structure (unchanged from the classic snowflake): a central Origin, one CORE node per
- * branch, then 8 tier nodes fanning outward. CORE nodes of combat-relevant branches are
- * castable ABILITIES that carry a buff/debuff `effect` (consumed by services/statusEffects
- * + SoloMissionMap3D.activateAbility); the rest are passive stat nodes.
+ * Structure: a central Origin, one CORE node per branch, then 12 tier nodes fanning
+ * outward across FIVE rings (tiers 2–5, three per ring). CORE nodes of combat branches
+ * are castable ABILITIES carrying a buff/debuff `effect`; the rest are passive stats.
+ *
+ * Two economy features drive build choices:
+ *   - **Scaling cost**: a node costs its tier in skill points (1→5), so outer rings are
+ *     expensive and you cannot unlock everything (see skillStore.availablePoints).
+ *   - **Traits**: investing ≥N nodes in a branch unlocks a TRAIT that grants a real
+ *     StatBlock bonus (fed into computeEffectiveStats), so specialising pays off in
+ *     combat/vitals — not just a cosmetic tag.
  */
 
 // ─── Categories (also the SkillType used for colouring) ───────────────────────
@@ -20,9 +27,9 @@ export interface SkillStats { atk?: number; def?: number; util?: number; }
 
 /** Buff/debuff produced when an ACTIVE skill is cast. Consumed by the status-effect system. */
 export type EffectKind =
-  | 'shield' | 'stealth' | 'regen' | 'haste'       // self-buffs
-  | 'atkBuff' | 'defBuff'                            // self stat buffs
-  | 'burst' | 'stun' | 'pacify' | 'slow';           // enemy-facing
+  | 'shield' | 'stealth' | 'regen' | 'haste'
+  | 'atkBuff' | 'defBuff'
+  | 'burst' | 'stun' | 'pacify' | 'slow';
 export interface SkillEffect {
   kind: EffectKind;
   magnitude: number;
@@ -34,12 +41,12 @@ export interface SkillNode {
   id: string;
   label: string;
   description: string;
-  type: SkillType;          // = category (kept as `type` for the UI/colour code)
-  tier: number;             // 1 (core) … 4 (outer)
-  branch: number;           // lane index (−1 for root)
+  type: SkillType;
+  tier: number;             // 1 (core) … 5 (outer ring)
+  branch: number;
   category: SkillCategory;
-  cost: number;             // skill-point cost (1 per node — classic snowflake pacing)
-  active?: boolean;         // castable ability → auto-slots into an ability bar
+  cost: number;             // = tier (scaling cost)
+  active?: boolean;
   bar?: 'offensive' | 'defensive';
   requires?: string[];
   counters?: string[];
@@ -48,8 +55,6 @@ export interface SkillNode {
   effect?: SkillEffect;
 }
 
-// Branch definition: GDD-themed name, colour category, primary stat, and (for combat
-// branches) the ability bar + effect its CORE node casts.
 export interface BranchDef {
   id: number; name: string; type: SkillType; category: SkillCategory;
   stat: 'atk' | 'def' | 'util';
@@ -72,23 +77,22 @@ export const BRANCHES: BranchDef[] = [
   { id: 11, name: 'Scavenging',  type: 'utility',  category: 'utility',  stat: 'util' },
 ];
 
-// GDD-themed skill names per branch (index 0 = core, 1..8 = tier skills).
+// GDD-themed skill names per branch (index 0 = core, 1..12 = tier skills across 4 rings).
 const SKILL_NAMES: Record<string, string[]> = {
-  Combat:      ['Combat Training', 'Power Strike', 'Guerrilla Strike', 'Suppressing Fire', 'Overload Strike', 'Elite Assault', 'War Cry', 'Executioner', 'Onslaught'],
-  Defense:     ['Shield Activation', 'Reactive Plating', 'Deflect', 'Fortify', 'Full Shield Mode', 'Bulwark', 'Bastion', 'Aegis Protocol', 'Unbreakable'],
-  Stealth:     ['Stealth Mode', 'Silent Step', 'Cloaking Field', 'Ambush', 'Enhanced Stealth', 'Ghost Protocol', 'Shadowstrike', 'Phantom Cloak', 'Untraceable'],
-  Cybernetics: ['Cyber Enhancement', 'Reflex Booster', 'Servo Strength', 'Neural Uplink', 'Cybernetic Overload', 'Nano-Edge', 'Combat Chassis', 'Titan Frame', 'Ascendant Cyberform'],
-  Hacking:     ['Basic Hacking', 'System Breach', 'Firewall Bypass', 'Drone Hijack', 'Advanced Hacking', 'EMP Burst', 'Network Siege', 'Master Intrusion', 'Cyber Dominion'],
-  Healing:     ['Field Medic', 'Bio-Regen', 'Health Increase', 'Mend', 'Nano-Heal', 'Sanctuary Field', 'Regeneration', 'Renewal', 'Life Bloom'],
-  'Pet Bond':  ['Companion Link', 'Basic Pet Command', 'Pet Recon', 'Pack Tactics', 'Advanced Pet Command', 'Pet Combat Upgrade', 'Feral Bond', 'Cyber Symbiosis', 'Evolved Companion'],
-  Faction:     ['Faction Passive I', 'Resource Efficiency', 'Faction Passive II', 'Peacekeeper Drone', 'Faction Passive III', 'Resource Redistribution', 'Faction Passive IV', 'Ceasefire Protocol', 'Faction Ascendancy'],
-  Terraform:   ['Groundwork', 'Cultivate', 'Soil Reclamation', 'Verdant Growth', 'Terraform Pulse', 'Bloom', 'Gaia Engine', 'World Shaper', 'Genesis'],
-  Mobility:    ['Speed Increase', 'Fleet Foot', 'Enhanced Speed', 'Dash', 'Evasion', 'Windrunner', 'Sprint Protocol', 'Slipstream', 'Untouchable'],
-  Diplomacy:   ['Negotiation', 'Rally', 'Inspire', 'Broker Truce', 'Tactician', 'Vanguard', 'Envoy', 'Mediator', 'Sovereign Accord'],
-  Scavenging:  ['Scavenge', 'Quick Hands', 'Salvage Rig', 'Resource Cache', 'Plunder', 'Stockpile', 'Ransack', 'Fortune', 'Grand Salvage'],
+  Combat:      ['Combat Training', 'Power Strike', 'Guerrilla Strike', 'Suppressing Fire', 'Overload Strike', 'Elite Assault', 'War Cry', 'Executioner', 'Onslaught', 'Battle Fury', 'Rampage', 'Bloodstorm', 'Warlord'],
+  Defense:     ['Shield Activation', 'Reactive Plating', 'Deflect', 'Fortify', 'Full Shield Mode', 'Bulwark', 'Bastion', 'Aegis Protocol', 'Unbreakable', 'Stonewall', 'Ironhold', 'Immovable', 'Living Fortress'],
+  Stealth:     ['Stealth Mode', 'Silent Step', 'Cloaking Field', 'Ambush', 'Enhanced Stealth', 'Ghost Protocol', 'Shadowstrike', 'Phantom Cloak', 'Untraceable', 'Blackout', 'Nightstalker', 'Vanish', 'Ghost in the Machine'],
+  Cybernetics: ['Cyber Enhancement', 'Reflex Booster', 'Servo Strength', 'Neural Uplink', 'Cybernetic Overload', 'Nano-Edge', 'Combat Chassis', 'Titan Frame', 'Ascendant Cyberform', 'Overclock', 'Chrome Surge', 'Singularity Core', 'Transhuman'],
+  Hacking:     ['Basic Hacking', 'System Breach', 'Firewall Bypass', 'Drone Hijack', 'Advanced Hacking', 'EMP Burst', 'Network Siege', 'Master Intrusion', 'Cyber Dominion', 'Blackice', 'Rootkit', 'Zero Day', 'Ghostwire'],
+  Healing:     ['Field Medic', 'Bio-Regen', 'Health Increase', 'Mend', 'Nano-Heal', 'Sanctuary Field', 'Regeneration', 'Renewal', 'Life Bloom', 'Vital Surge', 'Restoration', 'Second Wind', 'Lifegiver'],
+  'Pet Bond':  ['Companion Link', 'Basic Pet Command', 'Pet Recon', 'Pack Tactics', 'Advanced Pet Command', 'Pet Combat Upgrade', 'Feral Bond', 'Cyber Symbiosis', 'Evolved Companion', 'Alpha Call', 'Primal Fury', 'Warbeast', 'Soul Tether'],
+  Faction:     ['Faction Passive I', 'Resource Efficiency', 'Faction Passive II', 'Peacekeeper Drone', 'Faction Passive III', 'Resource Redistribution', 'Faction Passive IV', 'Ceasefire Protocol', 'Faction Ascendancy', 'Standard Bearer', 'Rallying Banner', 'Faction Legend', 'Ascendant'],
+  Terraform:   ['Groundwork', 'Cultivate', 'Soil Reclamation', 'Verdant Growth', 'Terraform Pulse', 'Bloom', 'Gaia Engine', 'World Shaper', 'Genesis', 'Reclaimer', 'Green Tide', 'Terraformer', 'Worldheart'],
+  Mobility:    ['Speed Increase', 'Fleet Foot', 'Enhanced Speed', 'Dash', 'Evasion', 'Windrunner', 'Sprint Protocol', 'Slipstream', 'Untouchable', 'Blur', 'Afterimage', 'Lightstep', 'Quicksilver'],
+  Diplomacy:   ['Negotiation', 'Rally', 'Inspire', 'Broker Truce', 'Tactician', 'Vanguard', 'Envoy', 'Mediator', 'Sovereign Accord', 'Statecraft', 'Unifier', 'Peacemaker', 'Concord'],
+  Scavenging:  ['Scavenge', 'Quick Hands', 'Salvage Rig', 'Resource Cache', 'Plunder', 'Stockpile', 'Ransack', 'Fortune', 'Grand Salvage', 'Hoarder', 'Prospector', 'Treasure Hunter', 'Magnate'],
 };
 
-// The effect a branch's CORE node casts, scaled modestly (snowflake cores are entry-tier).
 function coreEffect(kind: EffectKind): SkillEffect {
   switch (kind) {
     case 'burst':   return { kind, magnitude: 16, target: 'enemy' };
@@ -106,8 +110,13 @@ function coreEffect(kind: EffectKind): SkillEffect {
 
 export const PLAYER_LEVEL_CAP = 100;
 export const SKILL_POINTS_BASE = 3;
-export const SKILL_POINTS_PER_LEVEL = 1;    // classic snowflake pacing: 1 point per level
+export const SKILL_POINTS_PER_LEVEL = 2;    // scaled-cost tree → a touch more income per level
 export const SKILL_POINTS_BONUS_PER_5 = 2;
+
+const TIER_NODES = 12; // 4 rings × 3 nodes (tiers 2–5)
+// Scaling skill-point cost by tier: L1 cheap, outer rings steeply expensive.
+const TIER_COST: Record<number, number> = { 1: 1, 2: 3, 3: 5, 4: 7, 5: 10 };
+export function costForTier(tier: number): number { return TIER_COST[tier] ?? tier; }
 
 export function makeTree(): SkillNode[] {
   const nodes: SkillNode[] = [];
@@ -119,21 +128,22 @@ export function makeTree(): SkillNode[] {
     // Core node (tier 1) — castable ability when the branch defines a bar/effect.
     nodes.push({
       id: `${baseId}_core`, label: names[0] || `${b.name} Core`,
-      description: b.effect ? `${b.name} — a castable ability. +1 ${statLabel}.` : `${b.name} fundamentals. +1 ${statLabel}.`,
+      description: b.effect ? `${b.name} — a castable ability. +1 ${statLabel}. (1 pt)` : `${b.name} fundamentals. +1 ${statLabel}. (1 pt)`,
       type: b.type, tier: 1, branch: b.id, category: b.category, cost: 1,
       requires: ['root'], stats: { [b.stat]: 1 },
       active: !!b.bar, bar: b.bar,
       effect: b.effect ? coreEffect(b.effect) : undefined,
     });
-    for (let i = 0; i < 8; i++) {
-      const t = 2 + Math.floor(i / 3);           // tier 2..4
-      const amount = t;                          // higher tier → bigger bonus (2..4)
+    for (let i = 0; i < TIER_NODES; i++) {
+      const t = 2 + Math.floor(i / 3);            // tier 2..5 (three per ring)
+      const amount = t;                           // higher tier → bigger bonus (2..5)
+      const cost = costForTier(t);                // scaling cost: 3 / 5 / 7 / 10
       const id = `${baseId}_${i + 1}`;
       const req = i < 3 ? [`${baseId}_core`] : [`${baseId}_${i - 2}`];
       nodes.push({
         id, label: names[i + 1] || `${b.name} ${i + 1}`,
-        description: `+${amount} ${statLabel}.`,
-        type: b.type, tier: t, branch: b.id, category: b.category, cost: 1,
+        description: `+${amount} ${statLabel}. (${cost} pts)`,
+        type: b.type, tier: t, branch: b.id, category: b.category, cost,
         requires: req,
         faction: b.id % 3 === 0 ? 'PAA' : b.id % 3 === 1 ? 'ASF' : 'WC',
         counters: i % 2 === 0 ? ['combat_core'] : ['defense_core'],
@@ -142,6 +152,56 @@ export function makeTree(): SkillNode[] {
     }
   });
   return nodes;
+}
+
+// ─── Traits — investing in a branch grants a real gameplay bonus ──────────────
+export interface TraitDef {
+  id: string; name: string; branch: string; threshold: number;
+  bonus: Partial<StatBlock>; desc: string;
+}
+// Threshold = nodes unlocked in that branch (of 13). Bonuses feed computeEffectiveStats.
+export const TRAITS: TraitDef[] = [
+  { id: 'aggressor',   name: 'Aggressor',        branch: 'Combat',      threshold: 5, bonus: { atk: 6 },          desc: '+6 ATK' },
+  { id: 'bulwark',     name: 'Bulwark',          branch: 'Defense',     threshold: 5, bonus: { def: 6, hp: 25 },  desc: '+6 DEF, +25 HP' },
+  { id: 'ghost',       name: 'Ghost',            branch: 'Stealth',     threshold: 5, bonus: { spd: 2, atk: 3 },  desc: '+2 SPD, +3 ATK' },
+  { id: 'augmented',   name: 'Augmented',        branch: 'Cybernetics', threshold: 5, bonus: { atk: 5, ep: 15 },  desc: '+5 ATK, +15 EP' },
+  { id: 'netrunner',   name: 'Netrunner',        branch: 'Hacking',     threshold: 5, bonus: { ep: 20, atk: 2 },  desc: '+20 EP, +2 ATK' },
+  { id: 'medic',       name: 'Medic',            branch: 'Healing',     threshold: 5, bonus: { hp: 45 },          desc: '+45 HP' },
+  { id: 'beastmaster', name: 'Beastmaster',      branch: 'Pet Bond',    threshold: 5, bonus: { atk: 3, def: 3 },  desc: '+3 ATK, +3 DEF' },
+  { id: 'champion',    name: 'Faction Champion', branch: 'Faction',     threshold: 5, bonus: { atk: 4, def: 4 },  desc: '+4 ATK, +4 DEF' },
+  { id: 'terraformer', name: 'Terraformer',      branch: 'Terraform',   threshold: 5, bonus: { hp: 20, ep: 10 },  desc: '+20 HP, +10 EP' },
+  { id: 'skirmisher',  name: 'Skirmisher',       branch: 'Mobility',    threshold: 5, bonus: { spd: 4 },          desc: '+4 SPD' },
+  { id: 'diplomat',    name: 'Diplomat',         branch: 'Diplomacy',   threshold: 5, bonus: { def: 4, ep: 10 },  desc: '+4 DEF, +10 EP' },
+  { id: 'scavenger',   name: 'Scavenger',        branch: 'Scavenging',  threshold: 5, bonus: { hp: 15, ep: 15 },  desc: '+15 HP, +15 EP' },
+  // Capstone traits — deep specialisation (≥10 of 13 nodes).
+  { id: 'warlord',     name: 'Warlord',          branch: 'Combat',      threshold: 10, bonus: { atk: 10 },         desc: '+10 ATK' },
+  { id: 'immortal',    name: 'Immortal',         branch: 'Defense',     threshold: 10, bonus: { hp: 60, def: 6 },  desc: '+60 HP, +6 DEF' },
+];
+
+function branchCounts(unlocked: string[], nodes: SkillNode[]): Record<string, number> {
+  const byId = new Map(nodes.map(n => [n.id, n]));
+  const byBranch: Record<string, number> = {};
+  for (const id of unlocked) {
+    const n = byId.get(id); if (!n || n.branch < 0) continue;
+    const b = BRANCHES.find(br => br.id === n.branch)?.name || 'root';
+    byBranch[b] = (byBranch[b] || 0) + 1;
+  }
+  return byBranch;
+}
+
+/** Traits currently active for a set of unlocked nodes. */
+export function activeTraits(unlocked: string[], nodes: SkillNode[]): TraitDef[] {
+  const counts = branchCounts(unlocked, nodes);
+  return TRAITS.filter(t => (counts[t.branch] || 0) >= t.threshold);
+}
+
+/** Aggregate StatBlock bonus from all active traits — fed into computeEffectiveStats. */
+export function deriveTraitBonus(unlocked: string[], nodes: SkillNode[]): Partial<StatBlock> {
+  const out: Partial<StatBlock> = {};
+  for (const t of activeTraits(unlocked, nodes)) {
+    (Object.keys(t.bonus) as (keyof StatBlock)[]).forEach(k => { out[k] = (out[k] || 0) + (t.bonus[k] || 0); });
+  }
+  return out;
 }
 
 // ─── Derived helpers ─────────────────────────────────────────────────────────
@@ -164,7 +224,6 @@ export function sumSkillCost(unlocked: string[], nodes: SkillNode[]): number {
   return total;
 }
 
-// Category → HUD icon. Used by the ability bars and skills modal.
 export const CATEGORY_ICON: Record<SkillCategory, string> = {
   attack: '⚔️', defense: '🛡️', mobility: '🦶', stealth: '🥷',
   pet: '🐾', faction: '🏳️', vitality: '❤️', utility: '🧪',
@@ -179,26 +238,12 @@ export function skillEffectFor(id: string): SkillEffect | undefined { return _IC
 export function skillLabelFor(id: string): string { return _ICON_BY_ID.get(id)?.label ?? id; }
 
 export function deriveTraits(unlocked: string[], nodes: SkillNode[]) {
-  const byBranch: Record<string, number> = {}; const byType: Record<string, number> = {};
+  const counts = branchCounts(unlocked, nodes);
   const byId = new Map(nodes.map(n => [n.id, n]));
-  unlocked.forEach(id => {
-    const n = byId.get(id); if (!n || n.branch < 0) return;
-    const b = BRANCHES.find(br => br.id === n.branch)?.name || 'root';
-    byBranch[b] = (byBranch[b] || 0) + 1; byType[n.category] = (byType[n.category] || 0) + 1;
-  });
-  const topBranch = Object.entries(byBranch).sort((a, b) => b[1] - a[1])[0]?.[0];
+  const byType: Record<string, number> = {};
+  unlocked.forEach(id => { const n = byId.get(id); if (n && n.branch >= 0) byType[n.category] = (byType[n.category] || 0) + 1; });
+  const topBranch = Object.entries(counts).sort((a, b) => b[1] - a[1])[0]?.[0];
   const topType = Object.entries(byType).sort((a, b) => b[1] - a[1])[0]?.[0];
-  const tags: string[] = [];
-  if ((byBranch['Combat'] || 0) >= 4) tags.push('Aggressor');
-  if ((byBranch['Defense'] || 0) >= 4) tags.push('Bulwark');
-  if ((byBranch['Stealth'] || 0) >= 4) tags.push('Ghost');
-  if ((byBranch['Cybernetics'] || 0) >= 4) tags.push('Augmented');
-  if ((byBranch['Hacking'] || 0) >= 4) tags.push('Netrunner');
-  if ((byBranch['Healing'] || 0) >= 4) tags.push('Medic');
-  if ((byBranch['Pet Bond'] || 0) >= 4) tags.push('Beastmaster');
-  if ((byBranch['Terraform'] || 0) >= 4) tags.push('Terraformer');
-  if ((byBranch['Faction'] || 0) >= 4) tags.push('Faction Champion');
-  if ((byBranch['Diplomacy'] || 0) >= 4) tags.push('Diplomat');
-  if ((byBranch['Scavenging'] || 0) >= 4) tags.push('Scavenger');
+  const tags = activeTraits(unlocked, nodes).map(t => t.name);
   return { topBranch, topType, tags };
 }

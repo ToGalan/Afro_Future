@@ -1,6 +1,6 @@
 import React, { useMemo, useState, useEffect, useRef } from 'react';
 import { useSkillStore, availablePoints } from '../store/skillStore';
-import { BRANCHES, makeTree, deriveTraits, sumSkillStats } from '../store/skillData';
+import { BRANCHES, makeTree, deriveTraits, sumSkillStats, activeTraits } from '../store/skillData';
 
 // Skill system types — GDD skill categories (see store/skillData.ts).
 export type SkillType =
@@ -31,7 +31,8 @@ function layoutSnowflake(nodes: SkillNode[], size: number): PositionedNode[] {
   const cx = size / 2; const cy = size / 2;
   const maxTier = Math.max(...nodes.map(n => n.tier));
   const perBranchAngle = (2 * Math.PI) / BRANCHES.length;
-  const radiusStep = (size * 0.5) / Math.max(1, maxTier);
+  // 0.42 (not 0.5) leaves a margin so the outer ring + the branch labels (at 0.46) fit.
+  const radiusStep = (size * 0.42) / Math.max(1, maxTier);
   return nodes.map(n => {
     if (n.id === 'root') return { ...n, x: cx, y: cy };
     const branchAngle = n.branch >= 0 ? n.branch * perBranchAngle : 0;
@@ -260,12 +261,15 @@ export default function SnowflakeSkillTree({ initialLevel = 1 }: SnowflakeSkillT
             <div className="text-lg font-semibold">Traits</div>
             <div className="mt-2 text-sm">Primary Path: <span className="opacity-80">{traitsTopBranch ?? '—'}</span></div>
             <div className="text-sm">Primary Type: <span className="opacity-80">{traitsTopType ?? '—'}</span></div>
-            <div className="mt-2 flex flex-wrap gap-2">
-              {traits.tags.length ? traits.tags.map(t => (
-                <span key={t} className="px-2 py-1 rounded bg-white/10 border border-white/10 text-xs">{t}</span>
-              )) : <span className="opacity-70 text-xs">Unlock nodes to reveal traits</span>}
+            <div className="mt-3 flex flex-col gap-1.5">
+              {activeTraits(unlocked, nodes as any).length ? activeTraits(unlocked, nodes as any).map(t => (
+                <div key={t.id} className="flex items-center justify-between gap-2 px-2 py-1 rounded bg-emerald-500/10 border border-emerald-400/25 text-xs">
+                  <span className="font-semibold text-emerald-200">{t.name}</span>
+                  <span className="opacity-80 text-[10px] text-emerald-300">{t.desc}</span>
+                </div>
+              )) : <span className="opacity-70 text-xs">Invest ≥5 nodes in a branch to unlock its trait</span>}
             </div>
-            <div className="mt-4 text-xs opacity-70">★ marks a castable ability. Choosing different branches creates unique player traits. Zoom out for the snowflake view; zoom in to drag and inspect details.</div>
+            <div className="mt-4 text-xs opacity-70">★ marks a castable ability. Traits (≥5 nodes in a branch) grant real combat/vitals bonuses. Cost scales with tier (1→5 pts). Zoom out for the snowflake view; zoom in to inspect.</div>
           </div>
           <div className="mt-3 grid grid-cols-2 gap-2 text-xs">
             <LegendItem color={branchColor('attack')} label="Combat" />

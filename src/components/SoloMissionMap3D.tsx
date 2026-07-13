@@ -15,6 +15,8 @@ import { useRefugeeCamps, factionKey, type FactionKey } from '../hooks/useRefuge
 import { useFactionEnemies, DOCTRINE, type FactionEnemy, type GuardPost } from '../hooks/useFactionEnemies';
 import { useDuel, type RemoteHero } from '../hooks/useDuel';
 import { watchOpenRooms } from '../services/duelSignaling';
+import { useMobaMatch, type MobaHero } from '../hooks/useMobaMatch';
+import type { Faction } from '../services/mobaMatch';
 import { useSkillStore } from '../store/skillStore';
 import { skillEffectFor, type SkillEffect } from '../store/skillData';
 import { pruneEffects, aggregateEffects, type ActiveEffect } from '../services/statusEffects';
@@ -786,6 +788,72 @@ function RemoteDuelist({ bufRef, remote, hexSize, colors }: {
         <group position={[0, hexSize * 2.0, 0]}>
           <mesh><planeGeometry args={[hexSize * 1.4, hexSize * 0.16]} /><meshBasicMaterial color="#2a0a0a" /></mesh>
           <mesh position={[-(hexSize * 1.4 * (1 - hpPct)) / 2, 0, 0.01]}><planeGeometry args={[hexSize * 1.4 * hpPct, hexSize * 0.16]} /><meshBasicMaterial color="#e0453f" /></mesh>
+        </group>
+      </group>
+      <group ref={petRef} frustumCulled={false}>
+        {isDogPet ? <IsometricDog ps={hexSize * 0.32} isMoving /> : <IsometricPet ps={hexSize * 0.32} isMoving />}
+      </group>
+    </>
+  );
+}
+
+// Per-faction colours for MOBA heroes, outpost banners, and the scoreboard.
+const FACTION_COLORS: Record<string, { primary: string; secondary: string; label: string }> = {
+  PAA: { primary: '#34d399', secondary: '#065f46', label: '#6ee7b7' },
+  ASF: { primary: '#fb7185', secondary: '#7f1d1d', label: '#fda4af' },
+  WC:  { primary: '#38bdf8', secondary: '#075985', label: '#7dd3fc' },
+};
+const FACTION_LABEL: Record<string, string> = { PAA: 'Pan-African Alliance', ASF: 'African Sovereignty Front', WC: 'World Coalition' };
+
+/** A remote MOBA hero (another player OR an AI faction). Interpolated between the host's
+ *  15 Hz world snapshots; faction-coloured. Reads its live position from the shared
+ *  interpolation buffer each frame (keyed by uid) so movement stays smooth. */
+function RemoteMobaHero({ uid, bufRef, hero, hexSize }: {
+  uid: string;
+  bufRef: React.MutableRefObject<Map<string, MobaHero>>;
+  hero: MobaHero;
+  hexSize: number;
+}) {
+  const groupRef = React.useRef<THREE.Group>(null);
+  const petRef = React.useRef<THREE.Group>(null);
+  const curPos = React.useRef(new THREE.Vector3());
+  const inited = React.useRef(false);
+  const fc = FACTION_COLORS[hero.faction] ?? FACTION_COLORS.PAA;
+  const colors = React.useMemo(() => ({ primary: fc.primary, secondary: fc.secondary, skin: '#8d5524' }), [fc.primary, fc.secondary]);
+  useFrame((_, delta) => {
+    const buf = bufRef.current.get(uid);
+    if (!buf || !groupRef.current) return;
+    const k = 1 - Math.pow(0.0025, Math.min(0.05, delta));
+    const w = axialToWorld(buf.pos, hexSize);
+    const target = new THREE.Vector3(w.x, 0.48, w.z);
+    if (!inited.current) { curPos.current.copy(target); inited.current = true; }
+    curPos.current.lerp(target, k);
+    groupRef.current.position.copy(curPos.current);
+    const tRot = buf.facing ?? 0;
+    let d = ((tRot - groupRef.current.rotation.y + Math.PI) % (Math.PI * 2)) - Math.PI;
+    if (d < -Math.PI) d += Math.PI * 2;
+    groupRef.current.rotation.y += d * k;
+    if (petRef.current) {
+      if (buf.pet) {
+        const pw = axialToWorld(buf.pet, hexSize);
+        petRef.current.position.x += (pw.x - petRef.current.position.x) * k;
+        petRef.current.position.z += (pw.z - petRef.current.position.z) * k;
+        petRef.current.position.y = 0.48;
+        petRef.current.visible = true;
+      } else petRef.current.visible = false;
+    }
+  });
+  const hpPct = Math.max(0, Math.min(1, hero.hp / Math.max(1, hero.maxHp)));
+  const isDogPet = hero.pet?.type === 'CYBER_DOG';
+  const tag = hero.isAI ? `🤖 ${hero.faction} Bot` : `${hero.faction} · ${hero.name ?? 'Rival'}`;
+  return (
+    <>
+      <group ref={groupRef} frustumCulled={false}>
+        <IsometricCharacter gender={(hero.gender as any) ?? 'MALE'} colors={colors} hexSize={hexSize} faction={hero.faction as any} isMoving={!!hero.moving} facingAngle={0} />
+        <Text position={[0, hexSize * 2.4, 0]} fontSize={hexSize * 0.4} color={fc.label} anchorX="center" anchorY="middle" outlineWidth={hexSize * 0.03} outlineColor="#000">{tag}</Text>
+        <group position={[0, hexSize * 2.0, 0]}>
+          <mesh><planeGeometry args={[hexSize * 1.4, hexSize * 0.16]} /><meshBasicMaterial color="#20242c" /></mesh>
+          <mesh position={[-(hexSize * 1.4 * (1 - hpPct)) / 2, 0, 0.01]}><planeGeometry args={[hexSize * 1.4 * hpPct, hexSize * 0.16]} /><meshBasicMaterial color={fc.primary} /></mesh>
         </group>
       </group>
       <group ref={petRef} frustumCulled={false}>
@@ -2056,6 +2124,7 @@ export default function SoloMissionMap3D({
   combatStats,
   heroAvatar,
   autoMultiplayer,
+  mobaMode,
   sharedProfile,
   sharedSaveProgress,
   inputPaused,
@@ -2090,6 +2159,8 @@ export default function SoloMissionMap3D({
   heroAvatar?: CharacterLoadout | null;
   /** Launched from the dashboard's Multiplayer mode — auto-open the duel lobby + quick-match. */
   autoMultiplayer?: boolean;
+  /** Launched from the dashboard's 1v1v1 MOBA mode — auto-open the MOBA lobby. */
+  mobaMode?: boolean;
   /** Shared player-profile instance from MissionScreen (single source of truth). */
   sharedProfile?: ReturnType<typeof usePlayerProfile>['profile'];
   sharedSaveProgress?: ReturnType<typeof usePlayerProfile>['saveProgress'];
@@ -2618,6 +2689,7 @@ export default function SoloMissionMap3D({
   // Refs so the keydown handler always calls the current actions.
   const investTerraformRef = React.useRef(investTerraform); investTerraformRef.current = investTerraform;
   const captureNearbyRef = React.useRef(captureNearby); captureNearbyRef.current = captureNearby;
+  const nearbyOutpostRef = React.useRef(nearbyOutpost); nearbyOutpostRef.current = nearbyOutpost;
   const assistRefugeeRef = React.useRef(handleRefugeeInteract); assistRefugeeRef.current = handleRefugeeInteract;
 
   // Toggle for the outpost control-zone perimeter overlay (HUD "Zones" button / 'Y').
@@ -2690,6 +2762,52 @@ export default function SoloMissionMap3D({
     attackRemote: duelAttackRemote, castAbility: duelCastAbility,
   } = duel;
 
+  // ── 1v1v1 MOBA (host-authoritative, Firestore-signaled WebRTC) ───────────────
+  const [mobaLobbyOpen, setMobaLobbyOpen] = useState(false);
+  const [mobaJoinCode, setMobaJoinCode] = useState('');
+  const [mobaFactionPick, setMobaFactionPick] = useState<Faction>('PAA');
+  const [mobaDeathReported, setMobaDeathReported] = useState(false);
+  const [mobaCodeCopied, setMobaCodeCopied] = useState(false);
+  const copyMobaCode = React.useCallback((c: string | null) => {
+    if (!c) return;
+    try { navigator.clipboard?.writeText(c); } catch {}
+    setMobaCodeCopied(true); setTimeout(() => setMobaCodeCopied(false), 1500);
+  }, []);
+  const moba = useMobaMatch({
+    onHit: (dmg, at) => {
+      const myPos = heroPosRef.current;
+      if (at && axialDistance(myPos, at) > 2) { return; }
+      onDamageHP?.(dmg);
+      const hw = axialToWorld({ q: myPos.q, r: myPos.r }, hexSize);
+      spawnCombatText(hw.x, hw.z, `-${dmg}`, '#ff5555');
+    },
+    onCast: (icon, at) => { if (at) { const w = axialToWorld(at, hexSize); spawnCombatText(w.x, w.z, icon, '#c9b3ff'); } },
+    onRemoteDead: (at) => { if (at) { const w = axialToWorld(at, hexSize); spawnCombatText(w.x, w.z, '☠️', '#ff5555'); } },
+  });
+  const mobaActive = moba.status === 'active';
+  const mobaActiveRef = React.useRef(mobaActive); mobaActiveRef.current = mobaActive;
+  const mobaSetSnapshotRef = React.useRef(moba.setLocalSnapshot); mobaSetSnapshotRef.current = moba.setLocalSnapshot;
+  const mobaRequestCaptureRef = React.useRef(moba.requestCapture); mobaRequestCaptureRef.current = moba.requestCapture;
+  // Factions already claimed by OTHER players (for lobby dedupe).
+  const mobaTakenFactions = React.useMemo(() => {
+    const s = new Set<Faction>();
+    for (const p of moba.players) if (p.uid !== moba.myUid) s.add(p.faction);
+    return s;
+  }, [moba.players, moba.myUid]);
+  // Fast lookup of authoritative outpost ownership by "q,r" key. Sourced from the host's
+  // world snapshots (works on host AND guest — both derive the same map geometry locally).
+  const mobaOutpostOwner = React.useMemo(() => {
+    const m = new Map<string, Faction | 'neutral'>();
+    for (const [k, owner] of Object.entries(moba.outpostOwners)) m.set(k, owner as Faction | 'neutral');
+    return m;
+  }, [moba.outpostOwners]);
+
+  // Auto-open the MOBA lobby when launched from the MOBA mode.
+  const mobaAutoRef = React.useRef(false);
+  React.useEffect(() => {
+    if (mobaMode && !mobaAutoRef.current) { mobaAutoRef.current = true; setMobaLobbyOpen(true); }
+  }, [mobaMode]);
+
   // Live count of players waiting for a quick-match — only while the lobby is open and
   // we're not already in a session.
   React.useEffect(() => {
@@ -2731,6 +2849,24 @@ export default function SoloMissionMap3D({
     const dmg = Math.max(1, Math.round((heroAttack + petCombatBonus) * combatAtkMult));
     duelAttackRemote(dmg, hero.pos);
     const rw = axialToWorld(rpos, hexSize);
+    spawnCombatText(rw.x, rw.z, `-${dmg}`, '#ffd24a');
+  };
+
+  // MOBA melee: strike the nearest ADJACENT rival hero (a different faction). Routes the
+  // hit through the host, who relays it to the victim (their HP is defender-authoritative).
+  const mobaFightRef = React.useRef<() => void>(() => {});
+  mobaFightRef.current = () => {
+    if (!mobaActive) return;
+    let bestUid: string | null = null; let bestPos: { q: number; r: number } | null = null; let bestD = Infinity;
+    for (const [uid, h] of moba.remotesBufRef.current) {
+      if (h.faction === moba.myFaction) continue; // don't hit same-faction allies
+      const d = axialDistance(hero.pos, h.pos);
+      if (d <= 1 && d < bestD) { bestD = d; bestUid = uid; bestPos = h.pos; }
+    }
+    if (!bestUid || !bestPos) return;
+    const dmg = Math.max(1, Math.round((heroAttack + petCombatBonus) * combatAtkMult));
+    moba.attack(bestUid, dmg, hero.pos);
+    const rw = axialToWorld(bestPos, hexSize);
     spawnCombatText(rw.x, rw.z, `-${dmg}`, '#ffd24a');
   };
 
@@ -3173,6 +3309,26 @@ export default function SoloMissionMap3D({
       pet: { q: pet.pos.q, r: pet.pos.r, type: petType, moving: isPetMoving },
     });
   }, [duelActive, hero.pos, heroVitals?.hp.current, heroVitals?.hp.max, heroVitals?.name, isHeroMoving, heroFacingAngle, heroFaction, heroGender, pet.pos, petType, isPetMoving]);
+
+  // Same, for the MOBA: push our hero snapshot up to the host (guest) / into the sim (host).
+  React.useEffect(() => {
+    if (!mobaActive) return;
+    mobaSetSnapshotRef.current({
+      pos: hero.pos,
+      hp: heroVitals?.hp.current ?? 100,
+      maxHp: heroVitals?.hp.max ?? 100,
+      gender: heroGender, name: heroVitals?.name,
+      moving: isHeroMoving, facing: heroFacingAngle,
+      pet: { q: pet.pos.q, r: pet.pos.r, type: petType, moving: isPetMoving },
+    });
+  }, [mobaActive, hero.pos, heroVitals?.hp.current, heroVitals?.hp.max, heroVitals?.name, isHeroMoving, heroFacingAngle, heroGender, pet.pos, petType, isPetMoving]);
+
+  // Report our own death once → the killer faction scores an elimination (GDD).
+  React.useEffect(() => {
+    const hp = heroVitals?.hp.current ?? 1;
+    if (mobaActive && !mobaDeathReported && hp <= 0) { moba.reportLocalDeath(); setMobaDeathReported(true); }
+    else if (hp > 0 && mobaDeathReported) setMobaDeathReported(false);
+  }, [mobaActive, mobaDeathReported, heroVitals?.hp.current]);
   // avatarReady: always true since IsometricCharacter is procedural (no async loading).
   // Only reset briefly when a custom GLB modelUrl changes to avoid stale-model flash.
   const [avatarReady, setAvatarReady] = useState(true);
@@ -3478,7 +3634,8 @@ export default function SoloMissionMap3D({
         // Faction enemies take priority (they can move onto you); fall back to camps.
         const hitEnemy = attackNearbyEnemyRef.current().hit;
         if (!hitEnemy) attackNearbyRef.current();  // creep camp if adjacent
-        duelFightRef.current();     // rival duelist if adjacent
+        duelFightRef.current();     // rival duelist if adjacent (1v1)
+        mobaFightRef.current();     // rival hero if adjacent (MOBA)
         return;
       }
       // ─── TERRAFORM (Y) — invest a resource at the terraformer ──────────
@@ -3492,6 +3649,8 @@ export default function SoloMissionMap3D({
       if (k === 'g') {
         if (e.repeat) return;
         captureNearbyRef.current();
+        // In a MOBA, also submit the capture intent to the authoritative host.
+        if (mobaActiveRef.current) { const no = nearbyOutpostRef.current; if (no) mobaRequestCaptureRef.current(`${no.q},${no.r}`); }
         return;
       }
       // ─── TOGGLE OUTPOST CONTROL-ZONE OVERLAY (O) ───────────────────────
@@ -3749,6 +3908,10 @@ export default function SoloMissionMap3D({
                 {duelRemote && (
                   <RemoteDuelist bufRef={duelRemoteBufRef} remote={duelRemote} hexSize={hexSize} colors={heroColors} />
                 )}
+                {/* Remote MOBA heroes (other players + AI factions) */}
+                {mobaActive && moba.remotes.map(h => (
+                  <RemoteMobaHero key={`moba-${h.uid}`} uid={h.uid} bufRef={moba.remotesBufRef} hero={h} hexSize={hexSize} />
+                ))}
                 {/* Creep camps — only on explored/visible tiles (hidden by fog of war),
                     near the hero, and hidden once cleared. */}
                 {Array.from(creepCamps.values()).map(camp => {
@@ -3797,7 +3960,17 @@ export default function SoloMissionMap3D({
                   const ow = axialToWorld({ q: o.q, r: o.r }, hexSize);
                   return (
                     <group key={`outpost-${o.key}`} position={[ow.x, heightFor({ q: o.q, r: o.r, type: 'plains', char: 'P', resource: null }), ow.z]} frustumCulled={false}>
-                      <OutpostMarker size={hexSize} owned={o.owner === 'player'} color={heroColors.primary} />
+                      {(() => {
+                        // In a MOBA, colour the banner by the authoritative owning faction;
+                        // otherwise fall back to the single-player owned/neutral flag.
+                        const mobaOwner = mobaActive ? mobaOutpostOwner.get(o.key) : undefined;
+                        if (mobaActive) {
+                          const owned = !!mobaOwner && mobaOwner !== 'neutral';
+                          const color = owned ? (FACTION_COLORS[mobaOwner as string]?.primary ?? heroColors.primary) : heroColors.primary;
+                          return <OutpostMarker size={hexSize} owned={owned} color={color} />;
+                        }
+                        return <OutpostMarker size={hexSize} owned={o.owner === 'player'} color={heroColors.primary} />;
+                      })()}
                     </group>
                   );
                 })}
@@ -3992,14 +4165,16 @@ export default function SoloMissionMap3D({
               </div>
 
               {/* ── 1v1 PvP Duel: launcher button + lobby + result ─────────────── */}
+              {!mobaMode && (
               <button
                 onClick={() => setDuelLobbyOpen(o => !o)}
                 className={`fixed top-16 right-3 z-40 px-3 py-1.5 rounded-lg text-sm font-bold shadow-lg ring-1 transition pointer-events-auto ${
                   duelActive ? 'bg-rose-800/90 ring-rose-400 text-rose-50' : 'bg-[#141b26]/90 ring-white/15 text-gray-200 hover:ring-rose-400/60'
                 }`}
               >⚔️ Duel{duelActive && duel.status === 'connected' ? ' •' : ''}</button>
+              )}
 
-              {duelLobbyOpen && (
+              {!mobaMode && duelLobbyOpen && (
                 <div className="fixed top-28 right-3 z-40 w-[min(18rem,92vw)] p-4 rounded-xl bg-[#0c1219]/95 ring-1 ring-white/12 shadow-2xl text-sm text-gray-100 space-y-3">
                   <div className="flex items-center justify-between">
                     <span className="font-bold">⚔️ 1v1 Duel</span>
@@ -4114,6 +4289,177 @@ export default function SoloMissionMap3D({
                     <div className="text-lg font-bold tabular-nums mb-1"><span className="text-amber-300">{duel.myScore}</span> <span className="opacity-50">—</span> <span className="text-rose-300">{duel.oppScore}</span></div>
                     <div className="opacity-70 text-sm mb-4">{duel.result === 'win' ? `Best of ${duel.winTarget * 2 - 1} — you won the match.` : 'Your rival won the match.'}</div>
                     <button onClick={() => { duel.leave(); setDuelLobbyOpen(false); }} className="px-6 py-2 rounded-lg bg-rose-700 hover:bg-rose-600 font-bold">Close</button>
+                  </div>
+                </div>
+              )}
+
+              {/* ── 1v1v1 MOBA: launcher + lobby + scoreboard + result ─────────── */}
+              {mobaMode && (
+                <button
+                  onClick={() => setMobaLobbyOpen(o => !o)}
+                  className={`fixed top-16 right-3 z-40 px-3 py-1.5 rounded-lg text-sm font-bold shadow-lg ring-1 transition pointer-events-auto ${
+                    mobaActive ? 'bg-emerald-800/90 ring-emerald-400 text-emerald-50' : 'bg-[#141b26]/90 ring-white/15 text-gray-200 hover:ring-emerald-400/60'
+                  }`}
+                >🌍 MOBA{mobaActive ? ' •' : ''}</button>
+              )}
+
+              {/* Shared 3-faction scoreboard (top-center) while a match is live. */}
+              {mobaMode && mobaActive && (
+                <div className="fixed top-3 left-1/2 -translate-x-1/2 z-40 pointer-events-none">
+                  <div className="flex items-center gap-2 px-3 py-1.5 rounded-xl bg-[#0c1219]/90 ring-1 ring-white/12 shadow-lg">
+                    {(['PAA','ASF','WC'] as Faction[]).map(f => (
+                      <div key={f} className={`flex items-center gap-1.5 px-2 py-0.5 rounded-lg ${moba.myFaction === f ? 'bg-white/10 ring-1 ring-white/25' : ''}`}>
+                        <span className="w-2.5 h-2.5 rounded-full" style={{ background: FACTION_COLORS[f].primary }} />
+                        <span className="text-[11px] font-bold" style={{ color: FACTION_COLORS[f].label }}>{f}</span>
+                        <span className="text-sm font-extrabold tabular-nums text-white">{moba.scores[f] ?? 0}</span>
+                      </div>
+                    ))}
+                    <span className="text-[10px] opacity-50 ml-1">/ 300</span>
+                  </div>
+                </div>
+              )}
+
+              {mobaMode && mobaLobbyOpen && (
+                <div className="fixed top-28 right-3 z-40 w-[min(20rem,92vw)] p-4 rounded-xl bg-[#0c1219]/95 ring-1 ring-white/12 shadow-2xl text-sm text-gray-100 space-y-3 pointer-events-auto">
+                  <div className="flex items-center justify-between">
+                    <span className="font-bold">🌍 1v1v1 MOBA</span>
+                    <button onClick={() => setMobaLobbyOpen(false)} className="opacity-60 hover:opacity-100">✕</button>
+                  </div>
+
+                  {(moba.status === 'idle' || moba.status === 'error') && (
+                    <>
+                      <div className="text-[11px] opacity-60">Pick your faction — the 3rd is played by AI.</div>
+                      <div className="grid grid-cols-3 gap-1.5">
+                        {(['PAA','ASF','WC'] as Faction[]).map(f => {
+                          const taken = mobaTakenFactions.has(f);
+                          const sel = mobaFactionPick === f;
+                          return (
+                            <button
+                              key={f}
+                              disabled={taken}
+                              onClick={() => setMobaFactionPick(f)}
+                              title={FACTION_LABEL[f]}
+                              className={`py-2 rounded-lg text-xs font-bold ring-1 transition disabled:opacity-30 ${sel ? 'ring-2' : 'ring-white/15 hover:ring-white/40'}`}
+                              style={sel ? { background: FACTION_COLORS[f].secondary, boxShadow: `inset 0 0 0 2px ${FACTION_COLORS[f].primary}`, color: FACTION_COLORS[f].label } : { color: FACTION_COLORS[f].label }}
+                            >{f}{taken ? ' 🔒' : ''}</button>
+                          );
+                        })}
+                      </div>
+                      <button onClick={() => moba.host(mobaFactionPick)} className="w-full py-2 rounded-lg bg-emerald-600 hover:bg-emerald-500 font-bold">Host a match</button>
+                      <div className="text-[11px] opacity-50 text-center">— or join a friend's code —</div>
+                      <div className="flex gap-1.5">
+                        <input
+                          value={mobaJoinCode}
+                          onChange={(e) => setMobaJoinCode(e.target.value.toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 5))}
+                          maxLength={5}
+                          placeholder="CODE"
+                          className="flex-1 min-w-0 px-2 py-2 rounded-lg bg-black/40 ring-1 ring-white/15 uppercase tracking-widest font-mono text-center"
+                        />
+                        <button onClick={() => moba.join(mobaJoinCode, mobaFactionPick)} disabled={mobaJoinCode.length < 4} className="px-3 py-2 rounded-lg bg-indigo-700 hover:bg-indigo-600 font-bold disabled:opacity-40">Join</button>
+                      </div>
+                      {moba.status === 'error' && <div className="text-[11px] text-rose-400">Couldn't connect — try again or check the code.</div>}
+                    </>
+                  )}
+
+                  {moba.status === 'joining' && (
+                    <div className="text-center text-[12px] opacity-70 animate-pulse py-2">Connecting to {moba.code}…</div>
+                  )}
+
+                  {/* Lobby (pre-match): roster + host controls. */}
+                  {(moba.status === 'hosting' || moba.status === 'lobby') && (
+                    <div className="space-y-2">
+                      {moba.role === 'host' && moba.code && (
+                        <div className="space-y-1">
+                          <div className="text-[11px] opacity-60">Share this code:</div>
+                          <div className="flex items-center gap-2">
+                            <div className="flex-1 select-all text-2xl font-mono font-bold tracking-[0.3em] text-emerald-300 py-1.5 text-center rounded-lg bg-black/40 ring-1 ring-emerald-400/40">{moba.code}</div>
+                            <button onClick={() => copyMobaCode(moba.code)} className="px-3 py-2 rounded-lg bg-emerald-700 hover:bg-emerald-600 font-bold text-sm">{mobaCodeCopied ? '✓' : 'Copy'}</button>
+                          </div>
+                        </div>
+                      )}
+                      {/* Change your faction in the lobby (locked out if a rival already took it). */}
+                      <div className="text-[11px] uppercase tracking-wide opacity-50">Your faction</div>
+                      <div className="grid grid-cols-3 gap-1.5">
+                        {(['PAA','ASF','WC'] as Faction[]).map(f => {
+                          const taken = mobaTakenFactions.has(f);
+                          const sel = moba.myFaction === f;
+                          return (
+                            <button
+                              key={f}
+                              disabled={taken && !sel}
+                              onClick={() => moba.setFaction(f)}
+                              title={FACTION_LABEL[f]}
+                              className={`py-1.5 rounded-lg text-xs font-bold ring-1 transition disabled:opacity-30 ${sel ? 'ring-2' : 'ring-white/15 hover:ring-white/40'}`}
+                              style={sel ? { background: FACTION_COLORS[f].secondary, boxShadow: `inset 0 0 0 2px ${FACTION_COLORS[f].primary}`, color: FACTION_COLORS[f].label } : { color: FACTION_COLORS[f].label }}
+                            >{f}{taken && !sel ? ' 🔒' : ''}</button>
+                          );
+                        })}
+                      </div>
+                      <div className="text-[11px] uppercase tracking-wide opacity-50">Players</div>
+                      <div className="space-y-1">
+                        {moba.players.map(p => (
+                          <div key={p.uid} className="flex items-center gap-2 text-xs">
+                            <span className="w-2.5 h-2.5 rounded-full" style={{ background: FACTION_COLORS[p.faction]?.primary }} />
+                            <span className="font-semibold" style={{ color: FACTION_COLORS[p.faction]?.label }}>{p.faction}</span>
+                            <span className="opacity-70 truncate">{p.displayName || (p.uid === moba.myUid ? 'You' : p.uid.slice(0, 6))}</span>
+                            {p.isHost && <span className="ml-auto text-[10px] px-1 rounded bg-white/10">HOST</span>}
+                          </div>
+                        ))}
+                        {(['PAA','ASF','WC'] as Faction[]).filter(f => !moba.players.some(p => p.faction === f)).map(f => (
+                          <div key={f} className="flex items-center gap-2 text-xs opacity-50">
+                            <span className="w-2.5 h-2.5 rounded-full" style={{ background: FACTION_COLORS[f].primary }} />
+                            <span className="font-semibold">{f}</span>
+                            <span className="ml-auto text-[10px] px-1 rounded bg-white/10">🤖 AI</span>
+                          </div>
+                        ))}
+                      </div>
+                      {moba.role === 'host' ? (() => {
+                        const dupFactions = new Set(moba.players.map(p => p.faction)).size !== moba.players.length;
+                        const notReady = outposts.size === 0 || dupFactions;
+                        return (
+                          <>
+                            <button
+                              onClick={() => moba.startMatch(Array.from(outposts.values()).map(o => ({ key: o.key, q: o.q, r: o.r, region: o.region, owner: 'neutral' as const })))}
+                              disabled={notReady}
+                              className="w-full py-2 rounded-lg bg-emerald-600 hover:bg-emerald-500 font-bold disabled:opacity-40"
+                            >{outposts.size === 0 ? 'Loading map…' : 'Start Match'}</button>
+                            {dupFactions && <div className="text-[11px] text-amber-400 text-center">Two players share a faction — pick distinct factions to start.</div>}
+                          </>
+                        );
+                      })() : (
+                        <div className="text-[11px] text-center opacity-60 animate-pulse py-1">Waiting for the host to start…</div>
+                      )}
+                      <button onClick={() => moba.leave()} className="w-full py-1.5 rounded-lg bg-white/10 hover:bg-white/20 text-xs">Leave</button>
+                    </div>
+                  )}
+
+                  {mobaActive && (
+                    <div className="space-y-2">
+                      <div className="text-center text-emerald-400 font-bold text-[13px]">Match live — {FACTION_LABEL[moba.myFaction ?? 'PAA']}</div>
+                      <div className="text-[11px] opacity-70 text-center">Get adjacent to an outpost & press <span className="px-1 rounded bg-white/10 font-bold">G</span> to capture. Reach 300 to win.</div>
+                      <button onClick={() => moba.leave()} className="w-full py-1.5 rounded-lg bg-white/10 hover:bg-white/20 text-xs">Leave match</button>
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {/* MOBA result banner */}
+              {mobaMode && moba.result && (
+                <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm">
+                  <div className="px-10 py-8 rounded-2xl bg-[#0c1219]/95 ring-1 ring-white/15 text-center shadow-2xl">
+                    <div className={`text-4xl font-extrabold mb-2 ${moba.result === 'win' ? 'text-emerald-300' : 'text-rose-400'}`}>
+                      {moba.result === 'win' ? '🏆 Victory' : '☠️ Defeat'}
+                    </div>
+                    <div className="opacity-80 text-sm mb-1">{moba.winner ? `${FACTION_LABEL[moba.winner]} controls the region.` : ''}</div>
+                    <div className="flex items-center justify-center gap-3 my-3">
+                      {(['PAA','ASF','WC'] as Faction[]).map(f => (
+                        <div key={f} className="text-center">
+                          <div className="text-[10px] font-bold" style={{ color: FACTION_COLORS[f].label }}>{f}</div>
+                          <div className="text-lg font-extrabold tabular-nums">{moba.scores[f] ?? 0}</div>
+                        </div>
+                      ))}
+                    </div>
+                    <button onClick={() => { moba.leave(); setMobaLobbyOpen(false); }} className="px-6 py-2 rounded-lg bg-emerald-700 hover:bg-emerald-600 font-bold">Close</button>
                   </div>
                 </div>
               )}

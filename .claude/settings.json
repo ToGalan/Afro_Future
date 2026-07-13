@@ -32,7 +32,15 @@
       "Bash(pip install *)",
       "Bash(python -c \"import pypdf; r=pypdf.PdfReader\\('Afro-Future Rising GDD.pdf'\\); print\\('PAGES',len\\(r.pages\\)\\)\")",
       "Bash(python -c ' *)",
-      "Bash(grep -nA2 \"RESOURCE_DEFS.*=.*{\" src/hooks/useCollectibles.ts)"
+      "Bash(grep -nA2 \"RESOURCE_DEFS.*=.*{\" src/hooks/useCollectibles.ts)",
+      "Bash(firebase deploy *)",
+      "Bash(node -e \"const p=require\\('./package.json'\\); console.log\\(JSON.stringify\\(p.scripts,null,2\\)\\)\")",
+      "Bash(grep -iE \"^\\(wrtc|node-datachannel|werift|playwright|puppeteer|@playwright|@puppeteer\\)$\")",
+      "Bash(node -e \"const p=require\\('./package.json'\\); const all={...p.dependencies,...p.devDependencies}; console.log\\(Object.keys\\(all\\).filter\\(k=>/rtc|datachannel|werift|playwright|puppeteer|jsdom|vitest|jest/i.test\\(k\\)\\).join\\(', '\\)||'none'\\)\")",
+      "Bash(grep -iE \"^esbuild$\")",
+      "Bash(node -e \"const j=require\\('./firebase.json'\\); console.log\\(j.emulators?JSON.stringify\\(j.emulators,null,2\\):'NONE configured'\\)\")",
+      "Bash(firebase --version)",
+      "Bash(git checkout *)"
     ]
   }
 }

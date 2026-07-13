@@ -52,6 +52,51 @@ service cloud.firestore {
       allow read, write: if isAdmin();
     }
 
+    // duels/{code} — ephemeral WebRTC signaling rooms for 1v1 duels (see
+    // src/services/duelSignaling.ts). A room holds only the short-lived SDP
+    // offer/answer handshake; ICE candidates live in the hostCandidates /
+    // guestCandidates subcollections. Codes are random and rooms are torn down
+    // on close, so any signed-in player may create, join (read), answer
+    // (update), and clean up (delete) a room. Without these rules the default
+    // deny below blocks all signaling and no duel can ever connect.
+    match /duels/{code} {
+      allow read, create, update, delete: if isSignedIn();
+      // hostCandidates / guestCandidates — ICE candidate exchange.
+      match /{candidateSet}/{candidateId} {
+        allow read, write: if isSignedIn();
+      }
+    }
+
+    // matches/{code} — host-authoritative 1v1v1 MOBA rooms (see
+    // src/services/matchSignaling.ts). The room doc holds mode, shared map seed,
+    // host uid, phase and winner. Only the host may mutate the room. Each player
+    // owns their own slot under players/{uid} (faction pick + presence); the host
+    // may also write slots (e.g. to seat/kick). WebRTC signaling for the
+    // host<->guest star lives under connections/{guestUid} and is writable only by
+    // that guest or the host.
+    match /matches/{code} {
+      function matchHost() {
+        return get(/databases/$(database)/documents/matches/$(code)).data.host;
+      }
+      allow read:            if isSignedIn();
+      allow create:          if isSignedIn() && request.resource.data.host == request.auth.uid;
+      allow update, delete:  if isSignedIn() && resource.data.host == request.auth.uid;
+
+      // Per-player slot: faction choice + presence. Owner writes their own; host may too.
+      match /players/{uid} {
+        allow read:  if isSignedIn();
+        allow write: if isSignedIn() && (uid == request.auth.uid || matchHost() == request.auth.uid);
+      }
+
+      // Per-guest WebRTC offer/answer + ICE candidates for the host<->guest link.
+      match /connections/{guestUid} {
+        allow read, write: if isSignedIn() && (guestUid == request.auth.uid || matchHost() == request.auth.uid);
+        match /{candidateSet}/{candidateId} {
+          allow read, write: if isSignedIn() && (guestUid == request.auth.uid || matchHost() == request.auth.uid);
+        }
+      }
+    }
+
     // Default deny
     match /{document=**} {
       allow read, write: if false;

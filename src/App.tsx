@@ -93,6 +93,8 @@ export default function App() {
   // When the player launches from the dashboard's Multiplayer mode, auto-open the duel
   // lobby + quick-match on entering the mission.
   const [launchMultiplayer, setLaunchMultiplayer] = useState(false);
+  // Launched from the dashboard's 1v1v1 MOBA mode — auto-open the MOBA lobby.
+  const [launchMoba, setLaunchMoba] = useState(false);
   const [progress, setProgress] = useState(0);
   const [playerName] = useState('PlayerOne');
   // Account level is linked to profile; default to 1 if not persisted yet
@@ -604,10 +606,11 @@ export default function App() {
     mainView === 'mission' ? (
       <MissionErrorBoundary onExit={() => setMainView('dashboard')}>
         <MissionScreen
-          onExit={() => { setLaunchMultiplayer(false); setMainView('dashboard'); }}
+          onExit={() => { setLaunchMultiplayer(false); setLaunchMoba(false); setMainView('dashboard'); }}
           onOpenSkillTree={() => setMainView('skills')}
           activeLoadout={activeLoadout}
           autoMultiplayer={launchMultiplayer}
+          mobaMode={launchMoba}
         />
       </MissionErrorBoundary>
     ) : (
@@ -620,7 +623,7 @@ export default function App() {
           heroLocked={heroLocked}
           view={mainView}
           onChangeView={setMainView}
-          onLaunch={(mode) => { setLaunchMultiplayer(mode === 'multi'); setMainView('mission'); }}
+          onLaunch={(mode) => { setLaunchMultiplayer(mode === 'multi'); setLaunchMoba(mode === 'moba'); setMainView('mission'); }}
           profile={profile}
           onSignOut={handleSignOut}
         />
@@ -880,7 +883,7 @@ class CanvasErrorBoundary extends React.Component<
   render() { return this.state.hasError ? (this.props.fallback ?? null) : this.props.children; }
 }
 
-function MissionScreen({ onExit, onOpenSkillTree, activeLoadout, autoMultiplayer }: { onExit: () => void; onOpenSkillTree?: () => void; activeLoadout?: CharacterLoadout | null; autoMultiplayer?: boolean }){
+function MissionScreen({ onExit, onOpenSkillTree, activeLoadout, autoMultiplayer, mobaMode }: { onExit: () => void; onOpenSkillTree?: () => void; activeLoadout?: CharacterLoadout | null; autoMultiplayer?: boolean; mobaMode?: boolean }){
   // Access active loadout & skill state for HUD
   // Prefer the live prop from App (stays in sync with configurator changes),
   // fall back to localStorage only when the prop is not available.
@@ -1008,6 +1011,7 @@ function MissionScreen({ onExit, onOpenSkillTree, activeLoadout, autoMultiplayer
         <SoloMissionMap3D
           onExit={onExit}
           autoMultiplayer={autoMultiplayer}
+          mobaMode={mobaMode}
           sharedProfile={profile}
           sharedSaveProgress={saveProgress}
           onMapUpdate={onMapUpdate}
@@ -1536,7 +1540,7 @@ function FirstTimeFlow({ faction, archetype, pet, onFaction, onArchetype, onPet,
   );
 }
 
-function MainMenu({ playerName, accountLevel, loadout, onCustomize, heroLocked, view, onChangeView, onLaunch, profile, onSignOut }: { playerName: string; accountLevel: number; loadout: CharacterLoadout; onCustomize: () => void; heroLocked: boolean; view: 'dashboard' | 'skills' | 'store' | 'help' | 'settings' | 'mission'; onChangeView: (v: 'dashboard' | 'skills' | 'store' | 'help' | 'settings' | 'mission') => void; onLaunch?: (mode: 'single' | 'multi') => void; profile?: { sub: string; name?: string; email?: string; picture?: string } | null; onSignOut?: () => void; }) {
+function MainMenu({ playerName, accountLevel, loadout, onCustomize, heroLocked, view, onChangeView, onLaunch, profile, onSignOut }: { playerName: string; accountLevel: number; loadout: CharacterLoadout; onCustomize: () => void; heroLocked: boolean; view: 'dashboard' | 'skills' | 'store' | 'help' | 'settings' | 'mission'; onChangeView: (v: 'dashboard' | 'skills' | 'store' | 'help' | 'settings' | 'mission') => void; onLaunch?: (mode: 'single' | 'multi' | 'moba') => void; profile?: { sub: string; name?: string; email?: string; picture?: string } | null; onSignOut?: () => void; }) {
   // Keep the skill store level in sync with progression: the higher of the loadout
   // level, the XP-driven hero level, AND the level already in the store. Including the
   // store level is critical — otherwise opening the skill tree right after leveling up
@@ -1976,8 +1980,8 @@ function LeftPlayerPanel({ className = '', playerName, accountLevel, loadout, he
   );
 }
 
-function RightPlayerPanel({ className = '', loadout, onCustomize, onPlay }: { className?: string; loadout: CharacterLoadout; onCustomize: () => void; onPlay?: (mode: 'single' | 'multi')=>void }) {
-  const [mode, setMode] = useState<'single' | 'multi'>('single');
+function RightPlayerPanel({ className = '', loadout, onCustomize, onPlay }: { className?: string; loadout: CharacterLoadout; onCustomize: () => void; onPlay?: (mode: 'single' | 'multi' | 'moba')=>void }) {
+  const [mode, setMode] = useState<'single' | 'multi' | 'moba'>('single');
   const [queue] = useState<string | null>(null);
 
   function startMatch() {
@@ -1986,9 +1990,10 @@ function RightPlayerPanel({ className = '', loadout, onCustomize, onPlay }: { cl
     onPlay?.(mode);
   }
 
-  const modes: { key: 'single' | 'multi'; label: string; enabled: boolean }[] = [
+  const modes: { key: 'single' | 'multi' | 'moba'; label: string; enabled: boolean }[] = [
     { key: 'single', label: 'Single Player', enabled: true },
     { key: 'multi', label: 'Multiplayer — 1v1 Duel', enabled: true },
+    { key: 'moba', label: 'Multiplayer — 1v1v1 MOBA', enabled: true },
   ];
   
   return (
@@ -2048,8 +2053,8 @@ function RightPlayerPanel({ className = '', loadout, onCustomize, onPlay }: { cl
         </div>
   {/* Play footer pinned to bottom */}
   <div className="p-4 mt-auto bg-[#0f1218]">
-          <Button className="w-full h-12 text-lg" onClick={startMatch}>{mode === 'multi' ? 'Play — Find Duel' : 'Play'}</Button>
-          <div className="mt-1 text-[11px] text-gray-300 h-4">{queue ?? (mode === 'multi' ? 'Opens the duel lobby on entry' : '')}</div>
+          <Button className="w-full h-12 text-lg" onClick={startMatch}>{mode === 'multi' ? 'Play — Find Duel' : mode === 'moba' ? 'Play — 1v1v1 MOBA' : 'Play'}</Button>
+          <div className="mt-1 text-[11px] text-gray-300 h-4">{queue ?? (mode === 'multi' ? 'Opens the duel lobby on entry' : mode === 'moba' ? 'Opens the MOBA lobby — pick a faction, host or join' : '')}</div>
         </div>
     </aside>
   );

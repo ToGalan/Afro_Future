@@ -63,12 +63,23 @@ export function useSkillsProgress({
   const skillState = useSkillStore();
 
   // ── Effective stats: faction/character base + level growth + skill modifiers ──
-  const { level, attack, defense, utility } = skillState;
+  const { level, attack, defense, utility, traitBonus } = skillState;
   const faKey = (factionAbilities || []).join(',');
+  // Flat bonus = unlocked faction abilities + active skill TRAITS (both Partial<StatBlock>).
+  const traitKey = JSON.stringify(traitBonus || {});
   const stats = useMemo(
-    () => computeEffectiveStats(faction, archetype, { level, attack, defense, utility }, factionAbilityBonus(factionAbilities)),
+    () => {
+      const fa = factionAbilityBonus(factionAbilities);
+      const tb = traitBonus || {};
+      const bonus = {
+        hp: (fa.hp || 0) + (tb.hp || 0), ep: (fa.ep || 0) + (tb.ep || 0),
+        atk: (fa.atk || 0) + (tb.atk || 0), def: (fa.def || 0) + (tb.def || 0),
+        spd: (fa.spd || 0) + (tb.spd || 0),
+      };
+      return computeEffectiveStats(faction, archetype, { level, attack, defense, utility }, bonus);
+    },
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [faction, archetype, level, attack, defense, utility, faKey],
+    [faction, archetype, level, attack, defense, utility, faKey, traitKey],
   );
   const HP_MAX = stats.total.hp;   // faction base HP + level + skill defense
   const EP_MAX = stats.total.ep;   // faction base EP + level + skill utility

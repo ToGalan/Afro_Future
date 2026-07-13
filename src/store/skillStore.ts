@@ -1,9 +1,10 @@
 import { create } from 'zustand';
 import {
-  makeTree, deriveTraits, sumSkillStats, sumSkillCost,
+  makeTree, deriveTraits, deriveTraitBonus, sumSkillStats, sumSkillCost,
   SKILL_POINTS_BASE, SKILL_POINTS_PER_LEVEL, SKILL_POINTS_BONUS_PER_5, PLAYER_LEVEL_CAP,
   type SkillNode,
 } from './skillData';
+import type { StatBlock } from '../services/playerStats';
 
 export interface AbilityLoadout {
   offensive: (string | null)[];  // 4 slots for Q/E/R/T
@@ -30,6 +31,8 @@ export interface SkillState {
   primaryBranch?: string;
   primaryType?: string;
   traitTags: string[];
+  // Aggregate StatBlock bonus from active traits (fed into computeEffectiveStats).
+  traitBonus: Partial<StatBlock>;
   // Ability slot assignments
   abilityLoadout: AbilityLoadout;
   setAbilitySlot: (category: 'offensive' | 'defensive', slot: number, skillId: string | null) => void;
@@ -50,6 +53,7 @@ function abilityBar(node: SkillNode | undefined): 'offensive' | 'defensive' | nu
 const INIT_UNLOCKED = ['root'];
 const INIT_STATS = deriveStats(INIT_UNLOCKED);
 const INIT_TRAITS = deriveTraits(INIT_UNLOCKED, TREE);
+const INIT_TRAIT_BONUS = deriveTraitBonus(INIT_UNLOCKED, TREE);
 
 export const useSkillStore = create<SkillState>((set) => ({
   level: 1,
@@ -62,6 +66,7 @@ export const useSkillStore = create<SkillState>((set) => ({
   defense: INIT_STATS.defense,
   utility: INIT_STATS.utility,
   traitTags: INIT_TRAITS.tags,
+  traitBonus: INIT_TRAIT_BONUS,
   primaryBranch: INIT_TRAITS.topBranch,
   primaryType: INIT_TRAITS.topType,
   abilityLoadout: { offensive: [null, null, null, null], defensive: [null, null, null, null] },
@@ -76,6 +81,7 @@ export const useSkillStore = create<SkillState>((set) => ({
     const nextLevel = typeof data.level === 'number' ? Math.max(1, Math.min(PLAYER_LEVEL_CAP, data.level)) : state.level;
     const stats = deriveStats(nextUnlocked);
     const traits = deriveTraits(nextUnlocked, TREE);
+    const traitBonus = deriveTraitBonus(nextUnlocked, TREE);
     const spent = sumSkillCost(nextUnlocked, TREE);
     const nextLoadout: AbilityLoadout = data.abilityLoadout ? {
       offensive: Array.isArray(data.abilityLoadout.offensive) && data.abilityLoadout.offensive.length === 4 ? data.abilityLoadout.offensive : state.abilityLoadout.offensive,
@@ -92,6 +98,7 @@ export const useSkillStore = create<SkillState>((set) => ({
       primaryBranch: traits.topBranch,
       primaryType: traits.topType,
       traitTags: traits.tags,
+      traitBonus,
       abilityLoadout: nextLoadout,
     } as Partial<SkillState> as SkillState;
   }),
@@ -105,6 +112,7 @@ export const useSkillStore = create<SkillState>((set) => ({
     const nextOrder = [...state.unlockOrder, id];
     const stats = deriveStats(nextUnlocked);
     const traits = deriveTraits(nextUnlocked, TREE);
+    const traitBonus = deriveTraitBonus(nextUnlocked, TREE);
     // Auto-slot a newly unlocked ACTIVE skill into a free bar slot so it shows in the HUD.
     let abilityLoadout = state.abilityLoadout;
     const bar = abilityBar(node);
@@ -113,17 +121,17 @@ export const useSkillStore = create<SkillState>((set) => ({
       const free = slots.indexOf(null);
       if (free >= 0 && !slots.includes(id)) { slots[free] = id; abilityLoadout = { ...state.abilityLoadout, [bar]: slots }; }
     }
-    return { unlocked: nextUnlocked, unlockOrder: nextOrder, spent: state.spent + cost, abilityLoadout, ...stats, primaryBranch: traits.topBranch, primaryType: traits.topType, traitTags: traits.tags } as Partial<SkillState> as SkillState;
+    return { unlocked: nextUnlocked, unlockOrder: nextOrder, spent: state.spent + cost, abilityLoadout, ...stats, primaryBranch: traits.topBranch, primaryType: traits.topType, traitTags: traits.tags, traitBonus } as Partial<SkillState> as SkillState;
   }),
   respec: () => set(state => {
     if (!state.unlockOrder.length) return state;
     const resetUnlocked = ['root'];
     const stats = deriveStats(resetUnlocked);
     const traits = deriveTraits(resetUnlocked, TREE);
-    return { unlocked: resetUnlocked, unlockOrder: [], spent: 0, ...stats, primaryBranch: traits.topBranch, primaryType: traits.topType, traitTags: traits.tags, abilityLoadout: { offensive: [null, null, null, null], defensive: [null, null, null, null] } } as Partial<SkillState> as SkillState;
+    return { unlocked: resetUnlocked, unlockOrder: [], spent: 0, ...stats, primaryBranch: traits.topBranch, primaryType: traits.topType, traitTags: traits.tags, traitBonus: {}, abilityLoadout: { offensive: [null, null, null, null], defensive: [null, null, null, null] } } as Partial<SkillState> as SkillState;
   }),
   setLevel: (lvl: number) => set(() => ({ level: Math.max(1, Math.min(PLAYER_LEVEL_CAP, lvl)) })),
-  reset: () => set({ level: 1, unlocked: ['root'], unlockOrder: [], spent: 0, attack: 0, defense: 0, utility: 0, traitTags: [], primaryBranch: undefined, primaryType: undefined, abilityLoadout: { offensive: [null, null, null, null], defensive: [null, null, null, null] } }),
+  reset: () => set({ level: 1, unlocked: ['root'], unlockOrder: [], spent: 0, attack: 0, defense: 0, utility: 0, traitTags: [], traitBonus: {}, primaryBranch: undefined, primaryType: undefined, abilityLoadout: { offensive: [null, null, null, null], defensive: [null, null, null, null] } }),
 }));
 
 // Scaling economy: BASE + PER_LEVEL/level + a bonus every 5th level. `spent` is the total
