@@ -2390,6 +2390,19 @@ export default function SoloMissionMap3D({
     saveProgress({ factionPoints: cur + amount } as any);
   }, [saveProgress]);
 
+  // Award Shards (persisted soft currency) — earned from major accomplishments (region
+  // control, camp resolution, match wins). Surfaces a floating "+N ◈" and saves to profile.
+  const awardShards = React.useCallback((amount: number) => {
+    if (amount <= 0) return;
+    const cur = (profileForXpRef.current?.progress as any)?.shards ?? 0;
+    saveProgress({ shards: cur + amount } as any);
+    const hw = axialToWorld({ q: heroPosRef.current.q, r: heroPosRef.current.r }, hexSize);
+    spawnCombatText(hw.x, hw.z, `+${amount} ◈`, '#a7f3d0');
+  }, [saveProgress, hexSize, spawnCombatText]);
+  const awardShardsRef = React.useRef(awardShards); awardShardsRef.current = awardShards;
+  // How the player chose to take the next outpost (GDD: stealth / combat / diplomacy).
+  const captureApproachRef = React.useRef<'assault' | 'infiltrate' | 'negotiate'>('assault');
+
   // ── Pet type & roles (GDD): Dog = strength/combat assist, Cat = stealth/recon ──
   const petType: string = (heroAvatar as any)?.pet?.type ?? profile?.progress?.pet?.type ?? 'CYBER_CAT';
   const isDog = petType === 'CYBER_DOG';
@@ -2494,11 +2507,24 @@ export default function SoloMissionMap3D({
     centerQ: centerAxial.q,
     centerR: centerAxial.r,
     onCapture: (_region, regionCleared) => {
-      awardFactionPoints(regionCleared ? 6 : 2); awardHeroXp(regionCleared ? 40 : 15);
-      // Seizing contested ground draws a response from any rival units in the area.
-      enemyProvokeRef.current?.(heroPosRef.current.q, heroPosRef.current.r, undefined, 7);
+      const approach = captureApproachRef.current;
       const hw = axialToWorld({ q: heroPosRef.current.q, r: heroPosRef.current.r }, hexSize);
-      if (regionCleared) spawnCombatText(hw.x, hw.z, '🚩 Region controlled!', '#ffd24a');
+      awardFactionPoints(regionCleared ? 6 : 2); awardHeroXp(regionCleared ? 40 : 15);
+      // Approach-specific outcome (GDD: "stealth operations, combat engagements, or tactical diplomacy").
+      if (approach === 'assault') {
+        enemyProvokeRef.current?.(heroPosRef.current.q, heroPosRef.current.r, undefined, 7); // loud → defenders respond
+        recordPlaystyleRef.current('dominate');
+        awardHeroXp(10);
+      } else if (approach === 'negotiate') {
+        recordPlaystyleRef.current('negotiate');
+        const diplo = useSkillStore.getState().unlocked.filter((sid: string) => sid.startsWith('diplomacy')).length;
+        awardFactionPoints(3 + Math.floor(diplo / 2)); // tactical diplomacy earns standing
+      } else { // infiltrate — a quiet, stealthy takeover; no reprisal
+        recordPlaystyleRef.current('scavenge');
+      }
+      spawnCombatText(hw.x, hw.z, regionCleared ? '🚩 Region controlled!' : '🚩 Outpost taken', regionCleared ? '#ffd24a' : '#a7d8ff');
+      if (regionCleared) awardShardsRef.current(15); // controlling a full region → shards
+      captureApproachRef.current = 'assault'; // reset default for the next capture
     },
   });
   // Refs so the passive income/respawn loops read live control state without re-subscribing.
@@ -2552,6 +2578,7 @@ export default function SoloMissionMap3D({
       }
       // Feed the competitive score: force → economy bucket, help/diplomacy → refugee bucket.
       if (mobaActiveRef.current) mobaReportObjectiveRef.current(approach === 'loot' ? 'resource' : 'refugee');
+      awardShardsRef.current(approach === 'loot' ? 8 : 5); // resolving a camp yields shards
     },
   });
 
@@ -2909,6 +2936,26 @@ export default function SoloMissionMap3D({
     return () => clearTimeout(t);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [outpostControl.owned, terraformProgress, refugeeProgress.done, autoMultiplayer, mobaMode]);
+
+  // Capture the adjacent outpost via a chosen approach; also submits the MOBA capture intent.
+  const captureOutpostWith = React.useCallback((approach: 'assault' | 'infiltrate' | 'negotiate') => {
+    captureApproachRef.current = approach;
+    const ok = captureNearbyRef.current();
+    if (ok && mobaActiveRef.current) { const no = nearbyOutpostRef.current; if (no) mobaRequestCaptureRef.current(`${no.q},${no.r}`); }
+  }, []);
+  const captureOutpostWithRef = React.useRef(captureOutpostWith); captureOutpostWithRef.current = captureOutpostWith;
+
+  // Match-win shard rewards (once per result). MOBA win pays more than a 1v1 duel win.
+  const mobaWinRewardedRef = React.useRef(false);
+  React.useEffect(() => {
+    if (moba.result === 'win' && !mobaWinRewardedRef.current) { mobaWinRewardedRef.current = true; awardShardsRef.current(50); }
+    if (!moba.result) mobaWinRewardedRef.current = false;
+  }, [moba.result]);
+  const duelWinRewardedRef = React.useRef(false);
+  React.useEffect(() => {
+    if (duel.result === 'win' && !duelWinRewardedRef.current) { duelWinRewardedRef.current = true; awardShardsRef.current(30); }
+    if (!duel.result) duelWinRewardedRef.current = false;
+  }, [duel.result]);
 
   // Auto-open the MOBA lobby when launched from the MOBA mode.
   const mobaAutoRef = React.useRef(false);
@@ -3778,9 +3825,8 @@ export default function SoloMissionMap3D({
       // ─── CAPTURE OUTPOST (G) ───────────────────────────────────────────
       if (k === 'g') {
         if (e.repeat) return;
-        captureNearbyRef.current();
-        // In a MOBA, also submit the capture intent to the authoritative host.
-        if (mobaActiveRef.current) { const no = nearbyOutpostRef.current; if (no) mobaRequestCaptureRef.current(`${no.q},${no.r}`); }
+        // G = quick assault; the on-screen buttons offer infiltrate / negotiate.
+        captureOutpostWithRef.current('assault');
         return;
       }
       // ─── TOGGLE OUTPOST CONTROL-ZONE OVERLAY (O) ───────────────────────
@@ -4251,9 +4297,19 @@ export default function SoloMissionMap3D({
                 </div>
               )}
               {nearbyOutpost && (
-                <div className="fixed top-28 left-1/2 -translate-x-1/2 z-40">
-                  <div className="px-4 py-2 rounded-xl bg-indigo-900/80 border border-indigo-400/60 text-sm font-bold text-indigo-100 backdrop-blur-sm shadow-lg flex items-center gap-2">
-                    🚩 Neutral Outpost — <span className="px-1.5 py-0.5 rounded bg-indigo-700 font-bold">G</span> to capture
+                <div className="fixed top-28 left-1/2 -translate-x-1/2 z-40 max-w-[94vw] pointer-events-auto">
+                  <div className="px-4 py-2.5 rounded-xl bg-[#0c1219]/90 border border-white/15 text-xs sm:text-sm backdrop-blur-sm shadow-lg text-center space-y-2">
+                    <div className="font-bold">🚩 Neutral Outpost — choose your approach</div>
+                    {/* GDD: outposts are taken via stealth, combat, or tactical diplomacy */}
+                    <div className="flex flex-wrap items-center justify-center gap-2">
+                      <button onClick={() => captureOutpostWithRef.current('assault')} title="Take it by force — fast, but rival defenders respond."
+                        className="px-3 py-1.5 rounded-lg font-bold bg-rose-700/80 hover:bg-rose-600 ring-1 ring-rose-400/40">⚔️ Assault</button>
+                      <button onClick={() => captureOutpostWithRef.current('infiltrate')} title="Slip in quietly — no reprisal (best with a Stealth build)."
+                        className="px-3 py-1.5 rounded-lg font-bold bg-violet-700/80 hover:bg-violet-600 ring-1 ring-violet-400/40">🥷 Infiltrate</button>
+                      <button onClick={() => captureOutpostWithRef.current('negotiate')} title="Tactical diplomacy — peaceful, earns extra faction standing."
+                        className="px-3 py-1.5 rounded-lg font-bold bg-sky-700/80 hover:bg-sky-600 ring-1 ring-sky-400/40">🕊️ Negotiate</button>
+                    </div>
+                    <div className="text-[10px] opacity-50"><span className="px-1 rounded bg-white/10 font-bold">G</span> = quick assault</div>
                   </div>
                 </div>
               )}
