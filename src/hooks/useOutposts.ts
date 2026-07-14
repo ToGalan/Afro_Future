@@ -168,6 +168,18 @@ export function useOutposts({ tiles, heroQ, heroR, centerQ, centerR, onCapture }
     return true;
   }, [engagedKey]);
 
+  // Restore saved ownership (solo save/load) — flip the given "q,r" keys to player-owned.
+  const applyOwnership = useCallback((ownedKeys: string[]) => {
+    if (!ownedKeys || !ownedKeys.length) return;
+    const set = new Set(ownedKeys);
+    setOutposts(prev => {
+      let changed = false;
+      const next = new Map(prev);
+      for (const [k, o] of next) if (set.has(k) && o.owner !== 'player') { next.set(k, { ...o, owner: 'player' }); changed = true; }
+      return changed ? next : prev;
+    });
+  }, []);
+
   // Nearest player-owned outpost to a point — the respawn anchor (null → fall back to base).
   const nearestOwnedOutpost = useCallback((q: number, r: number): Outpost | null => {
     let best: Outpost | null = null, bestD = Infinity;
@@ -213,5 +225,5 @@ export function useOutposts({ tiles, heroQ, heroR, centerQ, centerR, onCapture }
     return { owned, total: all.length, regionsControlled, regionCount: regions.length, ownedTiles, totalTiles, tilePct };
   }, [outposts, territory, regions]);
 
-  return { outposts, nearbyOutpost, captureNearby, control, territory, regions, nearestOwnedOutpost };
+  return { outposts, nearbyOutpost, captureNearby, control, territory, regions, nearestOwnedOutpost, applyOwnership };
 }

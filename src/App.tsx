@@ -917,24 +917,9 @@ function MissionScreen({ onExit, onOpenSkillTree, activeLoadout, autoMultiplayer
   const available = availablePoints(skillState);
   const heroBuffs = skillState.traitTags;
 
-  // Resources: shards (if present in profile) + skill tokens remaining
-  const [shards, setShards] = React.useState<number>(0);
-  React.useEffect(()=>{
-    (async()=>{
-      try {
-        if(!idToken) return;
-        const r = await fetch('/profile', { headers: { 'Authorization':'Bearer '+idToken } });
-        if(r.ok){ 
-          const j = await r.json(); 
-          setShards(j?.profile?.shards || 0); 
-        } else if (r.status === 404) {
-          console.log('[shards] Server not running');
-        }
-      } catch {
-        console.log('[shards] Server unavailable');
-      }
-    })();
-  },[idToken]);
+  // Resources: shards + skill tokens. Shards live in the Firestore profile (the old
+  // /profile server endpoint isn't deployed on static hosting), so read them from there.
+  const shards = (profile?.progress as any)?.shards ?? 0;
   const resources = React.useMemo(()=>[
     { id:'shards', label:'Shards', value: shards, icon:'◈' },
     { id:'tokens', label:'Skill Tokens', value: available, icon:'⬢' },
@@ -1593,6 +1578,7 @@ function MainMenu({ playerName, accountLevel, loadout, onCustomize, heroLocked, 
 
 function TopNav({ view, onChangeView, profile, onSignOut }: { view: 'dashboard' | 'skills' | 'store' | 'help' | 'settings' | 'mission'; onChangeView: (v: 'dashboard' | 'skills' | 'store' | 'help' | 'settings' | 'mission') => void; profile?: { sub: string; name?: string; email?: string; picture?: string } | null; onSignOut?: () => void; }) {
   const [open, setOpen] = React.useState(false);
+  const { profile: gameProfile } = usePlayerProfile(); // for the live shards balance
   const menuRef = React.useRef<HTMLDivElement|null>(null);
   const [isFs, setIsFs] = React.useState<boolean>(!!document.fullscreenElement);
   React.useEffect(()=>{
@@ -1642,7 +1628,7 @@ function TopNav({ view, onChangeView, profile, onSignOut }: { view: 'dashboard' 
         {/* Room selector removed per request */}
       </div>
       <div className="ml-auto flex items-center justify-end gap-2 sm:gap-4 shrink-0">
-        <div className="hidden sm:flex"><Chip>1,458 <span className="opacity-70">shards</span></Chip></div>
+        <div className="hidden sm:flex"><Chip>{(gameProfile?.progress?.shards ?? 0).toLocaleString()} <span className="opacity-70">shards</span></Chip></div>
   <div className="hidden sm:inline-flex"><IconButton label="Notifications">
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
               <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/>

@@ -9,6 +9,13 @@ export interface PlayerProgress {
   factionPoints?: number;        // faction currency (GDD) — earned from faction activities
   factionAbilities?: string[];   // unlocked faction-ability ids
   shards?: number;               // soft currency
+  reputation?: Record<string, number>; // playstyle reputation (help/negotiate/scavenge/loot/dominate)
+  /** Solo-campaign world state — captured territory persists across sessions. */
+  solo?: {
+    outpostsOwned?: string[];    // "q,r" keys of captured outposts
+    terraformProgress?: number;  // 0..100
+    refugeeCampsDone?: string[]; // "q,r" keys of resolved camps
+  };
   hero?: {
     level: number;
     xp: number;               // accumulated XP for leveling (starts at 0)

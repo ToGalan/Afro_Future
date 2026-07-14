@@ -2486,7 +2486,7 @@ export default function SoloMissionMap3D({
   // ── Outposts / region control ────────────────────────────────────────────────
   const {
     outposts, nearbyOutpost, captureNearby, control: outpostControl,
-    territory: outpostTerritory, regions: outpostRegions, nearestOwnedOutpost,
+    territory: outpostTerritory, regions: outpostRegions, nearestOwnedOutpost, applyOwnership: applyOutpostOwnership,
   } = useOutposts({
     tiles,
     heroQ: hero.pos.q,
@@ -2518,7 +2518,7 @@ export default function SoloMissionMap3D({
     });
   }, [setLocalHeroInventory]);
 
-  const { camps: refugeeCamps, nearbyCamp: nearbyRefugeeCamp, deliverToNearby: deliverRefugee, lootNearby: lootRefugee, negotiateNearby: negotiateRefugee, progress: refugeeProgress } = useRefugeeCamps({
+  const { camps: refugeeCamps, nearbyCamp: nearbyRefugeeCamp, deliverToNearby: deliverRefugee, lootNearby: lootRefugee, negotiateNearby: negotiateRefugee, applyCompleted: applyRefugeeCompleted, progress: refugeeProgress } = useRefugeeCamps({
     tiles,
     heroQ: hero.pos.q,
     heroR: hero.pos.r,
@@ -2538,11 +2538,13 @@ export default function SoloMissionMap3D({
         awardHeroXp(camp.reward.xp); awardFactionPoints(camp.reward.fp);
       } else if (approach === 'negotiate') {
         // Tactical diplomacy — a modest, peaceful share; NO provoked defenders; extra standing.
-        const gain = Math.max(1, Math.round(camp.loot.amount * 0.5));
+        // Investment in the DIPLOMACY skill branch sweetens the deal (more resources + FP).
+        const diplo = useSkillStore.getState().unlocked.filter((sid: string) => sid.startsWith('diplomacy')).length;
+        const gain = Math.max(1, Math.round(camp.loot.amount * 0.5)) + diplo;
         grantResource(camp.loot.resource, gain);
-        spawnCombatText(cw.x, cw.z, `🕊️ Peace · +${gain} ${resLbl}`, '#7dd3fc');
+        spawnCombatText(cw.x, cw.z, `🕊️ Peace · +${gain} ${resLbl}${diplo ? ' (diplomacy)' : ''}`, '#7dd3fc');
         recordPlaystyleRef.current('negotiate');
-        awardHeroXp(Math.round(camp.reward.xp * 0.8)); awardFactionPoints(camp.reward.fp + 2);
+        awardHeroXp(Math.round(camp.reward.xp * 0.8)); awardFactionPoints(camp.reward.fp + 2 + Math.floor(diplo / 2));
       } else { // aid / help — heal the camp, build standing
         spawnCombatText(cw.x, cw.z, `✚ Camp aided`, '#7fd66b');
         recordPlaystyleRef.current('help');
@@ -2586,6 +2588,7 @@ export default function SoloMissionMap3D({
     incomingDamageScale: combatIncomingScale,
     enabled: !autoMultiplayer, // solo PvE only — duels are handled by useDuel
     paused: !!inputPaused,     // freeze combat while the skill-tree overlay is open
+    getHeroStealthed: () => heroStealthRef.current, // Stealth branch shrinks enemy detection
     onHeroDamage: (amt) => applyIncomingDamageRef.current(amt),
     awardXp: awardHeroXp,
     awardFactionPoints,
@@ -2603,6 +2606,8 @@ export default function SoloMissionMap3D({
           ? (paaPlayer ? '🕊️ Commander Pacified' : '💀 Commander Defeated')
           : (paaPlayer ? '🕊️ Pacified' : '☠️');
         spawnCombatText(w.x, w.z, `${verb} +${ev.xp} XP`, ev.boss ? '#ffd24a' : '#8fe38f');
+        // Defeating a rival unit is a "dominate" (or, for PAA, a "negotiate"/pacify) act.
+        recordPlaystyleRef.current(paaPlayer ? 'negotiate' : 'dominate');
       }
     },
   });
@@ -2620,6 +2625,8 @@ export default function SoloMissionMap3D({
   const heroAtkBonusRef = React.useRef(0);
   const heroDefBonusRef = React.useRef(0);
   const heroStealthRef = React.useRef(false);
+  // Speed bonus from an active 'haste' buff (Mobility core / haste effect) — feeds movement.
+  const heroHasteRef = React.useRef(0);
 
   const refreshEffectAggregate = React.useCallback(() => {
     heroEffectsRef.current = pruneEffects(heroEffectsRef.current, performance.now());
@@ -2627,6 +2634,8 @@ export default function SoloMissionMap3D({
     heroAtkBonusRef.current = agg.atkBonus;
     heroDefBonusRef.current = agg.defBonus;
     heroStealthRef.current = agg.stealthed;
+    // Sum the magnitude of any active haste buffs → a temporary SPD boost.
+    heroHasteRef.current = heroEffectsRef.current.reduce((s, e) => s + (e.kind === 'haste' ? (e.magnitude || 0) : 0), 0);
   }, []);
 
   // Incoming damage passes through defence buffs + the shield pool before reaching HP.
@@ -2781,6 +2790,7 @@ export default function SoloMissionMap3D({
     },
     onRemoteDead: (at) => {
       if (at) { const w = axialToWorld(at, hexSize); spawnCombatText(w.x, w.z, '☠️', '#ff5555'); }
+      recordPlaystyleRef.current('dominate'); // beating your duel rival is a dominate act
     },
   });
   const {
@@ -2821,15 +2831,31 @@ export default function SoloMissionMap3D({
   // Every dynamic decision (help / negotiate / scavenge / loot / dominate) accretes into a
   // reputation that names the player's path (Healer / Diplomat / Scavenger / Raider / Conqueror).
   const [reputation, setReputation] = useState<PlaystyleReputation>(emptyReputation);
+  // Hydrate reputation from the persisted profile once it loads (survives across missions).
+  const repHydratedRef = React.useRef(false);
+  React.useEffect(() => {
+    if (repHydratedRef.current || !profile) return;
+    repHydratedRef.current = true;
+    const saved = (profile.progress as any)?.reputation as Partial<PlaystyleReputation> | undefined;
+    if (saved) setReputation({ ...emptyReputation(), ...saved });
+  }, [profile]);
   const recordPlaystyle = React.useCallback((p: Playstyle) => {
-    setReputation(prev => ({ ...prev, [p]: prev[p] + 1 }));
-  }, []);
+    setReputation(prev => {
+      const next = { ...prev, [p]: prev[p] + 1 };
+      saveProgress({ reputation: next } as any); // persist to the profile
+      return next;
+    });
+  }, [saveProgress]);
   const recordPlaystyleRef = React.useRef(recordPlaystyle); recordPlaystyleRef.current = recordPlaystyle;
   const dominantStyle = React.useMemo(() => dominantPlaystyle(reputation), [reputation]);
   // Gathering a world resource node is the "scavenge" approach.
   const handleCollectWithStyle = React.useCallback(
     (flowerKey: string | null, mushroomKey: string | null, resource?: { key: string; type: 'ore' | 'energy' | 'bio' } | null) => {
-      if (resource) recordPlaystyle('scavenge');
+      if (resource) {
+        recordPlaystyle('scavenge');
+        // Resource gathering is a core GDD MOBA objective → feed the competitive score.
+        if (mobaActiveRef.current) mobaReportObjectiveRef.current('resource');
+      }
       handleCollect(flowerKey, mushroomKey, resource);
     }, [handleCollect, recordPlaystyle]);
   // Factions already claimed by OTHER players (for lobby dedupe).
@@ -2856,6 +2882,33 @@ export default function SoloMissionMap3D({
       + (terraformDone ? s.terraformScore : 0)
       + refugeeProgress.done * s.refugeeCampScore;
   }, [outpostControl.owned, outpostControl.regionsControlled, terraformDone, refugeeProgress.done]);
+
+  // ── Solo save/load: captured territory, terraforming & resolved camps persist ─────
+  // Hydrate ONCE, after the profile has loaded and the world has generated. Guarded so the
+  // auto-save below never fires (and overwrites the save with empty state) before this runs.
+  const soloHydratedRef = React.useRef(false);
+  React.useEffect(() => {
+    if (soloHydratedRef.current || autoMultiplayer || mobaMode || !profile || outposts.size === 0) return;
+    soloHydratedRef.current = true;
+    const solo = (profile.progress as any)?.solo as { outpostsOwned?: string[]; terraformProgress?: number; refugeeCampsDone?: string[] } | undefined;
+    if (!solo) return;
+    if (solo.outpostsOwned?.length) applyOutpostOwnership(solo.outpostsOwned);
+    if (solo.refugeeCampsDone?.length) applyRefugeeCompleted(solo.refugeeCampsDone);
+    if (typeof solo.terraformProgress === 'number' && solo.terraformProgress > 0) setTerraformProgress(solo.terraformProgress);
+  }, [profile, outposts.size, autoMultiplayer, mobaMode, applyOutpostOwnership, applyRefugeeCompleted]);
+  // Debounced auto-save of the solo world state whenever it changes (solo only, post-hydration).
+  React.useEffect(() => {
+    if (autoMultiplayer || mobaMode || !soloHydratedRef.current) return;
+    const t = setTimeout(() => {
+      saveProgress({ solo: {
+        outpostsOwned: Array.from(outposts.values()).filter(o => o.owner === 'player').map(o => o.key),
+        terraformProgress,
+        refugeeCampsDone: Array.from(refugeeCamps.values()).filter(c => c.completed).map(c => c.key),
+      } } as any);
+    }, 900);
+    return () => clearTimeout(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [outpostControl.owned, terraformProgress, refugeeProgress.done, autoMultiplayer, mobaMode]);
 
   // Auto-open the MOBA lobby when launched from the MOBA mode.
   const mobaAutoRef = React.useRef(false);
@@ -2921,6 +2974,7 @@ export default function SoloMissionMap3D({
     if (!bestUid || !bestPos) return;
     const dmg = Math.max(1, Math.round((heroAttack + petCombatBonus) * combatAtkMult));
     moba.attack(bestUid, dmg, hero.pos);
+    recordPlaystyleRef.current('dominate'); // striking a rival hero is a dominate act
     const rw = axialToWorld(bestPos, hexSize);
     spawnCombatText(rw.x, rw.z, `-${dmg}`, '#ffd24a');
   };
@@ -3013,8 +3067,11 @@ export default function SoloMissionMap3D({
       onHealHP?.(28); spawnCombatText(hw.x, hw.z, `${icon} +28 HP`, '#7fd66b');
     }
 
-    // Start cooldown on a successful cast.
-    setActiveSlotsRef.current(prev => prev.map(a => a.id === id ? { ...a, cooldown: a.maxCooldown } : a));
+    // Start cooldown on a successful cast — the Utility stat (Hacking/Stealth/Mobility/etc.)
+    // shortens cooldowns, up to −50% at high investment, so utility builds cast more often.
+    const util = useSkillStore.getState().utility || 0;
+    const cdMult = Math.max(0.5, 1 - util * 0.015);
+    setActiveSlotsRef.current(prev => prev.map(a => a.id === id ? { ...a, cooldown: Math.max(2, Math.round((a.maxCooldown ?? 8) * cdMult)) } : a));
   }, [heroVitals, hero.pos, hexSize, abilityMode, heroAttack, petCombatBonus, combatAtkMult, duelActive, duelRemote, duelAttackRemote, duelCastAbility, onDrainEP, onHealHP]);
   // Keep a fresh ref so the keydown QWER closure always calls the latest activation.
   const activateAbilityRef = React.useRef(activateAbility); activateAbilityRef.current = activateAbility;
@@ -3623,56 +3680,74 @@ export default function SoloMissionMap3D({
   }
   const inputPausedRef = React.useRef(inputPaused);
   inputPausedRef.current = inputPaused;
+
+  // ── Movement speed: SPD stat (skill tree: utility→spd, Ghost/Skirmisher traits) + an
+  // active 'haste' buff drive the step cadence, so faster heroes cross ground faster. ──
+  const MOVE_BASE_MS = 155, MOVE_REF_SPD = 8;
+  const moveSpdRef = React.useRef(6);
+  moveSpdRef.current = combatStats?.spd ?? 6;
+  const moveStepMs = () => {
+    const eff = moveSpdRef.current + heroHasteRef.current;      // base SPD + haste boost
+    return Math.max(70, Math.min(300, MOVE_BASE_MS * (MOVE_REF_SPD / Math.max(1, eff))));
+  };
+  // One hex step with collision + persistence + move-XP (shared by keydown & the held-key loop).
+  const stepHeroRef = React.useRef<(d: Axial) => void>(() => {});
+  stepHeroRef.current = (delta: Axial) => {
+    setHero(h => {
+      const targetRaw = { q: h.pos.q + delta.q, r: h.pos.r + delta.r };
+      const clamped = clampAxial(targetRaw);
+      const tile = tilesByKey.get(`${clamped.q},${clamped.r}`);
+      const check = passable(tile);
+      if (!check.passable) {
+        if (check.reason === 'water' || check.reason === 'mountain') setCollisionMessage({ type: check.reason, show: true });
+        return h;
+      }
+      const next = { ...h, pos: clamped };
+      saveProgress({ heroPosition: clamped });
+      updateHeroPosition(clamped);
+      tilesMoveRef.current++;
+      if (tilesMoveRef.current >= 40) {
+        tilesMoveRef.current = 0;
+        petXPSystem.gainXPOnMove(
+          profileForXpRef.current?.progress?.hero?.xp ?? 0,
+          profileForXpRef.current?.progress?.hero?.level ?? 1,
+        );
+      }
+      return next;
+    });
+  };
+
   useEffect(() => {
     const downSet = new Set<string>();
+    const lastStepAt: Record<string, number> = {};
+    const dirMap: Record<string, Axial> = {
+      w: { q: 0, r: -1 },       // North
+      s: { q: 0, r: 1 },        // South
+      a: { q: -1, r: 1 },       // Southwest
+      d: { q: 1, r: -1 },       // Northeast
+    };
+    // Continuous movement: while a direction key is held, step at the SPD-scaled cadence.
+    const moveTimer = window.setInterval(() => {
+      if (inputPausedRef.current || downSet.size === 0) return;
+      const now = performance.now();
+      const stepMs = moveStepMs();
+      for (const key of downSet) {
+        const d = dirMap[key];
+        if (d && now - (lastStepAt[key] ?? 0) >= stepMs) { stepHeroRef.current(d); lastStepAt[key] = now; }
+      }
+    }, 16);
     function onKey(e: KeyboardEvent) {
       if (inputPausedRef.current) return; // skill-tree overlay open — ignore game input
       const k = e.key.toLowerCase();
 
-      // ─── MOVEMENT (WASD ONLY) ─────────────────────────────────────
-      // Arrow keys reserved for camera control
-      const dirMap: Record<string, Axial> = {
-        w: { q: 0, r: -1 },       // North
-        s: { q: 0, r: 1 },        // South
-        a: { q: -1, r: 1 },       // Southwest
-        d: { q: 1, r: -1 },       // Northeast
-      };
-      
+      // ─── MOVEMENT (WASD ONLY) — arrow keys reserved for camera ─────────────
       const delta = dirMap[k];
       if (delta) {
-        if (e.repeat || downSet.has(k)) return;
-        downSet.add(k);
         e.preventDefault();
-        
-        setHero(h => {
-          const targetRaw = { q: h.pos.q + delta.q, r: h.pos.r + delta.r };
-          const clamped = clampAxial(targetRaw);
-          const tile = tilesByKey.get(`${clamped.q},${clamped.r}`);
-          const check = passable(tile);
-          if (!check.passable) {
-            if (check.reason === 'water' || check.reason === 'mountain') {
-              setCollisionMessage({ type: check.reason, show: true });
-            }
-            return h;
-          }
-          const next = { ...h, pos: clamped };
-          saveProgress({ heroPosition: clamped });
-          updateHeroPosition(clamped);
-          tilesMoveRef.current++;
-          if (tilesMoveRef.current >= 40) {
-            tilesMoveRef.current = 0;
-            // Pet XP + hero XP gain delegated to usePetXP hook. Read the CURRENT hero XP
-            // from the ref (this keydown closure's `profile` is stale — its effect deps
-            // don't include profile), otherwise each tick re-saves the same stale value
-            // and hero XP never accumulates.
-            petXPSystem.gainXPOnMove(
-              profileForXpRef.current?.progress?.hero?.xp ?? 0,
-              profileForXpRef.current?.progress?.hero?.level ?? 1,
-            );
-            console.log('[XP] Hero +0.5 XP, Pet +1 XP!');
-          }
-          return next;
-        });
+        if (e.repeat || downSet.has(k)) return; // held: the interval loop handles repeats
+        downSet.add(k);
+        stepHeroRef.current(delta);              // immediate first step for responsiveness
+        lastStepAt[k] = performance.now();
         return;
       }
       
@@ -3756,7 +3831,7 @@ export default function SoloMissionMap3D({
     }
     window.addEventListener('keydown', onKey);
     window.addEventListener('keyup', onKeyUp);
-    return () => { window.removeEventListener('keydown', onKey); window.removeEventListener('keyup', onKeyUp); };
+    return () => { window.clearInterval(moveTimer); window.removeEventListener('keydown', onKey); window.removeEventListener('keyup', onKeyUp); };
   }, [tilesByKey, saveProgress, setAbilitySlots, setCollisionMessage, updateHeroPosition, petXPSystem.gainXPOnMove, handleItemUse]);
   // endTurn logic removed (turn system disabled)
 
@@ -4140,7 +4215,7 @@ export default function SoloMissionMap3D({
                 const label = isBoss ? `${en.faction} Commander` : `${en.faction} ${DOCTRINE[en.faction].label}`;
                 const verb = paaPlayer ? 'to pacify' : 'to attack';
                 return (
-                  <div className="fixed top-16 left-1/2 -translate-x-1/2 z-40">
+                  <div className="fixed top-20 left-1/2 -translate-x-1/2 z-40">
                     <div className={`px-4 py-2 rounded-xl bg-rose-900/85 border-2 text-sm font-bold text-rose-100 backdrop-blur-sm shadow-lg flex items-center gap-2 ${isBoss ? 'border-amber-400/80' : 'border-rose-400/70'}`}>
                       <span style={{ color: isBoss ? '#ffd24a' : DOCTRINE[en.faction].color }}>{isBoss ? '👑' : '⚔️'} {label}</span>
                       <span className="opacity-80">Lv {en.level} · {Math.ceil(en.hp)}/{en.maxHp} HP</span>
@@ -4151,7 +4226,7 @@ export default function SoloMissionMap3D({
               })()}
               {/* Nearby creep camp — attacking is a deliberate choice (press F) */}
               {!nearbyFactionEnemy && nearbyCreepCamp && (
-                <div className="fixed top-16 left-1/2 -translate-x-1/2 z-40">
+                <div className="fixed top-20 left-1/2 -translate-x-1/2 z-40">
                   <div className="px-4 py-2 rounded-xl bg-rose-900/80 border border-rose-400/60 text-sm font-bold text-rose-100 backdrop-blur-sm shadow-lg flex items-center gap-2">
                     ⚔️ Enemy Camp — Lv {nearbyCreepCamp.level} · {nearbyCreepCamp.creeps.filter(c => c.hp > 0).length} left
                     <span className="ml-1 px-1.5 py-0.5 rounded bg-rose-700 font-bold">F</span> to attack
@@ -4160,7 +4235,7 @@ export default function SoloMissionMap3D({
               )}
               {/* Faction threat indicator — flags rival units actively hunting the hero. */}
               {enemyThreat.hunting > 0 && (
-                <div className="fixed top-4 left-1/2 -translate-x-1/2 z-40">
+                <div className="fixed top-9 left-1/2 -translate-x-1/2 z-40">
                   <div className="px-3 py-1 rounded-full bg-red-950/85 border border-red-500/60 text-xs font-bold text-red-200 backdrop-blur-sm shadow animate-pulse flex items-center gap-1.5">
                     🚨 {enemyThreat.hunting} enemy {enemyThreat.hunting === 1 ? 'unit' : 'units'} hunting you
                   </div>
@@ -4648,7 +4723,13 @@ export default function SoloMissionMap3D({
                       heroInventory: localHeroInventory as any,
                       petInventory: localPetInventory as any,
                       explored: Array.from(exploredRef.current),
-                    });
+                      // Solo world state — captured territory, terraforming, resolved camps.
+                      solo: {
+                        outpostsOwned: Array.from(outposts.values()).filter(o => o.owner === 'player').map(o => o.key),
+                        terraformProgress,
+                        refugeeCampsDone: Array.from(refugeeCamps.values()).filter(c => c.completed).map(c => c.key),
+                      },
+                    } as any);
                   } catch {}
                 }}
                 skillPoints={skillPoints}

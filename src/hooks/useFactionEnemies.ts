@@ -123,13 +123,16 @@ interface UseFactionEnemiesOptions {
   awardFactionPoints?: (amount: number) => void;
   /** Combat feedback funnel (spawns floating text on the map). */
   onEvent?: (e: EnemyEvent) => void;
+  /** Live getter — true while the hero has an active Stealth buff (shrinks enemy detection). */
+  getHeroStealthed?: () => boolean;
 }
 
 export function useFactionEnemies({
   tiles, heroQ, heroR, centerQ, centerR, faction, guardPosts,
   heroAttack = 8, heroHpFrac = 1, incomingDamageScale = 1, enabled = true, paused = false,
-  onHeroDamage, awardXp, awardFactionPoints, onEvent,
+  onHeroDamage, awardXp, awardFactionPoints, onEvent, getHeroStealthed,
 }: UseFactionEnemiesOptions) {
+  const getStealthRef = useRef(getHeroStealthed); getStealthRef.current = getHeroStealthed;
   const [enemies, setEnemies] = useState<FactionEnemy[]>([]);
   const [nearbyEnemy, setNearbyEnemy] = useState<FactionEnemy | null>(null);
 
@@ -300,6 +303,9 @@ export function useFactionEnemies({
         let aggro = doc.aggro;
         if (provoked) aggro = Math.max(aggro, 8);
         if (doc.opportunistic && hpFrac < 0.5) aggro += 3; // WC pounces on a weak hero
+        // Stealth (skill-tree Stealth branch / cloak ability): shrink detection so an
+        // un-provoked hero can slip past patrols. An already-alerted (provoked) unit still hunts.
+        if (!provoked && getStealthRef.current?.()) aggro = Math.max(1, Math.floor(aggro * 0.35));
 
         const wantsRetreat = doc.retreat > 0 && en.hp / en.maxHp < doc.retreat;
         const withinLeash = doc.leash >= 99 || provoked || dHome <= doc.leash;

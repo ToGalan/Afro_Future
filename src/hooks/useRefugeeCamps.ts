@@ -192,10 +192,22 @@ export function useRefugeeCamps({ tiles, heroQ, heroR, centerQ, centerR, faction
     return done;
   }, [engagedKey]);
 
+  // Restore saved completion (solo save/load) — mark the given "q,r" keys resolved.
+  const applyCompleted = useCallback((keys: string[]) => {
+    if (!keys || !keys.length) return;
+    const set = new Set(keys);
+    setCamps(prev => {
+      let changed = false;
+      const next = new Map(prev);
+      for (const [k, c] of next) if (set.has(k) && !c.completed) { next.set(k, { ...c, completed: true }); changed = true; }
+      return changed ? next : prev;
+    });
+  }, []);
+
   const progress = useMemo(() => {
     const all = Array.from(camps.values());
     return { done: all.filter(c => c.completed).length, total: all.length };
   }, [camps]);
 
-  return { camps, nearbyCamp, deliverToNearby, lootNearby, negotiateNearby, progress };
+  return { camps, nearbyCamp, deliverToNearby, lootNearby, negotiateNearby, applyCompleted, progress };
 }
