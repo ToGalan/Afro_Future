@@ -26,7 +26,7 @@ import { useSkillStore } from '../store/skillStore';
 import { skillEffectFor, type SkillEffect } from '../store/skillData';
 import { pruneEffects, aggregateEffects, type ActiveEffect } from '../services/statusEffects';
 import { getLevelFromXp, getTotalXpForLevel, getXpForNextLevel } from '../services/playerExpEconomy';
-import { scaledMissionXp, scaledMissionFp, rivalRampRate } from '../services/balance';
+import { scaledMissionXp, scaledMissionFp, rivalProgressScore } from '../services/balance';
 import { IsometricCharacter } from './IsometricCharacter';
 import type { Archetype, CharacterLoadout } from '../types/loadout';
 import { GameHUD, type MinimapData, type Ability, type Item } from './gameHUD';
@@ -3005,7 +3005,6 @@ export default function SoloMissionMap3D({
   const [soloVictoryResult, setSoloVictoryResult] = useState<{ faction: Faction; track: VictoryTrack } | null>(null);
   const soloResolvedRef = React.useRef(false); // match decided this session — freezes track accrual
   const soloWinRewardedRef = React.useRef(false);
-  const soloStartRef = React.useRef(0);        // first director tick — anchors the rival ramp
 
   const resolveSolo = (vr: { faction: Faction; track: VictoryTrack }) => {
     soloResolvedRef.current = true;
@@ -3025,25 +3024,9 @@ export default function SoloMissionMap3D({
   }, [soloEnabled]);
   const bumpSoloVictoryRef = React.useRef(bumpSoloVictory); bumpSoloVictoryRef.current = bumpSoloVictory;
 
-  // Rival factions advance their off-screen empires on a doctrine-weighted tick, so solo is a
-  // real race: reach a victory track before an AI faction does.
-  React.useEffect(() => {
-    if (!soloEnabled) return;
-    const id = window.setInterval(() => {
-      if (inputPausedRef.current || soloResolvedRef.current) return;
-      // Rival income RAMPS with elapsed time — a relaxed early game that snowballs into a
-      // tense late-game race (empires accelerate), so faction goals feel progressive.
-      if (!soloStartRef.current) soloStartRef.current = Date.now();
-      const rate = rivalRampRate(1.0, Date.now() - soloStartRef.current);
-      const rivals = (['PAA', 'ASF', 'WC'] as Faction[]).filter(f => f !== playerFactionKey);
-      const next = cloneVictory(soloVictoryRef.current);
-      for (const f of rivals) addVictory(next, f, NATURAL_TRACK[f], rate);
-      soloVictoryRef.current = next; setSoloVictory(next);
-      const vr = evaluateVictory(next);
-      if (vr) resolveSoloRef.current(vr);
-    }, 5000);
-    return () => window.clearInterval(id);
-  }, [soloEnabled, playerFactionKey]);
+  // Rival factions advance their off-screen empires in step with the PLAYER's mission
+  // completeness — no wall-clock income (which made Prosperity/Exploitation climb while
+  // idling). The progression-matched effect lives below, after mission progress is known.
 
   const recordPlaystyle = React.useCallback((p: Playstyle) => {
     setReputation(prev => {
@@ -3100,11 +3083,22 @@ export default function SoloMissionMap3D({
   React.useEffect(() => {
     if (soloHydratedRef.current || autoMultiplayer || mobaMode || !profile || outposts.size === 0) return;
     soloHydratedRef.current = true;
-    const solo = (profile.progress as any)?.solo as { outpostsOwned?: string[]; terraformProgress?: number; refugeeCampsDone?: string[] } | undefined;
+    const solo = (profile.progress as any)?.solo as { outpostsOwned?: string[]; terraformProgress?: number; refugeeCampsDone?: string[]; victory?: Record<string, Record<string, number>> } | undefined;
     if (!solo) return;
     if (solo.outpostsOwned?.length) applyOutpostOwnership(solo.outpostsOwned);
     if (solo.refugeeCampsDone?.length) applyRefugeeCompleted(solo.refugeeCampsDone);
     if (typeof solo.terraformProgress === 'number' && solo.terraformProgress > 0) setTerraformProgress(solo.terraformProgress);
+    // Victory-track race resumes where it left off. Values are clamped just under the
+    // threshold so a stale save can never pop an instant win/defeat on load.
+    if (solo.victory) {
+      const v = emptyVictory();
+      let restored = false;
+      for (const f of FACTIONS) for (const t of VICTORY_TRACKS) {
+        const sv = Number(solo.victory?.[f]?.[t] ?? 0);
+        if (Number.isFinite(sv) && sv > 0) { v[f][t] = Math.min(sv, VICTORY_TRACK_DEFS[t].threshold - 1); restored = true; }
+      }
+      if (restored) { soloVictoryRef.current = v; setSoloVictory(v); }
+    }
   }, [profile, outposts.size, autoMultiplayer, mobaMode, applyOutpostOwnership, applyRefugeeCompleted]);
   // Debounced auto-save of the solo world state whenever it changes (solo only, post-hydration).
   React.useEffect(() => {
@@ -3114,11 +3108,14 @@ export default function SoloMissionMap3D({
         outpostsOwned: Array.from(outposts.values()).filter(o => o.owner === 'player').map(o => o.key),
         terraformProgress,
         refugeeCampsDone: Array.from(refugeeCamps.values()).filter(c => c.completed).map(c => c.key),
+        // Victory-track race snapshot — cleared once a match resolves, so the next
+        // session starts a fresh race on the same persistent world.
+        victory: soloResolvedRef.current ? emptyVictory() : soloVictoryRef.current,
       } } as any);
     }, 900);
     return () => clearTimeout(t);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [outpostControl.owned, terraformProgress, refugeeProgress.done, autoMultiplayer, mobaMode]);
+  }, [outpostControl.owned, terraformProgress, refugeeProgress.done, autoMultiplayer, mobaMode, soloVictory, soloVictoryResult]);
 
   // Capture the adjacent outpost via a chosen approach; also submits the MOBA capture intent.
   const captureOutpostWith = React.useCallback((approach: 'assault' | 'infiltrate' | 'negotiate') => {
@@ -3464,10 +3461,13 @@ export default function SoloMissionMap3D({
   const [exploredCount, setExploredCount] = useState(0);
   const explorationGoal = 100; // exploration objective: discover 100 tiles
   const [explorationComplete, setExplorationComplete] = useState(false);
-  // Seed from profile once when profile loads
+  // Seed from profile once when profile loads — and reflect the restored discovery
+  // count/objective immediately (not only after the next NEW tile is revealed).
   useEffect(() => {
     if (profile?.progress?.explored && exploredRef.current.size === 0) {
       for (const k of profile.progress.explored) exploredRef.current.add(k);
+      setExploredCount(exploredRef.current.size);
+      if (exploredRef.current.size >= explorationGoal) setExplorationComplete(true);
     }
   }, [profile]);
   // petVisible computed before explored accumulation so it can be unioned into exploredRef
@@ -3532,6 +3532,40 @@ export default function SoloMissionMap3D({
     }, 800);
     return () => clearTimeout(to);
   }, [heroVisible, petVisible, saveProgress]);
+
+  // ── Rival empires advance by MISSION COMPLETENESS, not wall-clock time ─────────
+  // Overall campaign progression (0..1) across the solo objectives: exploration,
+  // outposts, regions, terraforming and refugee camps.
+  const missionCompleteness = useMemo(() => {
+    const parts = [
+      Math.min(1, exploredCount / explorationGoal),
+      outpostControl.total > 0 ? outpostControl.owned / outpostControl.total : 0,
+      outpostControl.regionCount > 0 ? outpostControl.regionsControlled / outpostControl.regionCount : 0,
+      Math.min(1, terraformProgress / 100),
+      refugeeProgress.total > 0 ? refugeeProgress.done / refugeeProgress.total : 0,
+    ];
+    return parts.reduce((s, v) => s + v, 0) / parts.length;
+  }, [exploredCount, outpostControl.owned, outpostControl.total, outpostControl.regionsControlled,
+      outpostControl.regionCount, terraformProgress, refugeeProgress.done, refugeeProgress.total]);
+
+  // Each rival's natural victory track (PAA→Prosperity, ASF→Domination, WC→Exploitation) is
+  // pegged to the player's mission completeness, so the race only moves when the campaign
+  // itself moves — Prosperity/Exploitation never inflate while the player idles.
+  React.useEffect(() => {
+    if (!soloEnabled || soloResolvedRef.current || missionCompleteness <= 0) return;
+    const next = cloneVictory(soloVictoryRef.current);
+    let changed = false;
+    for (const f of FACTIONS) {
+      if (f === playerFactionKey) continue;
+      const track = NATURAL_TRACK[f];
+      const target = rivalProgressScore(missionCompleteness, VICTORY_TRACK_DEFS[track].threshold);
+      if (target > next[f][track]) { next[f][track] = target; changed = true; }
+    }
+    if (!changed) return;
+    soloVictoryRef.current = next; setSoloVictory(next);
+    const vr = evaluateVictory(next);
+    if (vr) resolveSoloRef.current(vr);
+  }, [soloEnabled, playerFactionKey, missionCompleteness]);
 
   // Explored tiles outside RENDER_RADIUS — rendered as cheap "memory" layer so explored
   // tiles don't disappear as the hero walks away. Capped at MEMORY_RADIUS to bound count.
@@ -5093,11 +5127,13 @@ export default function SoloMissionMap3D({
                       heroInventory: localHeroInventory as any,
                       petInventory: localPetInventory as any,
                       explored: Array.from(exploredRef.current),
-                      // Solo world state — captured territory, terraforming, resolved camps.
+                      // Solo world state — captured territory, terraforming, resolved camps,
+                      // and the victory-track race (cleared once a match has resolved).
                       solo: {
                         outpostsOwned: Array.from(outposts.values()).filter(o => o.owner === 'player').map(o => o.key),
                         terraformProgress,
                         refugeeCampsDone: Array.from(refugeeCamps.values()).filter(c => c.completed).map(c => c.key),
+                        victory: soloResolvedRef.current ? emptyVictory() : soloVictoryRef.current,
                       },
                     } as any);
                   } catch {}

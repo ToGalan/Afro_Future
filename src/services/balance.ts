@@ -51,10 +51,12 @@ export function tierFromDistance(dist: number): number {
 
 // ── Faction goals: progressive rival competition ────────────────────────────────
 /**
- * A rival faction's off-screen victory-track income, RAMPING with elapsed match time so a
- * solo campaign is relaxed early and tense late (empires snowball). Returns points/tick.
+ * A rival faction's off-screen victory-track score, MATCHED to the player's mission
+ * completeness (0..1) rather than wall-clock time — rival empires only advance when the
+ * campaign itself advances, so no track ever inflates while the player idles. `pace` < 1
+ * keeps a player who actually completes missions slightly ahead of the AI on even progress.
  */
-export function rivalRampRate(base: number, elapsedMs: number, rampPerMin = 0.18): number {
-  const minutes = Math.max(0, elapsedMs) / 60000;
-  return base * (1 + minutes * rampPerMin);
+export function rivalProgressScore(completeness: number, threshold = 100, pace = 0.9): number {
+  const c = Math.max(0, Math.min(1, completeness));
+  return c * threshold * pace;
 }

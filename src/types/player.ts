@@ -10,11 +10,13 @@ export interface PlayerProgress {
   factionAbilities?: string[];   // unlocked faction-ability ids
   shards?: number;               // soft currency
   reputation?: Record<string, number>; // playstyle reputation (help/negotiate/scavenge/loot/dominate)
-  /** Solo-campaign world state — captured territory persists across sessions. */
+  /** Solo-campaign world state — captured territory & the victory race persist across sessions. */
   solo?: {
     outpostsOwned?: string[];    // "q,r" keys of captured outposts
     terraformProgress?: number;  // 0..100
     refugeeCampsDone?: string[]; // "q,r" keys of resolved camps
+    /** Victory-track race snapshot: faction → track → points. Cleared when a race resolves. */
+    victory?: Record<string, Record<string, number>>;
   };
   hero?: {
     level: number;
