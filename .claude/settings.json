@@ -47,7 +47,8 @@
       "Bash(curl -s http://localhost:5173/)",
       "Skill(artifact-design)",
       "Skill(artifact-design:*)",
-      "WebFetch(domain:edgegap.com)"
+      "WebFetch(domain:edgegap.com)",
+      "Bash(node -e ' *)"
     ]
   }
 }

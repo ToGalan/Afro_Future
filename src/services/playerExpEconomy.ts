@@ -35,9 +35,12 @@ export interface LevelReward {
  */
 export const PLAYER_EXP_CONFIG: PlayerExpConfig = {
   baseXpPerLevel: 100,           // Starts at 100 XP per level
-  scalingFactor: 1.15,            // 15% increase per level
-  softCapLevel: 25,              // Curve softens at level 25
-  softCapMultiplier: 1.05,       // Only 5% growth after soft cap
+  // Softened for a smoother, achievable L1–50 ramp (was 1.15 / softcap 25 / 1.05, which
+  // combined with level-scaled rewards produced a mid-game grind wall). Now an ~12% early
+  // ramp that eases to ~4.5% after L16 — steady progression, no wall.
+  scalingFactor: 1.12,            // 12% increase per level (early game)
+  softCapLevel: 16,              // Curve softens at level 16
+  softCapMultiplier: 1.045,      // ~4.5% growth after soft cap
   maxLevel: 100,                 // Hard cap at level 100 (GDD grid L1–50, extended to 100)
 };
 

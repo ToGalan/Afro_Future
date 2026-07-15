@@ -18,7 +18,7 @@ import { watchOpenRooms } from '../services/duelSignaling';
 import { watchOpenMatches } from '../services/matchSignaling';
 import { useMobaMatch, type MobaHero } from '../hooks/useMobaMatch';
 import {
-  MOBA_SCORING, VICTORY_TRACKS, VICTORY_TRACK_DEFS, trackLeader, emptyVictory, addVictory, evaluateVictory,
+  MOBA_SCORING, VICTORY_TRACKS, VICTORY_TRACK_DEFS, trackLeader, emptyVictory, addVictory, evaluateVictory, FACTIONS,
   type Faction, type FactionVictory, type VictoryTrack,
 } from '../services/mobaMatch';
 import { PLAYSTYLES, PLAYSTYLE_ORDER, emptyReputation, dominantPlaystyle, type Playstyle, type PlaystyleReputation } from '../services/playstyles';
@@ -26,6 +26,7 @@ import { useSkillStore } from '../store/skillStore';
 import { skillEffectFor, type SkillEffect } from '../store/skillData';
 import { pruneEffects, aggregateEffects, type ActiveEffect } from '../services/statusEffects';
 import { getLevelFromXp, getTotalXpForLevel, getXpForNextLevel } from '../services/playerExpEconomy';
+import { scaledMissionXp, scaledMissionFp, rivalRampRate } from '../services/balance';
 import { IsometricCharacter } from './IsometricCharacter';
 import type { Archetype, CharacterLoadout } from '../types/loadout';
 import { GameHUD, type MinimapData, type Ability, type Item } from './gameHUD';
@@ -811,34 +812,75 @@ const FACTION_COLORS: Record<string, { primary: string; secondary: string; label
 const FACTION_LABEL: Record<string, string> = { PAA: 'Pan-African Alliance', ASF: 'African Sovereignty Front', WC: 'World Coalition' };
 
 /**
- * Victory-tracks HUD — the four-meter "how to win right now" readout shared by solo and
- * MOBA. Each meter shows the LEADING faction's progress toward that track's threshold,
- * coloured by faction; your own faction's meters are outlined so you can read your race.
+ * Victory-track chips — the four win-condition readouts that live INSIDE the Civ-6-style
+ * top HUD bar. Each chip shows its icon (slightly enlarged), the leading faction's progress,
+ * and is clickable to expand a per-faction breakdown (VictoryTrackDetail).
  */
-const VictoryTracksBar = React.memo(function VictoryTracksBar({ victory, myFaction }: { victory: FactionVictory; myFaction?: string | null }) {
+const VictoryTrackChips = React.memo(function VictoryTrackChips({
+  victory, myFaction, expanded, onToggle,
+}: { victory: FactionVictory; myFaction?: string | null; expanded: VictoryTrack | null; onToggle: (t: VictoryTrack) => void }) {
   return (
-    <div className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-xl bg-[#0c1219]/90 ring-1 ring-white/12 shadow-lg">
+    <div className="flex items-center gap-1 pointer-events-auto">
       {VICTORY_TRACKS.map(t => {
         const def = VICTORY_TRACK_DEFS[t];
         const lead = trackLeader(victory, t);
         const frac = Math.min(1, def.threshold > 0 ? lead.value / def.threshold : 0);
         const col = FACTION_COLORS[lead.faction]?.primary ?? '#8a8f96';
         const mine = !!myFaction && lead.faction === myFaction;
+        const active = expanded === t;
         return (
-          <div key={t} className={`flex flex-col items-center gap-0.5 w-[3.9rem] rounded-lg px-1 py-0.5 ${mine ? 'ring-1 ring-white/25 bg-white/5' : ''}`}
-               title={`${def.label} — ${def.blurb}. Leader: ${lead.faction} ${Math.round(lead.value)}/${def.threshold}`}>
-            <div className="flex items-center gap-1 text-[10px] font-bold leading-none" style={{ color: col }}>
-              <span>{def.icon}</span><span className="hidden md:inline">{def.label}</span>
+          <button
+            key={t}
+            onClick={() => onToggle(t)}
+            title={`${def.label} — ${def.blurb}. Click for details.`}
+            className={`flex items-center gap-1.5 px-2 py-1 rounded-lg ring-1 transition ${active ? 'bg-white/12 ring-white/35' : 'ring-transparent hover:bg-white/[0.07] hover:ring-white/15'}`}
+          >
+            <span className="text-lg leading-none">{def.icon}</span>
+            <div className="flex flex-col gap-0.5 w-11">
+              <div className="relative h-1 rounded-full bg-black/50 overflow-hidden ring-1 ring-white/10">
+                <div className="absolute inset-y-0 left-0 rounded-full transition-[width] duration-300" style={{ width: `${frac * 100}%`, background: col }} />
+              </div>
+              <span className="text-[8.5px] font-semibold tabular-nums leading-none" style={{ color: mine ? col : 'rgba(255,255,255,0.6)' }}>
+                {lead.faction} {Math.round(lead.value)}
+              </span>
             </div>
-            <div className="relative w-full h-1.5 rounded-full bg-black/50 overflow-hidden ring-1 ring-white/10">
-              <div className="absolute inset-y-0 left-0 rounded-full transition-[width] duration-300" style={{ width: `${frac * 100}%`, background: col }} />
-            </div>
-            <div className="text-[8.5px] tabular-nums leading-none" style={{ color: mine ? col : 'rgba(255,255,255,0.55)' }}>
-              {lead.faction} {Math.round(lead.value)}/{def.threshold}
-            </div>
-          </div>
+          </button>
         );
       })}
+    </div>
+  );
+});
+
+/** Expanded per-faction breakdown for one victory track (opens under the top bar). */
+const VictoryTrackDetail = React.memo(function VictoryTrackDetail({
+  track, victory, myFaction, onClose,
+}: { track: VictoryTrack; victory: FactionVictory; myFaction?: string | null; onClose: () => void }) {
+  const def = VICTORY_TRACK_DEFS[track];
+  const rows = FACTIONS.map(f => ({ f, v: victory[f][track] })).sort((a, b) => b.v - a.v);
+  return (
+    <div className="w-[16rem] max-w-[92vw] p-3 rounded-xl bg-[#0c1219]/97 ring-1 ring-white/15 shadow-2xl text-gray-100">
+      <div className="flex items-center justify-between mb-1">
+        <div className="flex items-center gap-1.5"><span className="text-lg">{def.icon}</span><span className="font-bold text-sm">{def.label}</span></div>
+        <button onClick={onClose} className="opacity-60 hover:opacity-100 text-sm leading-none">✕</button>
+      </div>
+      <div className="text-[11px] opacity-60 mb-2.5 leading-snug">
+        {def.blurb}. First faction to {def.threshold} wins the match.{def.natural ? ` ${def.natural} earns ×1.5 here (its ethos track).` : ' Open to every faction equally.'}
+      </div>
+      <div className="space-y-1.5">
+        {rows.map(({ f, v }) => {
+          const col = FACTION_COLORS[f]?.primary ?? '#8a8f96';
+          const frac = Math.min(1, def.threshold > 0 ? v / def.threshold : 0);
+          return (
+            <div key={f} className="flex items-center gap-2">
+              <span className="w-9 text-[10px] font-bold" style={{ color: FACTION_COLORS[f]?.label }}>{f}{f === myFaction ? ' •' : ''}</span>
+              <div className="flex-1 relative h-2 rounded-full bg-black/50 overflow-hidden ring-1 ring-white/10">
+                <div className="absolute inset-y-0 left-0 rounded-full" style={{ width: `${frac * 100}%`, background: col }} />
+              </div>
+              <span className="w-12 text-right text-[10px] tabular-nums opacity-80">{Math.round(v)}/{def.threshold}</span>
+            </div>
+          );
+        })}
+      </div>
     </div>
   );
 });
@@ -2380,6 +2422,9 @@ export default function SoloMissionMap3D({
   // Monotonic live XP mirror — the single value the HUD reads. Bumped OPTIMISTICALLY on
   // every gain (instant feedback) and reconciled upward from the saved profile.
   const [heroXpLive, setHeroXpLive] = useState(() => Math.floor(profile?.progress?.hero?.xp ?? 0));
+  // Live player level (from XP) — read by reward call-sites to scale mission payouts.
+  const playerLevelRef = React.useRef(1);
+  playerLevelRef.current = getLevelFromXp(Math.floor(heroXpLive));
   React.useEffect(() => {
     const x = Math.floor(profile?.progress?.hero?.xp ?? 0);
     setHeroXpLive(prev => (x > prev ? x : prev));
@@ -2533,7 +2578,7 @@ export default function SoloMissionMap3D({
     if (consumed) {
       setTerraformProgress(p => {
         const np = Math.min(100, p + 12);
-        if (np >= 100 && p < 100) { awardHeroXp(60); awardFactionPoints(5); terraformRegion(); if (mobaActiveRef.current) mobaReportObjectiveRef.current('terraform'); console.log('[terraform] Region terraformed! +60 XP, +5 FP'); }
+        if (np >= 100 && p < 100) { const lvl = playerLevelRef.current; awardHeroXp(scaledMissionXp(60, lvl)); awardFactionPoints(scaledMissionFp(5, lvl)); terraformRegion(); if (mobaActiveRef.current) mobaReportObjectiveRef.current('terraform'); }
         return np;
       });
     }
@@ -2552,7 +2597,7 @@ export default function SoloMissionMap3D({
     onCapture: (_region, regionCleared) => {
       const approach = captureApproachRef.current;
       const hw = axialToWorld({ q: heroPosRef.current.q, r: heroPosRef.current.r }, hexSize);
-      awardFactionPoints(regionCleared ? 6 : 2); awardHeroXp(regionCleared ? 40 : 15);
+      { const lvl = playerLevelRef.current; awardFactionPoints(scaledMissionFp(regionCleared ? 6 : 2, lvl)); awardHeroXp(scaledMissionXp(regionCleared ? 40 : 15, lvl)); }
       // Taking/holding ground advances the Control victory track.
       bumpSoloVictoryRef.current?.(playerFactionKey, 'control', regionCleared ? 20 : 8);
       // Approach-specific outcome (GDD: "stealth operations, combat engagements, or tactical diplomacy").
@@ -2601,12 +2646,13 @@ export default function SoloMissionMap3D({
       // reward, reputation, and consequences — not the camp's faction.
       const cw = axialToWorld({ q: camp.q, r: camp.r }, hexSize);
       const resLbl = RESOURCE_DEFS[camp.loot.resource].label;
+      const lvl = playerLevelRef.current; // scale camp payouts with player level
       if (approach === 'loot' && camp.loot.amount > 0) {
         grantResource(camp.loot.resource, camp.loot.amount);
         spawnCombatText(cw.x, cw.z, `🔥 +${camp.loot.amount} ${resLbl}`, '#fb923c');
         enemyProvokeRef.current?.(camp.q, camp.r, factionKey(camp.campFaction), 8); // raiding enrages defenders
         recordPlaystyleRef.current('loot');
-        awardHeroXp(camp.reward.xp); awardFactionPoints(camp.reward.fp);
+        awardHeroXp(scaledMissionXp(camp.reward.xp, lvl)); awardFactionPoints(scaledMissionFp(camp.reward.fp, lvl));
       } else if (approach === 'negotiate') {
         // Tactical diplomacy — a modest, peaceful share; NO provoked defenders; extra standing.
         // Investment in the DIPLOMACY skill branch sweetens the deal (more resources + FP).
@@ -2615,11 +2661,11 @@ export default function SoloMissionMap3D({
         grantResource(camp.loot.resource, gain);
         spawnCombatText(cw.x, cw.z, `🕊️ Peace · +${gain} ${resLbl}${diplo ? ' (diplomacy)' : ''}`, '#7dd3fc');
         recordPlaystyleRef.current('negotiate');
-        awardHeroXp(Math.round(camp.reward.xp * 0.8)); awardFactionPoints(camp.reward.fp + 2 + Math.floor(diplo / 2));
+        awardHeroXp(scaledMissionXp(Math.round(camp.reward.xp * 0.8), lvl)); awardFactionPoints(scaledMissionFp(camp.reward.fp + 2 + Math.floor(diplo / 2), lvl));
       } else { // aid / help — heal the camp, build standing
         spawnCombatText(cw.x, cw.z, `✚ Camp aided`, '#7fd66b');
         recordPlaystyleRef.current('help');
-        awardHeroXp(camp.reward.xp); awardFactionPoints(camp.reward.fp);
+        awardHeroXp(scaledMissionXp(camp.reward.xp, lvl)); awardFactionPoints(scaledMissionFp(camp.reward.fp, lvl));
       }
       // Feed the competitive score: force → economy bucket, help/diplomacy → refugee bucket.
       if (mobaActiveRef.current) mobaReportObjectiveRef.current(approach === 'loot' ? 'resource' : 'refugee');
@@ -2954,9 +3000,12 @@ export default function SoloMissionMap3D({
   const soloEnabled = !autoMultiplayer && !mobaMode;
   const [soloVictory, setSoloVictory] = useState<FactionVictory>(() => emptyVictory());
   const soloVictoryRef = React.useRef(soloVictory); soloVictoryRef.current = soloVictory;
+  // Which victory track's detail popover is open in the top HUD (null = collapsed).
+  const [expandedTrack, setExpandedTrack] = useState<VictoryTrack | null>(null);
   const [soloVictoryResult, setSoloVictoryResult] = useState<{ faction: Faction; track: VictoryTrack } | null>(null);
   const soloResolvedRef = React.useRef(false); // match decided this session — freezes track accrual
   const soloWinRewardedRef = React.useRef(false);
+  const soloStartRef = React.useRef(0);        // first director tick — anchors the rival ramp
 
   const resolveSolo = (vr: { faction: Faction; track: VictoryTrack }) => {
     soloResolvedRef.current = true;
@@ -2982,9 +3031,13 @@ export default function SoloMissionMap3D({
     if (!soloEnabled) return;
     const id = window.setInterval(() => {
       if (inputPausedRef.current || soloResolvedRef.current) return;
+      // Rival income RAMPS with elapsed time — a relaxed early game that snowballs into a
+      // tense late-game race (empires accelerate), so faction goals feel progressive.
+      if (!soloStartRef.current) soloStartRef.current = Date.now();
+      const rate = rivalRampRate(1.0, Date.now() - soloStartRef.current);
       const rivals = (['PAA', 'ASF', 'WC'] as Faction[]).filter(f => f !== playerFactionKey);
       const next = cloneVictory(soloVictoryRef.current);
-      for (const f of rivals) addVictory(next, f, NATURAL_TRACK[f], 1.2);
+      for (const f of rivals) addVictory(next, f, NATURAL_TRACK[f], rate);
       soloVictoryRef.current = next; setSoloVictory(next);
       const vr = evaluateVictory(next);
       if (vr) resolveSoloRef.current(vr);
@@ -4531,6 +4584,22 @@ export default function SoloMissionMap3D({
                       <><span className="w-px h-4 bg-white/15" /><div className="flex items-center gap-1" title="Duel score"><span>⚔️</span><span className="font-semibold tabular-nums">{duel.status === 'connected' ? `${duel.myScore}–${duel.oppScore}` : duel.status}</span></div></>
                     )}
                   </div>
+
+                  {/* Center cluster: the four VICTORY TRACKS — the "how to win right now" readout,
+                      Civ-6-style inline in the bar, each clickable to expand a per-faction breakdown. */}
+                  {(soloEnabled || (mobaMode && mobaActive)) && (
+                    <div className="flex items-center shrink-0">
+                      <span className="w-px h-5 bg-white/15 mr-1.5 hidden lg:block" />
+                      <VictoryTrackChips
+                        victory={mobaMode ? moba.victory : soloVictory}
+                        myFaction={mobaMode ? moba.myFaction : playerFactionKey}
+                        expanded={expandedTrack}
+                        onToggle={(t) => setExpandedTrack(prev => prev === t ? null : t)}
+                      />
+                      <span className="w-px h-5 bg-white/15 ml-1.5 hidden lg:block" />
+                    </div>
+                  )}
+
                   {/* Right cluster: emergent playstyle identity + faction */}
                   <div className="flex items-center gap-3 flex-nowrap">
                     {dominantStyle && (
@@ -4586,6 +4655,17 @@ export default function SoloMissionMap3D({
                     </div>
                   </div>
                 </div>
+                {/* Expanded victory-track detail — drops beneath the bar, Civ-6 style. */}
+                {expandedTrack && (soloEnabled || (mobaMode && mobaActive)) && (
+                  <div className="absolute left-1/2 -translate-x-1/2 top-full mt-1 z-40 pointer-events-auto">
+                    <VictoryTrackDetail
+                      track={expandedTrack}
+                      victory={mobaMode ? moba.victory : soloVictory}
+                      myFaction={mobaMode ? moba.myFaction : playerFactionKey}
+                      onClose={() => setExpandedTrack(null)}
+                    />
+                  </div>
+                )}
               </div>
 
               {/* ── 1v1 PvP Duel: lobby + result (launcher lives in the top HUD bar) ─── */}
@@ -4760,18 +4840,7 @@ export default function SoloMissionMap3D({
                 </div>
               )}
 
-              {/* Victory-tracks readout — the four-meter "how to win right now". Solo = your
-                  race against the AI factions; MOBA = the live faction race. */}
-              {soloEnabled && (
-                <div className="fixed top-14 left-1/2 -translate-x-1/2 z-40 pointer-events-none">
-                  <VictoryTracksBar victory={soloVictory} myFaction={playerFactionKey} />
-                </div>
-              )}
-              {mobaMode && mobaActive && (
-                <div className="fixed top-24 left-1/2 -translate-x-1/2 z-40 pointer-events-none">
-                  <VictoryTracksBar victory={moba.victory} myFaction={moba.myFaction} />
-                </div>
-              )}
+              {/* (Victory tracks now live inline in the Civ-6-style top HUD bar — see above.) */}
 
               {mobaMode && mobaLobbyOpen && (
                 <div className="fixed top-28 right-3 z-40 w-[min(20rem,92vw)] p-4 rounded-xl bg-[#0c1219]/95 ring-1 ring-white/12 shadow-2xl text-sm text-gray-100 space-y-3 pointer-events-auto">

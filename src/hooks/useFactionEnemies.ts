@@ -25,6 +25,7 @@
 import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { factionKey, type FactionKey } from './useRefugeeCamps';
 import { PLAYER_XP_REWARDS } from '../services/playerExpEconomy';
+import { scaledXp, scaledFp } from '../services/balance';
 
 type TileType = 'water' | 'desert' | 'plains' | 'forest' | 'jungle' | 'hills' | 'mountain';
 interface MinTile { q: number; r: number; type: TileType }
@@ -441,11 +442,13 @@ export function useFactionEnemies({
     let killed = 0;
     if (hp <= 0) {
       killed = 1;
-      // GDD economy: flat combat rewards — a grunt is `enemyDefeated`, a faction champion
-      // is `bossDefeated`. Faction Points scale with the unit's threat.
+      // Rewards scale with the unit's LEVEL so deeper content stays worth fighting (matches
+      // the creep-camp model + the steepening XP curve — no flat-reward grind wall).
       const boss = target.role === 'boss';
-      const xp = boss ? PLAYER_XP_REWARDS.combat.bossDefeated : PLAYER_XP_REWARDS.combat.enemyDefeated;
-      const fp = boss ? 10 + target.level : 2 + Math.floor(target.level / 2);
+      const xp = boss
+        ? scaledXp(PLAYER_XP_REWARDS.combat.bossDefeated, target.level, 0.22)
+        : scaledXp(PLAYER_XP_REWARDS.combat.enemyDefeated, target.level, 0.18);
+      const fp = boss ? scaledFp(10, target.level) : scaledFp(3, target.level);
       awardXpRef.current?.(xp);
       awardFpRef.current?.(fp);
       onEventRef.current?.({ kind: 'kill', q: target.q, r: target.r, faction: target.faction, xp, fp, boss });
