@@ -2787,6 +2787,9 @@ export default function SoloMissionMap3D({
     return b;
   }, [outpostTerritory]);
 
+  // Game menu (rendered by GameHUD) is controlled here so its trigger can live inside the
+  // shared top HUD bar instead of floating over it.
+  const [hudMenuOpen, setHudMenuOpen] = useState(false);
   // ── 1v1 PvP duel (WebRTC data channel, Firestore-signaled) ───────────────────
   const [duelLobbyOpen, setDuelLobbyOpen] = useState(false);
   const [duelJoinCode, setDuelJoinCode] = useState('');
@@ -2802,6 +2805,17 @@ export default function SoloMissionMap3D({
   const pasteDuelCode = React.useCallback(async () => {
     try { const t = await navigator.clipboard?.readText(); if (t) setDuelJoinCode(t.toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 5)); } catch {}
   }, []);
+  // Open the skill tree — first flush live XP/level so points are immediately available and
+  // nothing resets. Shared by the top-bar Skills button and the in-menu "Open Skill Tree".
+  const openSkillTree = () => {
+    try {
+      const s = useSkillStore.getState();
+      const lvl = Math.max(1, getLevelFromXp(Math.floor(heroXpLive)), s.level);
+      s.setLevel(lvl);
+      saveProgress({ hero: { xp: Math.floor(heroXpLive), level: lvl, unlockedSkillIds: s.unlocked, unlockOrder: s.unlockOrder } });
+    } catch {}
+    onOpenSkillTree?.();
+  };
   const duel = useDuel({
     onHit: (dmg, at) => {
       // Receiver-side range check vs MY hero (the hook already checked the attacker's
@@ -4355,6 +4369,10 @@ export default function SoloMissionMap3D({
                     <div className="flex items-center gap-1.5" title="4X campaign score — outposts, regions, terraforming & refugee camps">
                       <span>🏆</span><span className="opacity-50 hidden md:inline">Score</span><span className="font-extrabold tabular-nums text-amber-300">{fourXScore}</span>
                     </div>
+                    <div className="flex items-center gap-1.5" title="Faction Points earned in-game">
+                      <span className="text-amber-300">✦</span><span className="opacity-50 hidden md:inline">FP</span>
+                      <span className="font-extrabold tabular-nums">{(profile?.progress as any)?.factionPoints ?? 0}</span>
+                    </div>
                     <div className="flex items-center gap-1.5" title="Unspent skill points — open the skill tree to invest">
                       <span>⭐</span><span className="opacity-50 hidden md:inline">Skill</span>
                       <span className={`font-extrabold tabular-nums ${(skillPoints ?? 0) > 0 ? 'text-emerald-300' : 'text-gray-300'}`}>{skillPoints ?? 0}</span>
@@ -4384,20 +4402,52 @@ export default function SoloMissionMap3D({
                       <span className="w-2 h-2 rounded-full" style={{ background: FACTION_COLORS[heroFaction as string]?.primary ?? '#8a8f96' }} />
                       <span className="font-bold" style={{ color: FACTION_COLORS[heroFaction as string]?.label ?? '#e5e7eb' }}>{String(heroFaction)}</span>
                     </div>
+                    {/* ── Top-bar controls: Skills · Duel/MOBA · Menu (inline so they never
+                        overlap the bar). `pointer-events-auto` re-enables clicks inside the
+                        otherwise click-through bar. ─────────────────────────────────────── */}
+                    <span className="w-px h-4 bg-white/15" />
+                    <div className="flex items-center gap-1.5 pointer-events-auto">
+                      <button
+                        onClick={openSkillTree}
+                        title="Skill tree — spend points on combat & utility perks"
+                        className={`flex items-center gap-1 px-2 py-0.5 rounded-md text-[12px] font-bold ring-1 shadow transition ${
+                          (skillPoints ?? 0) > 0
+                            ? 'bg-emerald-800/80 ring-emerald-400/70 text-emerald-50 hover:bg-emerald-700/80'
+                            : 'bg-[#141b26]/90 ring-white/15 text-gray-200 hover:ring-emerald-400/60'
+                        }`}
+                      >
+                        <span>⭐</span><span className="hidden sm:inline">Skills</span>
+                        {(skillPoints ?? 0) > 0 && <span className="px-1 rounded-full bg-black/30 tabular-nums">{skillPoints}</span>}
+                      </button>
+                      {!mobaMode && (
+                        <button
+                          onClick={() => setDuelLobbyOpen(o => !o)}
+                          title="1v1 PvP duel"
+                          className={`flex items-center gap-1 px-2 py-0.5 rounded-md text-[12px] font-bold ring-1 shadow transition ${
+                            duelActive ? 'bg-rose-800/90 ring-rose-400 text-rose-50' : 'bg-[#141b26]/90 ring-white/15 text-gray-200 hover:ring-rose-400/60'
+                          }`}
+                        ><span>⚔️</span><span className="hidden sm:inline">Duel</span>{duelActive && duel.status === 'connected' ? ' •' : ''}</button>
+                      )}
+                      {mobaMode && (
+                        <button
+                          onClick={() => setMobaLobbyOpen(o => !o)}
+                          title="1v1v1 MOBA"
+                          className={`flex items-center gap-1 px-2 py-0.5 rounded-md text-[12px] font-bold ring-1 shadow transition ${
+                            mobaActive ? 'bg-emerald-800/90 ring-emerald-400 text-emerald-50' : 'bg-[#141b26]/90 ring-white/15 text-gray-200 hover:ring-emerald-400/60'
+                          }`}
+                        ><span>🌍</span><span className="hidden sm:inline">MOBA</span>{mobaActive ? ' •' : ''}</button>
+                      )}
+                      <button
+                        onClick={() => setHudMenuOpen(o => !o)}
+                        title="Menu (Esc)"
+                        className="flex items-center gap-1 px-2 py-0.5 rounded-md text-[12px] font-bold ring-1 ring-white/15 bg-[#141b26]/90 text-gray-200 hover:bg-[#1b2636]/90 shadow transition"
+                      ><span>☰</span><span className="hidden sm:inline">Menu</span></button>
+                    </div>
                   </div>
                 </div>
               </div>
 
-              {/* ── 1v1 PvP Duel: launcher button + lobby + result ─────────────── */}
-              {!mobaMode && (
-              <button
-                onClick={() => setDuelLobbyOpen(o => !o)}
-                className={`fixed top-16 right-3 z-40 px-3 py-1.5 rounded-lg text-sm font-bold shadow-lg ring-1 transition pointer-events-auto ${
-                  duelActive ? 'bg-rose-800/90 ring-rose-400 text-rose-50' : 'bg-[#141b26]/90 ring-white/15 text-gray-200 hover:ring-rose-400/60'
-                }`}
-              >⚔️ Duel{duelActive && duel.status === 'connected' ? ' •' : ''}</button>
-              )}
-
+              {/* ── 1v1 PvP Duel: lobby + result (launcher lives in the top HUD bar) ─── */}
               {!mobaMode && duelLobbyOpen && (
                 <div className="fixed top-28 right-3 z-40 w-[min(18rem,92vw)] p-4 rounded-xl bg-[#0c1219]/95 ring-1 ring-white/12 shadow-2xl text-sm text-gray-100 space-y-3">
                   <div className="flex items-center justify-between">
@@ -4517,16 +4567,7 @@ export default function SoloMissionMap3D({
                 </div>
               )}
 
-              {/* ── 1v1v1 MOBA: launcher + lobby + scoreboard + result ─────────── */}
-              {mobaMode && (
-                <button
-                  onClick={() => setMobaLobbyOpen(o => !o)}
-                  className={`fixed top-16 right-3 z-40 px-3 py-1.5 rounded-lg text-sm font-bold shadow-lg ring-1 transition pointer-events-auto ${
-                    mobaActive ? 'bg-emerald-800/90 ring-emerald-400 text-emerald-50' : 'bg-[#141b26]/90 ring-white/15 text-gray-200 hover:ring-emerald-400/60'
-                  }`}
-                >🌍 MOBA{mobaActive ? ' •' : ''}</button>
-              )}
-
+              {/* ── 1v1v1 MOBA: lobby + scoreboard + result (launcher lives in the top HUD bar) ─── */}
               {/* Shared 3-faction scoreboard (top-center) while a match is live. */}
               {mobaMode && mobaActive && (
                 <div className="fixed top-12 left-1/2 -translate-x-1/2 z-40 pointer-events-none">
@@ -4793,18 +4834,9 @@ export default function SoloMissionMap3D({
                 heroInventory={localHeroInventory}
                 petInventory={localPetInventory}
                 playerProfile={playerProfile}
-                onTalents={() => {
-                  // Auto-save the live progression BEFORE leaving the mission for the skill
-                  // tree, via the shared profile (correct XP), and sync the skill-store level
-                  // so points are immediately available and nothing resets.
-                  try {
-                    const s = useSkillStore.getState();
-                    const lvl = Math.max(1, getLevelFromXp(Math.floor(heroXpLive)), s.level);
-                    s.setLevel(lvl);
-                    saveProgress({ hero: { xp: Math.floor(heroXpLive), level: lvl, unlockedSkillIds: s.unlocked, unlockOrder: s.unlockOrder } });
-                  } catch {}
-                  onOpenSkillTree?.();
-                }}
+                onTalents={openSkillTree}
+                menuOpen={hudMenuOpen}
+                onMenuOpenChange={setHudMenuOpen}
               />
       </div>
     </div>

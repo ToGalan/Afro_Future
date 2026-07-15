@@ -194,6 +194,13 @@ export interface GameHUDProps {
   heroInventory?: Array<{ id: string; type: string; quantity: number; value?: number }>;
   petInventory?: Array<{ id: string; type: string; quantity: number; value?: number }>;
   playerProfile?: { uid: string; displayName?: string; email?: string; faction?: string };
+  /**
+   * Controlled menu open state. When `onMenuOpenChange` is provided the parent owns the
+   * menu (and the floating Menu button + currency chip are hidden, since the parent renders
+   * those inside its own top HUD bar). Omit both to keep the HUD's self-contained behaviour.
+   */
+  menuOpen?: boolean;
+  onMenuOpenChange?: (open: boolean) => void;
 }
 
 const pct = (v: number, m: number) => m > 0 ? Math.min(1, Math.max(0, v / m)) : 0;
@@ -295,8 +302,18 @@ export const GameHUD: React.FC<GameHUDProps> = ({
   skillPoints, totalPlayTime, heroInventory, petInventory, playerProfile,
   abilityMode: abilityModeProp, onSetAbilityMode, onTransferToPet, onTransferToHero, heroStats,
   showOutpostZones, onToggleOutpostZones,
+  menuOpen: menuOpenProp, onMenuOpenChange,
 }) => {
-  const [menuOpen, setMenuOpen] = React.useState(false);
+  // Menu open state is controllable: when the parent supplies `onMenuOpenChange` it owns the
+  // Menu button (rendered inside its own top HUD bar); otherwise we fall back to internal state.
+  const [internalMenuOpen, setInternalMenuOpen] = React.useState(false);
+  const menuControlled = onMenuOpenChange !== undefined;
+  const menuOpen = menuOpenProp !== undefined ? menuOpenProp : internalMenuOpen;
+  const setMenuOpen = React.useCallback((v: boolean | ((o: boolean) => boolean)) => {
+    const next = typeof v === 'function' ? (v as (o: boolean) => boolean)(menuOpen) : v;
+    if (menuControlled) onMenuOpenChange!(next);
+    else setInternalMenuOpen(next);
+  }, [menuControlled, onMenuOpenChange, menuOpen]);
   // 'idle' | 'saving' | 'saved' — drives the Save Game button's inline feedback.
   const [saveState, setSaveState] = React.useState<'idle' | 'saving' | 'saved'>('idle');
   const saveResetRef = React.useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -340,8 +357,9 @@ export const GameHUD: React.FC<GameHUDProps> = ({
   return (
     <div className="pointer-events-none text-white select-none font-sans">
 
-      {/* Menu button (top-right) — opens the game menu. Esc also toggles it. */}
-      {!menuOpen && (
+      {/* Menu button (top-right) — opens the game menu. Esc also toggles it.
+          Hidden when the parent controls the menu (it renders Menu inside its top HUD bar). */}
+      {!menuControlled && !menuOpen && (
         <button
           onClick={() => setMenuOpen(true)}
           className={`fixed top-3 right-3 z-40 pointer-events-auto flex items-center gap-2 px-3 py-2 rounded-xl ${panelCls} hover:bg-[#12202c]/90 transition text-sm font-semibold shadow-lg`}
@@ -353,17 +371,20 @@ export const GameHUD: React.FC<GameHUDProps> = ({
         </button>
       )}
 
-      {/* Currency chip (top-left) — Faction Points earned in-game + unspent skill points */}
-      <div className={`fixed top-3 left-3 z-30 flex items-center gap-3 px-3 py-1.5 rounded-xl ${panelCls} text-sm shadow-lg pointer-events-none`}>
-        <span className="flex items-center gap-1" title="Faction Points">
-          <span className="text-amber-300">✦</span>
-          <span className="font-bold tabular-nums">{shardsValue ?? 0}</span>
-        </span>
-        <span className="flex items-center gap-1" title="Unspent skill points">
-          <span className="text-emerald-300">◆</span>
-          <span className="font-bold tabular-nums">{skillPoints ?? skillTokens ?? 0}</span>
-        </span>
-      </div>
+      {/* Currency chip (top-left) — Faction Points earned in-game + unspent skill points.
+          Hidden when the parent owns the top HUD bar (it shows these inline to avoid overlap). */}
+      {!menuControlled && (
+        <div className={`fixed top-3 left-3 z-30 flex items-center gap-3 px-3 py-1.5 rounded-xl ${panelCls} text-sm shadow-lg pointer-events-none`}>
+          <span className="flex items-center gap-1" title="Faction Points">
+            <span className="text-amber-300">✦</span>
+            <span className="font-bold tabular-nums">{shardsValue ?? 0}</span>
+          </span>
+          <span className="flex items-center gap-1" title="Unspent skill points">
+            <span className="text-emerald-300">◆</span>
+            <span className="font-bold tabular-nums">{skillPoints ?? skillTokens ?? 0}</span>
+          </span>
+        </div>
+      )}
 
       {/* ══════════════════ BOTTOM HUD BAR — full width, Dota 2 style ════════ */}
       {/*

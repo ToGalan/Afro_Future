@@ -42,7 +42,9 @@
       "Bash(firebase --version)",
       "Bash(git checkout *)",
       "WebFetch(domain:afuture.netlify.app)",
-      "Bash(awk -F: '$1 >= 1500 && $1 <= 1640')"
+      "Bash(awk -F: '$1 >= 1500 && $1 <= 1640')",
+      "Bash(curl -s -o /dev/null -w \"HTTP %{http_code}\\\\n\" http://localhost:5173/)",
+      "Bash(curl -s http://localhost:5173/)"
     ]
   }
 }
