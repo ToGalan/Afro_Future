@@ -25,21 +25,25 @@
  */
 import { useCallback, useEffect, useRef, useState } from 'react';
 import {
-  hostMatch, joinMatch, type MatchHostController, type MatchGuestController,
+  hostMatch, joinMatch, findOpenMatch, pickFreeFaction,
+  type MatchHostController, type MatchGuestController,
   type MatchPlayerInfo, type MatchRoom,
 } from '../services/matchSignaling';
 import {
   createMatch, applyCapture, applyScoreTick, applyElimination, applyObjective, evaluateWinner,
-  FACTIONS, MOBA_MODES, MOBA_SCORING,
-  type Faction, type MobaMode, type MatchState, type MatchOutpost, type MobaObjective,
+  evaluateVictory, emptyVictory, chooseAIObjective, FACTIONS, MOBA_MODES, MOBA_SCORING,
+  type Faction, type MobaMode, type MatchState, type MatchOutpost, type MobaObjective, type AIThreat,
+  type FactionVictory, type VictoryTrack,
 } from '../services/mobaMatch';
 
 const TICK_HZ = 15;
 const TICK_MS = 1000 / TICK_HZ;
 const AI_STEP_MS = 650;          // how often an AI hero advances one hex
+const AI_ATTACK_MS = 1100;       // min time between an AI hero's strikes on a player
+const AI_ATTACK_DMG = 8;         // damage an aggressive AI hero deals when adjacent
 const HERO_STALE_MS = 6000;      // drop a remote hero not seen for this long (disconnect)
 
-export type MobaStatus = 'idle' | 'hosting' | 'joining' | 'lobby' | 'active' | 'ended' | 'error';
+export type MobaStatus = 'idle' | 'searching' | 'hosting' | 'joining' | 'lobby' | 'active' | 'ended' | 'error';
 
 export interface MobaPet { q: number; r: number; type?: string; moving?: boolean }
 export interface MobaHero {
@@ -93,10 +97,16 @@ export function useMobaMatch(opts: MobaOpts = {}) {
   const [phase, setPhase] = useState<'lobby' | 'active' | 'ended'>('lobby');
   const [winner, setWinner] = useState<Faction | null>(null);
   const [scores, setScores] = useState<Record<Faction, number>>({ PAA: 0, ASF: 0, WC: 0 });
+  const [victory, setVictory] = useState<FactionVictory>(() => emptyVictory());
+  const [winningTrack, setWinningTrack] = useState<VictoryTrack | null>(null);
+  const victorySigRef = useRef('');
   const [outposts, setOutposts] = useState<MobaOutpost[]>([]);
   // Authoritative outpost ownership by "q,r" key — populated on BOTH host and guest from
   // world snapshots (the geometry itself is generated identically on every client).
   const [outpostOwners, setOutpostOwners] = useState<Record<string, Faction | 'neutral'>>({});
+  // True while the player reached this room via quick-match (findMatch) rather than a manual
+  // host/join — the consumer uses it to auto-start the match once the lobby is ready.
+  const [quickMatch, setQuickMatch] = useState(false);
   // Remote heroes (other players + AI) for the UI. The high-frequency positions live in
   // a ref buffer for smooth interpolation; `remotes` state only re-renders on identity/HP.
   const [remotes, setRemotes] = useState<MobaHero[]>([]);
@@ -127,6 +137,7 @@ export function useMobaMatch(opts: MobaOpts = {}) {
   const heroesRef = useRef<Map<string, MobaHero>>(new Map()); // uid → latest hero (host)
   const aiHeroesRef = useRef<Map<Faction, MobaHero>>(new Map()); // faction → AI hero (host)
   const aiStepRef = useRef(0);
+  const aiAtkReadyRef = useRef<Map<Faction, number>>(new Map()); // faction → next-strike time (host)
   const lastScoreTickRef = useRef(0);
 
   const isHost = () => role === 'host' && hostRef.current;
@@ -166,6 +177,11 @@ export function useMobaMatch(opts: MobaOpts = {}) {
       const sig = JSON.stringify(w.score);
       if (sig !== scoreSigRef.current) { scoreSigRef.current = sig; setScores(w.score); }
     }
+    if (w.victory) {
+      const sig = JSON.stringify(w.victory);
+      if (sig !== victorySigRef.current) { victorySigRef.current = sig; setVictory(w.victory); }
+    }
+    if ('winningTrack' in w) setWinningTrack(w.winningTrack ?? null);
     if (w.phase) setPhase(w.phase);
     if ('winner' in w) setWinner(w.winner ?? null);
   }, [publishRemotes]);
@@ -177,7 +193,7 @@ export function useMobaMatch(opts: MobaOpts = {}) {
     const heroes: MobaHero[] = [...heroesRef.current.values(), ...aiHeroesRef.current.values()];
     const outMap: Record<string, Faction | 'neutral'> = {};
     for (const o of Object.values(ms.outposts)) outMap[o.key] = o.owner;
-    return { t: 'world', heroes, outposts: outMap, score: ms.score, phase: ms.phase, winner: ms.winner };
+    return { t: 'world', heroes, outposts: outMap, score: ms.score, victory: ms.victory, winningTrack: ms.winningTrack, phase: ms.phase, winner: ms.winner };
   }, []);
 
   // ── Fixed tick ────────────────────────────────────────────────────────────────
@@ -209,8 +225,10 @@ export function useMobaMatch(opts: MobaOpts = {}) {
             lastScoreTickRef.current = now;
             applyScoreTick(ms);
           }
-          const w = evaluateWinner(ms);
-          if (w && !ms.winner) { ms.winner = w; ms.phase = 'ended'; host.updateRoom({ phase: 'ended', winner: w }); }
+          // Victory tracks are the primary win condition; fall back to score/last-standing.
+          const vr = evaluateVictory(ms.victory);
+          const w = vr ? vr.faction : evaluateWinner(ms);
+          if (w && !ms.winner) { ms.winner = w; ms.winningTrack = vr?.track ?? null; ms.phase = 'ended'; host.updateRoom({ phase: 'ended', winner: w }); }
         }
         const world = buildWorld();
         if (world) { host.broadcast(world); applyWorld(world); }
@@ -232,31 +250,49 @@ export function useMobaMatch(opts: MobaOpts = {}) {
     const humanFactions = new Set([...heroesRef.current.values()].map((h) => h.faction));
     // Ensure an AI hero exists for each unmanned faction; retire ones that got a human.
     for (const f of FACTIONS) {
-      if (humanFactions.has(f)) { aiHeroesRef.current.delete(f); continue; }
+      if (humanFactions.has(f)) { aiHeroesRef.current.delete(f); aiAtkReadyRef.current.delete(f); continue; }
       if (!aiHeroesRef.current.has(f)) {
-        // Spawn near the centroid of that faction's target — reuse map center-ish origin.
+        // Spread each bot's spawn across different outposts so they don't clump on one tile.
         const geo = [...outpostGeoRef.current.values()];
-        const spawn = geo.length ? { q: geo[0].q, r: geo[0].r } : { q: 0, r: 0 };
+        const spawn = geo.length ? { q: geo[FACTIONS.indexOf(f) % geo.length].q, r: geo[FACTIONS.indexOf(f) % geo.length].r } : { q: 0, r: 0 };
         aiHeroesRef.current.set(f, { uid: `ai-${f}`, faction: f, pos: spawn, hp: 100, maxHp: 100, name: `${f} Bot`, isAI: true, moving: false, pet: null, lastSeen: now });
       }
     }
     if (now - aiStepRef.current < AI_STEP_MS) return;
     aiStepRef.current = now;
-    // Each AI: move one hex toward the nearest non-owned outpost; capture if adjacent.
+
+    // Rival heroes (humans + other bots) the strategy AI reacts to for hunt/defend.
+    const allHeroes = [...heroesRef.current.values(), ...aiHeroesRef.current.values()];
+    const threats: AIThreat[] = allHeroes.map(h => ({ faction: h.faction, q: h.pos.q, r: h.pos.r, hp: h.hp }));
+
+    // Each bot picks a doctrine-weighted objective (expand / contest / defend / hunt)
+    // and acts on it — a real 4X opponent instead of a nearest-outpost seeker.
     for (const [f, ai] of aiHeroesRef.current) {
-      let target: MatchOutpost | null = null, best = Infinity;
-      for (const o of Object.values(ms.outposts)) {
-        if (o.owner === f) continue;
-        const d = axialDist(ai.pos, o);
-        if (d < best) { best = d; target = o; }
-      }
-      if (!target) { ai.moving = false; continue; }
-      if (best <= 1) {
-        applyCapture(ms, target.key, f);
-        ai.moving = false;
-      } else {
-        ai.pos = stepToward(ai.pos, target);
-        ai.moving = true;
+      const obj = chooseAIObjective(f, ai.pos, ms.outposts, threats);
+      if (obj.kind === 'idle') { ai.moving = false; ai.lastSeen = now; continue; }
+      const dist = axialDist(ai.pos, obj.pos);
+
+      if (obj.kind === 'capture') {
+        if (dist <= 1) { applyCapture(ms, obj.target.key, f); ai.moving = false; }
+        else { ai.pos = stepToward(ai.pos, obj.pos); ai.moving = true; }
+      } else if (obj.kind === 'defend') {
+        // Garrison the threatened outpost (its presence deters / recaptures).
+        if (dist >= 1) { ai.pos = stepToward(ai.pos, obj.pos); ai.moving = true; }
+        else ai.moving = false;
+      } else if (obj.kind === 'hunt') {
+        if (dist <= 1) {
+          ai.moving = false;
+          // Strike the adjacent enemy hero on cooldown (only real players take damage).
+          const ready = aiAtkReadyRef.current.get(f) ?? 0;
+          if (now >= ready) {
+            aiAtkReadyRef.current.set(f, now + AI_ATTACK_MS);
+            const victim = allHeroes.find(h => !h.isAI && h.faction !== f && axialDist(h.pos, ai.pos) <= 1);
+            if (victim) {
+              if (victim.uid === myUidRef.current) optsRef.current.onHit?.(AI_ATTACK_DMG, ai.pos);
+              else hostRef.current?.sendTo(victim.uid, { t: 'hit', dmg: AI_ATTACK_DMG, at: ai.pos });
+            }
+          }
+        } else { ai.pos = stepToward(ai.pos, obj.pos); ai.moving = true; }
       }
       ai.lastSeen = now;
     }
@@ -322,14 +358,14 @@ export function useMobaMatch(opts: MobaOpts = {}) {
     remotesBufRef.current.clear();
   }, [stopTick]);
 
-  const host = useCallback(async (faction: Faction, chosenMode: MobaMode = 'FFA_1v1v1', mapSeed?: number, displayName?: string) => {
+  const host = useCallback(async (faction: Faction, chosenMode: MobaMode = 'FFA_1v1v1', mapSeed?: number, displayName?: string, open = false, quick = false) => {
     cleanup();
     roleRef.current = 'host';
-    setStatus('hosting'); setRole('host'); setMyFaction(faction); setMode(chosenMode);
+    setStatus('hosting'); setRole('host'); setMyFaction(faction); setMode(chosenMode); setQuickMatch(quick);
     myFactionRef.current = faction;
     try {
       const ctrl = await hostMatch({
-        mode: chosenMode, faction, displayName, seed: mapSeed,
+        mode: chosenMode, faction, displayName, seed: mapSeed, open,
         handlers: {
           onGuestOpen: () => {},
           onGuestClose: (uid) => { heroesRef.current.delete(uid); },
@@ -344,10 +380,10 @@ export function useMobaMatch(opts: MobaOpts = {}) {
     } catch (e) { console.warn('[moba] host failed', e); setStatus('error'); return null; }
   }, [cleanup, onGuestMessage, startTick]);
 
-  const join = useCallback(async (rawCode: string, faction: Faction, displayName?: string) => {
+  const join = useCallback(async (rawCode: string, faction: Faction, displayName?: string, quick = false) => {
     cleanup();
     roleRef.current = 'guest';
-    setStatus('joining'); setRole('guest'); setMyFaction(faction);
+    setStatus('joining'); setRole('guest'); setMyFaction(faction); setQuickMatch(quick);
     myFactionRef.current = faction;
     try {
       const ctrl = await joinMatch(rawCode, {
@@ -366,6 +402,26 @@ export function useMobaMatch(opts: MobaOpts = {}) {
       return true;
     } catch (e) { console.warn('[moba] join failed', e); setStatus('error'); return false; }
   }, [cleanup, onHostMessage, startTick]);
+
+  /**
+   * Quick-match: join an open lobby for this mode (claiming a free faction), or host a
+   * fresh open room and wait. Mirrors the duel `findOpponent` model. Sets `quickMatch` so
+   * the consumer auto-starts once the lobby is ready (full, or after a backfill timeout).
+   */
+  const findMatch = useCallback(async (faction: Faction, chosenMode: MobaMode = 'FFA_1v1v1', mapSeed?: number, displayName?: string) => {
+    setStatus('searching'); setMode(chosenMode); setQuickMatch(true);
+    try {
+      const found = await findOpenMatch(chosenMode);
+      if (found) {
+        const fac = pickFreeFaction(faction, found.taken);
+        const ok = await join(found.code, fac, displayName, true);
+        if (ok) return true;
+        // Host vanished between find and join — fall through to hosting our own.
+      }
+      const res = await host(faction, chosenMode, mapSeed, displayName, true, true);
+      return !!res;
+    } catch (e) { console.warn('[moba] findMatch failed', e); setStatus('error'); return false; }
+  }, [join, host]);
 
   const setFaction = useCallback((faction: Faction) => {
     setMyFaction(faction);
@@ -392,16 +448,18 @@ export function useMobaMatch(opts: MobaOpts = {}) {
     matchRef.current = ms;
     lastScoreTickRef.current = Date.now();
     setOutposts(mapOutposts.map((o) => ({ ...o, owner: 'neutral' })));
-    ctrl.updateRoom({ phase: 'active' });
-    setPhase('active'); setStatus('active');
+    // Close the lobby to matchmaking as it goes live.
+    ctrl.updateRoom({ phase: 'active', open: false });
+    setPhase('active'); setStatus('active'); setQuickMatch(false);
   }, [players]);
 
   const leave = useCallback(() => {
     cleanup();
     roleRef.current = null; myFactionRef.current = null; ownersSigRef.current = ''; scoreSigRef.current = '';
     setStatus('idle'); setRole(null); setCode(null); setSeed(null);
-    setPlayers([]); setMyFaction(null); setWinner(null); setPhase('lobby');
+    setPlayers([]); setMyFaction(null); setWinner(null); setPhase('lobby'); setQuickMatch(false);
     setScores({ PAA: 0, ASF: 0, WC: 0 }); setOutposts([]); setOutpostOwners({}); setRemotes([]);
+    setVictory(emptyVictory()); setWinningTrack(null); victorySigRef.current = '';
   }, [cleanup]);
 
   // ── Per-frame inputs from the consumer (SoloMissionMap3D) ─────────────────────
@@ -448,10 +506,10 @@ export function useMobaMatch(opts: MobaOpts = {}) {
 
   return {
     status, role, code, seed, mode, players, myFaction, myUid: myUidRef.current, phase, winner, scores, outposts, outpostOwners,
-    remotes, remotesBufRef, result, active,
+    victory, winningTrack, remotes, remotesBufRef, result, active, quickMatch,
     modeConfig: MOBA_MODES[mode],
     // lobby
-    host, join, setFaction, startMatch, leave,
+    host, join, findMatch, setFaction, startMatch, leave,
     // in-match
     setLocalSnapshot, requestCapture, attack, castAbility, reportLocalDeath, reportObjective,
   };

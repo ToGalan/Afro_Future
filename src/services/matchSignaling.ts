@@ -21,9 +21,13 @@
  */
 import {
   doc, collection, setDoc, updateDoc, getDoc, onSnapshot, addDoc, deleteDoc, getDocs,
+  query, where, limit,
 } from 'firebase/firestore';
 import { db, ensureAnonAuth } from './firebase';
-import type { Faction, MobaMode } from './mobaMatch';
+import { FACTIONS, MOBA_MODES, type Faction, type MobaMode } from './mobaMatch';
+
+// Open lobby rooms older than this are treated as abandoned and skipped by quick-match.
+const MATCH_STALE_MS = 90_000;
 
 const ICE_SERVERS: RTCConfiguration = {
   iceServers: [
@@ -365,4 +369,49 @@ export async function joinMatch(rawCode: string, opts: {
     setFaction: (faction) => setDoc(doc(playersRef, uid), { faction }, { merge: true }) as Promise<void>,
     close,
   };
+}
+
+// ── Quick-match (mode-aware matchmaking over the same Firestore rooms) ──────────
+/**
+ * Find an open lobby to join for `mode`, returning its code and the factions already
+ * taken (so the caller can claim a free one). Returns null when nothing joinable exists,
+ * in which case the caller should host its own open room. Filters `mode` client-side so
+ * no composite Firestore index is required.
+ */
+export async function findOpenMatch(mode: MobaMode): Promise<{ code: string; taken: Faction[] } | null> {
+  const cfg = MOBA_MODES[mode];
+  const qy = query(collection(db, 'matches'), where('open', '==', true), limit(15));
+  const qs = await getDocs(qy);
+  const now = Date.now();
+  for (const d of qs.docs) {
+    const v = d.data() as any;
+    if (v.mode !== mode || v.phase !== 'lobby') continue;
+    if (now - (v.createdAt || 0) > MATCH_STALE_MS) continue;
+    const ps = await getDocs(collection(d.ref, 'players'));
+    if (ps.size >= cfg.players) continue;                     // full lobby
+    const taken = ps.docs.map((p) => (p.data() as any).faction as Faction);
+    // FFA: every side must have a free faction; if all three sides are claimed, skip.
+    if (cfg.teamSize === 1 && new Set(taken).size >= cfg.sideCount) continue;
+    return { code: d.id, taken };
+  }
+  return null;
+}
+
+/** First faction (in canonical order) not already taken, else the requested one. */
+export function pickFreeFaction(requested: Faction, taken: Faction[]): Faction {
+  if (!taken.includes(requested)) return requested;
+  return FACTIONS.find((f) => !taken.includes(f)) ?? requested;
+}
+
+/** Live count of players waiting in open lobbies for `mode` (drives the "N waiting" chip). */
+export function watchOpenMatches(mode: MobaMode, cb: (count: number) => void): () => void {
+  const qy = query(collection(db, 'matches'), where('open', '==', true), limit(25));
+  return onSnapshot(qy, (qs) => {
+    const now = Date.now();
+    const n = qs.docs.filter((d) => {
+      const v = d.data() as any;
+      return v.mode === mode && v.phase === 'lobby' && now - (v.createdAt || 0) < MATCH_STALE_MS;
+    }).length;
+    cb(n);
+  }, () => cb(0));
 }

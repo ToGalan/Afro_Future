@@ -168,6 +168,19 @@ export function useOutposts({ tiles, heroQ, heroR, centerQ, centerR, onCapture }
     return true;
   }, [engagedKey]);
 
+  // Rival raid — a faction AI retakes a player-owned outpost, flipping it back to neutral.
+  // Returns true if an owned outpost was actually flipped (so callers can surface a banner).
+  const raidOutpost = useCallback((key: string): boolean => {
+    const cur = outpostsRef.current;
+    const o = cur.get(key);
+    if (!o || o.owner !== 'player') return false;
+    const next = new Map(cur);
+    next.set(key, { ...o, owner: 'neutral' });
+    setOutposts(next);
+    console.log(`[outposts] Raided ${key} (region ${o.region}) — lost to a rival faction`);
+    return true;
+  }, []);
+
   // Restore saved ownership (solo save/load) — flip the given "q,r" keys to player-owned.
   const applyOwnership = useCallback((ownedKeys: string[]) => {
     if (!ownedKeys || !ownedKeys.length) return;
@@ -225,5 +238,5 @@ export function useOutposts({ tiles, heroQ, heroR, centerQ, centerR, onCapture }
     return { owned, total: all.length, regionsControlled, regionCount: regions.length, ownedTiles, totalTiles, tilePct };
   }, [outposts, territory, regions]);
 
-  return { outposts, nearbyOutpost, captureNearby, control, territory, regions, nearestOwnedOutpost, applyOwnership };
+  return { outposts, nearbyOutpost, captureNearby, raidOutpost, control, territory, regions, nearestOwnedOutpost, applyOwnership };
 }

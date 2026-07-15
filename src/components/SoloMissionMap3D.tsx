@@ -15,8 +15,12 @@ import { useRefugeeCamps, factionKey, type FactionKey } from '../hooks/useRefuge
 import { useFactionEnemies, DOCTRINE, type FactionEnemy, type GuardPost } from '../hooks/useFactionEnemies';
 import { useDuel, type RemoteHero } from '../hooks/useDuel';
 import { watchOpenRooms } from '../services/duelSignaling';
+import { watchOpenMatches } from '../services/matchSignaling';
 import { useMobaMatch, type MobaHero } from '../hooks/useMobaMatch';
-import { MOBA_SCORING, type Faction } from '../services/mobaMatch';
+import {
+  MOBA_SCORING, VICTORY_TRACKS, VICTORY_TRACK_DEFS, trackLeader, emptyVictory, addVictory, evaluateVictory,
+  type Faction, type FactionVictory, type VictoryTrack,
+} from '../services/mobaMatch';
 import { PLAYSTYLES, PLAYSTYLE_ORDER, emptyReputation, dominantPlaystyle, type Playstyle, type PlaystyleReputation } from '../services/playstyles';
 import { useSkillStore } from '../store/skillStore';
 import { skillEffectFor, type SkillEffect } from '../store/skillData';
@@ -805,6 +809,45 @@ const FACTION_COLORS: Record<string, { primary: string; secondary: string; label
   WC:  { primary: '#38bdf8', secondary: '#075985', label: '#7dd3fc' },
 };
 const FACTION_LABEL: Record<string, string> = { PAA: 'Pan-African Alliance', ASF: 'African Sovereignty Front', WC: 'World Coalition' };
+
+/**
+ * Victory-tracks HUD — the four-meter "how to win right now" readout shared by solo and
+ * MOBA. Each meter shows the LEADING faction's progress toward that track's threshold,
+ * coloured by faction; your own faction's meters are outlined so you can read your race.
+ */
+const VictoryTracksBar = React.memo(function VictoryTracksBar({ victory, myFaction }: { victory: FactionVictory; myFaction?: string | null }) {
+  return (
+    <div className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-xl bg-[#0c1219]/90 ring-1 ring-white/12 shadow-lg">
+      {VICTORY_TRACKS.map(t => {
+        const def = VICTORY_TRACK_DEFS[t];
+        const lead = trackLeader(victory, t);
+        const frac = Math.min(1, def.threshold > 0 ? lead.value / def.threshold : 0);
+        const col = FACTION_COLORS[lead.faction]?.primary ?? '#8a8f96';
+        const mine = !!myFaction && lead.faction === myFaction;
+        return (
+          <div key={t} className={`flex flex-col items-center gap-0.5 w-[3.9rem] rounded-lg px-1 py-0.5 ${mine ? 'ring-1 ring-white/25 bg-white/5' : ''}`}
+               title={`${def.label} — ${def.blurb}. Leader: ${lead.faction} ${Math.round(lead.value)}/${def.threshold}`}>
+            <div className="flex items-center gap-1 text-[10px] font-bold leading-none" style={{ color: col }}>
+              <span>{def.icon}</span><span className="hidden md:inline">{def.label}</span>
+            </div>
+            <div className="relative w-full h-1.5 rounded-full bg-black/50 overflow-hidden ring-1 ring-white/10">
+              <div className="absolute inset-y-0 left-0 rounded-full transition-[width] duration-300" style={{ width: `${frac * 100}%`, background: col }} />
+            </div>
+            <div className="text-[8.5px] tabular-nums leading-none" style={{ color: mine ? col : 'rgba(255,255,255,0.55)' }}>
+              {lead.faction} {Math.round(lead.value)}/{def.threshold}
+            </div>
+          </div>
+        );
+      })}
+    </div>
+  );
+});
+
+function cloneVictory(v: FactionVictory): FactionVictory {
+  return { PAA: { ...v.PAA }, ASF: { ...v.ASF }, WC: { ...v.WC } };
+}
+// Each rival faction's off-screen 4X progress accrues on its ethos-aligned track.
+const NATURAL_TRACK: Record<Faction, VictoryTrack> = { PAA: 'prosperity', ASF: 'domination', WC: 'exploitation' };
 
 /** A remote MOBA hero (another player OR an AI faction). Interpolated between the host's
  *  15 Hz world snapshots; faction-coloured. Reads its live position from the shared
@@ -2498,7 +2541,7 @@ export default function SoloMissionMap3D({
 
   // ── Outposts / region control ────────────────────────────────────────────────
   const {
-    outposts, nearbyOutpost, captureNearby, control: outpostControl,
+    outposts, nearbyOutpost, captureNearby, raidOutpost, control: outpostControl,
     territory: outpostTerritory, regions: outpostRegions, nearestOwnedOutpost, applyOwnership: applyOutpostOwnership,
   } = useOutposts({
     tiles,
@@ -2510,6 +2553,8 @@ export default function SoloMissionMap3D({
       const approach = captureApproachRef.current;
       const hw = axialToWorld({ q: heroPosRef.current.q, r: heroPosRef.current.r }, hexSize);
       awardFactionPoints(regionCleared ? 6 : 2); awardHeroXp(regionCleared ? 40 : 15);
+      // Taking/holding ground advances the Control victory track.
+      bumpSoloVictoryRef.current?.(playerFactionKey, 'control', regionCleared ? 20 : 8);
       // Approach-specific outcome (GDD: "stealth operations, combat engagements, or tactical diplomacy").
       if (approach === 'assault') {
         enemyProvokeRef.current?.(heroPosRef.current.q, heroPosRef.current.r, undefined, 7); // loud → defenders respond
@@ -2598,6 +2643,16 @@ export default function SoloMissionMap3D({
   const playerFactionKey = factionKey(factionName);
   const paaPlayer = playerFactionKey === 'PAA';
 
+  // Outpost ownership snapshot the rival-faction AI reads to contest the player's territory
+  // (solo only — MOBA/duel run their own authoritative outpost systems).
+  const outpostStrategicTargets = React.useMemo(
+    () => Array.from(outposts.values()).map(o => ({ key: o.key, q: o.q, r: o.r, owner: o.owner })),
+    [outposts],
+  );
+  const [raidBanner, setRaidBanner] = useState<{ faction: string; at: number } | null>(null);
+  const raidBannerTimerRef = React.useRef<ReturnType<typeof setTimeout> | null>(null);
+  React.useEffect(() => () => { if (raidBannerTimerRef.current) clearTimeout(raidBannerTimerRef.current); }, []);
+
   const {
     enemies: factionEnemies, nearbyEnemy: nearbyFactionEnemy,
     attackNearby: attackNearbyEnemy, strikeNearby: strikeNearbyEnemy,
@@ -2616,6 +2671,19 @@ export default function SoloMissionMap3D({
     enabled: !autoMultiplayer, // solo PvE only — duels are handled by useDuel
     paused: !!inputPaused,     // freeze combat while the skill-tree overlay is open
     getHeroStealthed: () => heroStealthRef.current, // Stealth branch shrinks enemy detection
+    // Objective awareness: rival factions march on & raid the player's outposts (solo only).
+    strategicTargets: (!autoMultiplayer && !mobaMode) ? outpostStrategicTargets : undefined,
+    onRaidOutpost: (key: string, fk: string) => {
+      if (autoMultiplayer || mobaMode) return;
+      if (!raidOutpost(key)) return;
+      const o = outposts.get(key);
+      if (o) { const w = axialToWorld({ q: o.q, r: o.r }, hexSize); spawnCombatText(w.x, w.z, '⚑ raided', '#ff5555'); }
+      // A successful raid advances that faction's Domination track (aggressive expansion).
+      bumpSoloVictoryRef.current?.(fk as Faction, 'domination', 8);
+      setRaidBanner({ faction: fk, at: Date.now() });
+      if (raidBannerTimerRef.current) clearTimeout(raidBannerTimerRef.current);
+      raidBannerTimerRef.current = setTimeout(() => setRaidBanner(null), 4000);
+    },
     onHeroDamage: (amt) => applyIncomingDamageRef.current(amt),
     awardXp: awardHeroXp,
     awardFactionPoints,
@@ -2846,6 +2914,8 @@ export default function SoloMissionMap3D({
   const [mobaFactionPick, setMobaFactionPick] = useState<Faction>('PAA');
   const [mobaDeathReported, setMobaDeathReported] = useState(false);
   const [mobaCodeCopied, setMobaCodeCopied] = useState(false);
+  const [mobaWaiting, setMobaWaiting] = useState(0); // players in the MOBA quick-match queue
+  const mobaLobbyEnteredRef = React.useRef(0);       // when we entered the lobby (backfill timer)
   const copyMobaCode = React.useCallback((c: string | null) => {
     if (!c) return;
     try { navigator.clipboard?.writeText(c); } catch {}
@@ -2880,13 +2950,59 @@ export default function SoloMissionMap3D({
     const saved = (profile.progress as any)?.reputation as Partial<PlaystyleReputation> | undefined;
     if (saved) setReputation({ ...emptyReputation(), ...saved });
   }, [profile]);
+  // ── Solo victory tracks — the multi-path win race against the AI factions ─────
+  const soloEnabled = !autoMultiplayer && !mobaMode;
+  const [soloVictory, setSoloVictory] = useState<FactionVictory>(() => emptyVictory());
+  const soloVictoryRef = React.useRef(soloVictory); soloVictoryRef.current = soloVictory;
+  const [soloVictoryResult, setSoloVictoryResult] = useState<{ faction: Faction; track: VictoryTrack } | null>(null);
+  const soloResolvedRef = React.useRef(false); // match decided this session — freezes track accrual
+  const soloWinRewardedRef = React.useRef(false);
+
+  const resolveSolo = (vr: { faction: Faction; track: VictoryTrack }) => {
+    soloResolvedRef.current = true;
+    setSoloVictoryResult(vr);
+    if (vr.faction === playerFactionKey && !soloWinRewardedRef.current) { soloWinRewardedRef.current = true; awardShardsRef.current(60); }
+  };
+  const resolveSoloRef = React.useRef(resolveSolo); resolveSoloRef.current = resolveSolo;
+
+  // Add points to a faction's victory track (solo only), and resolve the match if a track fills.
+  const bumpSoloVictory = React.useCallback((faction: Faction, track: VictoryTrack, base: number) => {
+    if (!soloEnabled || soloResolvedRef.current) return;
+    const next = cloneVictory(soloVictoryRef.current);
+    addVictory(next, faction, track, base);
+    soloVictoryRef.current = next; setSoloVictory(next);
+    const vr = evaluateVictory(next);
+    if (vr) resolveSoloRef.current(vr);
+  }, [soloEnabled]);
+  const bumpSoloVictoryRef = React.useRef(bumpSoloVictory); bumpSoloVictoryRef.current = bumpSoloVictory;
+
+  // Rival factions advance their off-screen empires on a doctrine-weighted tick, so solo is a
+  // real race: reach a victory track before an AI faction does.
+  React.useEffect(() => {
+    if (!soloEnabled) return;
+    const id = window.setInterval(() => {
+      if (inputPausedRef.current || soloResolvedRef.current) return;
+      const rivals = (['PAA', 'ASF', 'WC'] as Faction[]).filter(f => f !== playerFactionKey);
+      const next = cloneVictory(soloVictoryRef.current);
+      for (const f of rivals) addVictory(next, f, NATURAL_TRACK[f], 1.2);
+      soloVictoryRef.current = next; setSoloVictory(next);
+      const vr = evaluateVictory(next);
+      if (vr) resolveSoloRef.current(vr);
+    }, 5000);
+    return () => window.clearInterval(id);
+  }, [soloEnabled, playerFactionKey]);
+
   const recordPlaystyle = React.useCallback((p: Playstyle) => {
     setReputation(prev => {
       const next = { ...prev, [p]: prev[p] + 1 };
       saveProgress({ reputation: next } as any); // persist to the profile
       return next;
     });
-  }, [saveProgress]);
+    // Playstyle actions also advance your victory track (help/negotiate→Prosperity,
+    // scavenge/loot→Exploitation, dominate→Domination).
+    const pv = ({ help: ['prosperity', 16], negotiate: ['prosperity', 14], scavenge: ['exploitation', 8], loot: ['exploitation', 12], dominate: ['domination', 12] } as Record<string, [VictoryTrack, number]>)[p];
+    if (pv) bumpSoloVictoryRef.current(playerFactionKey, pv[0], pv[1]);
+  }, [saveProgress, playerFactionKey]);
   const recordPlaystyleRef = React.useRef(recordPlaystyle); recordPlaystyleRef.current = recordPlaystyle;
   const dominantStyle = React.useMemo(() => dominantPlaystyle(reputation), [reputation]);
   // Gathering a world resource node is the "scavenge" approach.
@@ -2984,6 +3100,37 @@ export default function SoloMissionMap3D({
     const unsub = watchOpenRooms(setDuelWaiting);
     return () => unsub();
   }, [duelLobbyOpen, duelActive]);
+
+  // Live count of players waiting in the MOBA quick-match queue (lobby open, not in a match).
+  React.useEffect(() => {
+    if (!mobaMode || !mobaLobbyOpen || mobaActive) return;
+    const unsub = watchOpenMatches('FFA_1v1v1', setMobaWaiting);
+    return () => unsub();
+  }, [mobaMode, mobaLobbyOpen, mobaActive]);
+
+  // Track when we entered the MOBA lobby, so quick-match can back-fill with AI on a timer.
+  React.useEffect(() => {
+    if (moba.status === 'lobby') { if (!mobaLobbyEnteredRef.current) mobaLobbyEnteredRef.current = Date.now(); }
+    else mobaLobbyEnteredRef.current = 0;
+  }, [moba.status]);
+
+  // Quick-match auto-start (host only): begin the moment the lobby is full, or after a
+  // back-fill wait so a solo quick-match still starts with AI filling the empty factions.
+  React.useEffect(() => {
+    if (!moba.quickMatch || moba.role !== 'host' || moba.status !== 'lobby' || outposts.size === 0) return;
+    const distinctFactions = new Set(moba.players.map(p => p.faction));
+    const dup = distinctFactions.size !== moba.players.length;
+    if (dup) return; // wait for a clean faction split before starting
+    const startNow = () => moba.startMatch(
+      Array.from(outposts.values()).map(o => ({ key: o.key, q: o.q, r: o.r, region: o.region, owner: 'neutral' as const })),
+    );
+    // Full lobby (every seat taken) → start immediately.
+    if (moba.players.length >= moba.modeConfig.players) { startNow(); return; }
+    // Otherwise back-fill: start ~12s after entering the lobby (AI plays the empty factions).
+    const elapsed = mobaLobbyEnteredRef.current ? Date.now() - mobaLobbyEnteredRef.current : 0;
+    const t = setTimeout(startNow, Math.max(1500, 12000 - elapsed));
+    return () => clearTimeout(t);
+  }, [moba.quickMatch, moba.role, moba.status, moba.players, moba.modeConfig.players, outposts, moba]);
 
   // Launched from the dashboard "Multiplayer" mode → open the lobby and start a
   // quick-match automatically (once).
@@ -4285,9 +4432,10 @@ export default function SoloMissionMap3D({
                   </div>
                 </div>
               )}
-              {/* Faction threat indicator — flags rival units actively hunting the hero. */}
+              {/* Faction threat indicator — flags rival units actively hunting the hero.
+                  Sits below the victory-tracks bar (top-14) to avoid overlap. */}
               {enemyThreat.hunting > 0 && (
-                <div className="fixed top-14 left-1/2 -translate-x-1/2 z-40">
+                <div className="fixed top-[6.25rem] left-1/2 -translate-x-1/2 z-40">
                   <div className="px-3 py-1 rounded-full bg-red-950/85 border border-red-500/60 text-xs font-bold text-red-200 backdrop-blur-sm shadow animate-pulse flex items-center gap-1.5">
                     🚨 {enemyThreat.hunting} enemy {enemyThreat.hunting === 1 ? 'unit' : 'units'} hunting you
                   </div>
@@ -4526,6 +4674,19 @@ export default function SoloMissionMap3D({
                 </div>
               )}
 
+              {/* Rival raid alert — a faction AI retook one of your outposts (go defend/recapture). */}
+              {raidBanner && (
+                <div className="fixed top-24 left-1/2 -translate-x-1/2 z-40 pointer-events-none">
+                  <div className="px-4 py-2 rounded-xl bg-rose-950/90 ring-1 ring-rose-500/60 text-center shadow-xl flex items-center gap-2">
+                    <span className="text-lg">⚑</span>
+                    <span className="text-sm font-bold text-rose-200" style={{ color: FACTION_COLORS[raidBanner.faction]?.label ?? '#fecaca' }}>
+                      {FACTION_LABEL[raidBanner.faction] ?? raidBanner.faction}
+                    </span>
+                    <span className="text-sm font-semibold text-rose-100">raided your outpost — recapture it!</span>
+                  </div>
+                </div>
+              )}
+
               {/* Level-up flash — XP crossed a threshold → new skill points available */}
               {levelUpBanner !== null && (
                 <div className="fixed top-1/3 left-1/2 -translate-x-1/2 z-40 pointer-events-none">
@@ -4560,6 +4721,28 @@ export default function SoloMissionMap3D({
                 </div>
               )}
 
+              {/* Solo victory-track result — a faction filled a track first. Win (you) or loss (AI). */}
+              {soloEnabled && soloVictoryResult && (() => {
+                const won = soloVictoryResult.faction === playerFactionKey;
+                const def = VICTORY_TRACK_DEFS[soloVictoryResult.track];
+                return (
+                  <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm">
+                    <div className="px-10 py-8 rounded-2xl bg-[#0c1219]/95 ring-1 ring-white/15 text-center shadow-2xl max-w-[92vw]">
+                      <div className={`text-4xl font-extrabold mb-2 ${won ? 'text-amber-300' : 'text-rose-400'}`}>
+                        {won ? '🏆 Victory' : '☠️ Defeat'}
+                      </div>
+                      <div className="text-sm mb-1">
+                        <span className="font-bold" style={{ color: FACTION_COLORS[soloVictoryResult.faction]?.label }}>{FACTION_LABEL[soloVictoryResult.faction]}</span>
+                        <span className="opacity-70"> won by </span>
+                        <span className="font-bold">{def.icon} {def.label}</span>
+                      </div>
+                      <div className="opacity-70 text-sm mb-4">{won ? `You reached the ${def.label} threshold first. +60 shards.` : `${soloVictoryResult.faction} filled the ${def.label} track before you.`}</div>
+                      <button onClick={() => setSoloVictoryResult(null)} className={`px-6 py-2 rounded-lg font-bold ${won ? 'bg-emerald-700 hover:bg-emerald-600' : 'bg-rose-700 hover:bg-rose-600'}`}>Continue</button>
+                    </div>
+                  </div>
+                );
+              })()}
+
               {/* ── 1v1v1 MOBA: lobby + scoreboard + result (launcher lives in the top HUD bar) ─── */}
               {/* Shared 3-faction scoreboard (top-center) while a match is live. */}
               {mobaMode && mobaActive && (
@@ -4574,6 +4757,19 @@ export default function SoloMissionMap3D({
                     ))}
                     <span className="text-[10px] opacity-50 ml-1">/ 300</span>
                   </div>
+                </div>
+              )}
+
+              {/* Victory-tracks readout — the four-meter "how to win right now". Solo = your
+                  race against the AI factions; MOBA = the live faction race. */}
+              {soloEnabled && (
+                <div className="fixed top-14 left-1/2 -translate-x-1/2 z-40 pointer-events-none">
+                  <VictoryTracksBar victory={soloVictory} myFaction={playerFactionKey} />
+                </div>
+              )}
+              {mobaMode && mobaActive && (
+                <div className="fixed top-24 left-1/2 -translate-x-1/2 z-40 pointer-events-none">
+                  <VictoryTracksBar victory={moba.victory} myFaction={moba.myFaction} />
                 </div>
               )}
 
@@ -4603,8 +4799,12 @@ export default function SoloMissionMap3D({
                           );
                         })}
                       </div>
-                      <button onClick={() => moba.host(mobaFactionPick)} className="w-full py-2 rounded-lg bg-emerald-600 hover:bg-emerald-500 font-bold">Host a match</button>
-                      <div className="text-[11px] opacity-50 text-center">— or join a friend's code —</div>
+                      <button onClick={() => moba.findMatch(mobaFactionPick)} className="w-full py-2 rounded-lg bg-emerald-600 hover:bg-emerald-500 font-bold flex items-center justify-center gap-2">
+                        🎯 Quick Match
+                        {mobaWaiting > 0 && <span className="px-1.5 py-0.5 rounded-full bg-black/30 text-[10px] font-bold">{mobaWaiting} waiting</span>}
+                      </button>
+                      <div className="text-[11px] opacity-50 text-center">— or host / join by code —</div>
+                      <button onClick={() => moba.host(mobaFactionPick)} className="w-full py-2 rounded-lg bg-[#1c2838] hover:bg-[#243448] ring-1 ring-white/15 font-bold">Host with a code</button>
                       <div className="flex gap-1.5">
                         <input
                           value={mobaJoinCode}
@@ -4617,6 +4817,14 @@ export default function SoloMissionMap3D({
                       </div>
                       {moba.status === 'error' && <div className="text-[11px] text-rose-400">Couldn't connect — try again or check the code.</div>}
                     </>
+                  )}
+
+                  {moba.status === 'searching' && (
+                    <div className="space-y-2 text-center">
+                      <div className="text-[12px] text-emerald-400 font-bold animate-pulse py-1">🎯 Searching for a match…</div>
+                      <div className="text-[11px] opacity-60">Joining the next open lobby, or opening one for others — AI fills any empty faction.</div>
+                      <button onClick={() => moba.leave()} className="w-full py-1.5 rounded-lg bg-white/10 hover:bg-white/20 text-xs">Cancel search</button>
+                    </div>
                   )}
 
                   {moba.status === 'joining' && (
@@ -4708,7 +4916,10 @@ export default function SoloMissionMap3D({
                     <div className={`text-4xl font-extrabold mb-2 ${moba.result === 'win' ? 'text-emerald-300' : 'text-rose-400'}`}>
                       {moba.result === 'win' ? '🏆 Victory' : '☠️ Defeat'}
                     </div>
-                    <div className="opacity-80 text-sm mb-1">{moba.winner ? `${FACTION_LABEL[moba.winner]} controls the region.` : ''}</div>
+                    <div className="opacity-80 text-sm mb-1">
+                      {moba.winner ? `${FACTION_LABEL[moba.winner]} wins` : ''}
+                      {moba.winningTrack ? ` by ${VICTORY_TRACK_DEFS[moba.winningTrack].icon} ${VICTORY_TRACK_DEFS[moba.winningTrack].label}.` : moba.winner ? ' the match.' : ''}
+                    </div>
                     <div className="flex items-center justify-center gap-3 my-3">
                       {(['PAA','ASF','WC'] as Faction[]).map(f => (
                         <div key={f} className="text-center">

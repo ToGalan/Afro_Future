@@ -125,14 +125,32 @@ interface UseFactionEnemiesOptions {
   onEvent?: (e: EnemyEvent) => void;
   /** Live getter — true while the hero has an active Stealth buff (shrinks enemy detection). */
   getHeroStealthed?: () => boolean;
+  /**
+   * Objective awareness (GDD "outposts constantly change hands"): the outposts on the map
+   * with current ownership. Rival roamers/champions march on the player's captured outposts
+   * and RAID them (flip back to neutral) at a doctrine-paced rate, so the player must defend.
+   */
+  strategicTargets?: Array<{ key: string; q: number; r: number; owner: 'player' | 'neutral' }>;
+  /** Called when a rival unit raids a player-owned outpost (map flips it to neutral). */
+  onRaidOutpost?: (key: string, faction: FactionKey) => void;
 }
+
+// How keen each faction is to march on & raid the player's territory (its eXpand appetite).
+// Mirrors the GDD doctrines: ASF "Africa First" presses hardest, PAA "Heal & Unite" least.
+const RAID_APPETITE: Record<FactionKey, number> = { PAA: 0.15, ASF: 1.0, WC: 0.6 };
+const RAID_COOLDOWN_MS = 22000; // min time before the same outpost can be raided again
+const STRATEGIC_RANGE = 10;     // how far a unit will march from its position to contest ground
 
 export function useFactionEnemies({
   tiles, heroQ, heroR, centerQ, centerR, faction, guardPosts,
   heroAttack = 8, heroHpFrac = 1, incomingDamageScale = 1, enabled = true, paused = false,
   onHeroDamage, awardXp, awardFactionPoints, onEvent, getHeroStealthed,
+  strategicTargets, onRaidOutpost,
 }: UseFactionEnemiesOptions) {
   const getStealthRef = useRef(getHeroStealthed); getStealthRef.current = getHeroStealthed;
+  const strategicRef = useRef(strategicTargets); strategicRef.current = strategicTargets;
+  const onRaidRef = useRef(onRaidOutpost); onRaidRef.current = onRaidOutpost;
+  const raidReadyRef = useRef<Map<string, number>>(new Map()); // outpost key → next-raid time
   const [enemies, setEnemies] = useState<FactionEnemy[]>([]);
   const [nearbyEnemy, setNearbyEnemy] = useState<FactionEnemy | null>(null);
 
@@ -266,6 +284,7 @@ export function useFactionEnemies({
       const heroSafe = axialDist(h.q, h.r, c.q, c.r) <= SAFE_RADIUS;
       let heroDamage = 0;
       const events: EnemyEvent[] = [];
+      const raids: Array<{ key: string; faction: FactionKey }> = []; // player outposts retaken this tick
 
       // Step a unit one tile toward `target`, over walkable ground, optionally never
       // stepping onto the hero's tile (so pursuers halt adjacent instead of overlapping).
@@ -337,6 +356,38 @@ export function useFactionEnemies({
           return { ...en, ...pos, state: 'pursue' as EnemyState };
         }
 
+        // ── Strategic objective: contest the player's territory (GDD "outposts under
+        //    constant threat"). Aggressive factions (ASF/WC) march their roamers &
+        //    champions onto the player's captured outposts and raid them; PAA stays home
+        //    and defends (low appetite). Only engages when not hunting/retreating the hero.
+        if ((en.role === 'roamer' || en.role === 'boss') && RAID_APPETITE[en.faction] >= 0.5) {
+          const pOuts = strategicRef.current;
+          if (pOuts && pOuts.length) {
+            let tgt: { key: string; q: number; r: number } | null = null, td = Infinity;
+            for (const o of pOuts) {
+              if (o.owner !== 'player') continue;
+              const d = axialDist(en.q, en.r, o.q, o.r);
+              if (d < td && d <= STRATEGIC_RANGE) { td = d; tgt = o; }
+            }
+            if (tgt) {
+              if (td <= 1) {
+                // Adjacent → besiege & raid on a doctrine-paced cooldown.
+                const ready = raidReadyRef.current.get(tgt.key) ?? 0;
+                if (now >= ready && Math.random() < RAID_APPETITE[en.faction]) {
+                  raidReadyRef.current.set(tgt.key, now + RAID_COOLDOWN_MS);
+                  raids.push({ key: tgt.key, faction: en.faction });
+                }
+                return { ...en, state: 'attack' as EnemyState };
+              }
+              if (canMove) {
+                const pos = stepToward(en, tgt.q, tgt.r, false);
+                return { ...en, ...pos, state: 'pursue' as EnemyState };
+              }
+              return { ...en, state: 'pursue' as EnemyState };
+            }
+          }
+        }
+
         // ── Idle: guard / patrol near home ────────────────────────────────────
         if (canMove) {
           if (dHome > 2) {
@@ -363,6 +414,7 @@ export function useFactionEnemies({
       if (changed) { enemiesRef.current = next; setEnemies(next); }
       if (heroDamage > 0) onHeroDamageRef.current?.(heroDamage);
       for (const ev of events) onEventRef.current?.(ev);
+      for (const raid of raids) onRaidRef.current?.(raid.key, raid.faction);
     }, TICK_MS);
     return () => window.clearInterval(id);
     // Empty deps: heartbeat runs for the hook's lifetime; all state read via refs.
