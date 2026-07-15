@@ -4242,17 +4242,9 @@ export default function SoloMissionMap3D({
                   </div>
                 </div>
               )}
-              {/* Exploration objective tracker */}
-              <div className="absolute top-10 left-2 px-3 py-2 rounded-lg bg-black/60 text-xs text-white border border-white/10 font-medium tracking-wide">
-                Explore: {exploredCount}/{explorationGoal} {explorationComplete ? '✓' : ''}
-              </div>
-              {/* Territory control readout (4X/MOBA macro state). Press O for region map. */}
-              <div className="absolute top-[4.6rem] left-2 px-3 py-2 rounded-lg bg-black/60 text-xs text-white border border-white/10 font-medium tracking-wide flex items-center gap-2">
-                <span style={{ color: heroColors.primary }}>🚩 {outpostControl.regionsControlled}/{outpostControl.regionCount} regions</span>
-                <span className="opacity-70">· {outpostControl.owned}/{outpostControl.total} outposts</span>
-                <span className="opacity-70">· {outpostControl.tilePct}% land</span>
-              </div>
-              
+              {/* Exploration objective + territory-control readouts now live inline in the
+                  top HUD bar (see left cluster below) instead of floating over the map. */}
+
               {/* Terrain / resource tooltip on hover */}
               {hover && (
                 <div className="fixed top-16 left-3 z-40 px-3 py-2 rounded-xl bg-[#0c1219]/92 ring-1 ring-white/12 text-xs pointer-events-none shadow-lg">
@@ -4295,7 +4287,7 @@ export default function SoloMissionMap3D({
               )}
               {/* Faction threat indicator — flags rival units actively hunting the hero. */}
               {enemyThreat.hunting > 0 && (
-                <div className="fixed top-9 left-1/2 -translate-x-1/2 z-40">
+                <div className="fixed top-14 left-1/2 -translate-x-1/2 z-40">
                   <div className="px-3 py-1 rounded-full bg-red-950/85 border border-red-500/60 text-xs font-bold text-red-200 backdrop-blur-sm shadow animate-pulse flex items-center gap-1.5">
                     🚨 {enemyThreat.hunting} enemy {enemyThreat.hunting === 1 ? 'unit' : 'units'} hunting you
                   </div>
@@ -4363,7 +4355,7 @@ export default function SoloMissionMap3D({
 
               {/* ── Civ-style top yield bar — full width, yields left, identity right ────── */}
               <div className="fixed top-0 left-0 right-0 z-30 pointer-events-none">
-                <div className="flex items-center justify-between gap-2 px-3 py-1 bg-gradient-to-b from-[#0a0f16]/95 to-[#0a0f16]/75 border-b border-white/10 shadow-lg text-[12px] text-gray-100 overflow-x-auto no-scrollbar">
+                <div className="flex items-center justify-between gap-2 px-3 py-2.5 min-h-[3rem] bg-gradient-to-b from-[#0a0f16]/95 to-[#0a0f16]/75 border-b border-white/10 shadow-lg text-[13px] text-gray-100 overflow-x-auto no-scrollbar">
                   {/* Left cluster: yields */}
                   <div className="flex items-center gap-x-3 gap-y-0.5 flex-nowrap">
                     <div className="flex items-center gap-1.5" title="4X campaign score — outposts, regions, terraforming & refugee camps">
@@ -4378,6 +4370,7 @@ export default function SoloMissionMap3D({
                       <span className={`font-extrabold tabular-nums ${(skillPoints ?? 0) > 0 ? 'text-emerald-300' : 'text-gray-300'}`}>{skillPoints ?? 0}</span>
                     </div>
                     <span className="w-px h-4 bg-white/15" />
+                    <div className="flex items-center gap-1" title="Tiles explored"><span>🧭</span><span className="opacity-50 hidden md:inline">Explore</span><span className={`font-semibold tabular-nums ${explorationComplete ? 'text-emerald-300' : ''}`}>{exploredCount}/{explorationGoal}{explorationComplete ? ' ✓' : ''}</span></div>
                     <div className="flex items-center gap-1" title="Terraform progress"><span>🌱</span><span className="font-semibold tabular-nums">{terraformDone ? '✓' : `${terraformProgress}%`}</span></div>
                     <div className="flex items-center gap-1" title="Outposts owned"><span>🚩</span><span className="font-semibold tabular-nums">{outpostControl.owned}/{outpostControl.total}</span></div>
                     <div className="flex items-center gap-1" title="Regions controlled"><span>🗺️</span><span className="font-semibold tabular-nums">{outpostControl.regionsControlled}/{outpostControl.regionCount}</span></div>
@@ -4410,7 +4403,7 @@ export default function SoloMissionMap3D({
                       <button
                         onClick={openSkillTree}
                         title="Skill tree — spend points on combat & utility perks"
-                        className={`flex items-center gap-1 px-2 py-0.5 rounded-md text-[12px] font-bold ring-1 shadow transition ${
+                        className={`flex items-center gap-1 px-2.5 py-1 rounded-md text-[12px] font-bold ring-1 shadow transition ${
                           (skillPoints ?? 0) > 0
                             ? 'bg-emerald-800/80 ring-emerald-400/70 text-emerald-50 hover:bg-emerald-700/80'
                             : 'bg-[#141b26]/90 ring-white/15 text-gray-200 hover:ring-emerald-400/60'
@@ -4423,7 +4416,7 @@ export default function SoloMissionMap3D({
                         <button
                           onClick={() => setDuelLobbyOpen(o => !o)}
                           title="1v1 PvP duel"
-                          className={`flex items-center gap-1 px-2 py-0.5 rounded-md text-[12px] font-bold ring-1 shadow transition ${
+                          className={`flex items-center gap-1 px-2.5 py-1 rounded-md text-[12px] font-bold ring-1 shadow transition ${
                             duelActive ? 'bg-rose-800/90 ring-rose-400 text-rose-50' : 'bg-[#141b26]/90 ring-white/15 text-gray-200 hover:ring-rose-400/60'
                           }`}
                         ><span>⚔️</span><span className="hidden sm:inline">Duel</span>{duelActive && duel.status === 'connected' ? ' •' : ''}</button>
@@ -4432,7 +4425,7 @@ export default function SoloMissionMap3D({
                         <button
                           onClick={() => setMobaLobbyOpen(o => !o)}
                           title="1v1v1 MOBA"
-                          className={`flex items-center gap-1 px-2 py-0.5 rounded-md text-[12px] font-bold ring-1 shadow transition ${
+                          className={`flex items-center gap-1 px-2.5 py-1 rounded-md text-[12px] font-bold ring-1 shadow transition ${
                             mobaActive ? 'bg-emerald-800/90 ring-emerald-400 text-emerald-50' : 'bg-[#141b26]/90 ring-white/15 text-gray-200 hover:ring-emerald-400/60'
                           }`}
                         ><span>🌍</span><span className="hidden sm:inline">MOBA</span>{mobaActive ? ' •' : ''}</button>
@@ -4440,7 +4433,7 @@ export default function SoloMissionMap3D({
                       <button
                         onClick={() => setHudMenuOpen(o => !o)}
                         title="Menu (Esc)"
-                        className="flex items-center gap-1 px-2 py-0.5 rounded-md text-[12px] font-bold ring-1 ring-white/15 bg-[#141b26]/90 text-gray-200 hover:bg-[#1b2636]/90 shadow transition"
+                        className="flex items-center gap-1 px-2.5 py-1 rounded-md text-[12px] font-bold ring-1 ring-white/15 bg-[#141b26]/90 text-gray-200 hover:bg-[#1b2636]/90 shadow transition"
                       ><span>☰</span><span className="hidden sm:inline">Menu</span></button>
                     </div>
                   </div>
@@ -4570,7 +4563,7 @@ export default function SoloMissionMap3D({
               {/* ── 1v1v1 MOBA: lobby + scoreboard + result (launcher lives in the top HUD bar) ─── */}
               {/* Shared 3-faction scoreboard (top-center) while a match is live. */}
               {mobaMode && mobaActive && (
-                <div className="fixed top-12 left-1/2 -translate-x-1/2 z-40 pointer-events-none">
+                <div className="fixed top-14 left-1/2 -translate-x-1/2 z-40 pointer-events-none">
                   <div className="flex items-center gap-2 px-3 py-1.5 rounded-xl bg-[#0c1219]/90 ring-1 ring-white/12 shadow-lg">
                     {(['PAA','ASF','WC'] as Faction[]).map(f => (
                       <div key={f} className={`flex items-center gap-1.5 px-2 py-0.5 rounded-lg ${moba.myFaction === f ? 'bg-white/10 ring-1 ring-white/25' : ''}`}>
