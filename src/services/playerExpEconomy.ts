@@ -130,11 +130,13 @@ export function getLevelReward(newLevel: number): LevelReward {
   // Grant 1 skill token per 5 levels, plus 1 at level 1
   const skillTokens = newLevel === 1 ? 1 : Math.floor(newLevel / 5);
 
-  // Major milestones unlock traits
+  // Major milestones unlock rank titles — spanning the full L1–100 progression.
   const traits: string[] = [];
   if (newLevel === 10) traits.push('veteran');
   if (newLevel === 25) traits.push('master');
   if (newLevel === 50) traits.push('legend');
+  if (newLevel === 75) traits.push('mythic');
+  if (newLevel === 100) traits.push('ascended');
 
   return {
     skillTokens,

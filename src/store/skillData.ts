@@ -173,9 +173,20 @@ export const TRAITS: TraitDef[] = [
   { id: 'skirmisher',  name: 'Skirmisher',       branch: 'Mobility',    threshold: 5, bonus: { spd: 4 },          desc: '+4 SPD' },
   { id: 'diplomat',    name: 'Diplomat',         branch: 'Diplomacy',   threshold: 5, bonus: { def: 4, ep: 10 },  desc: '+4 DEF, +10 EP' },
   { id: 'scavenger',   name: 'Scavenger',        branch: 'Scavenging',  threshold: 5, bonus: { hp: 15, ep: 15 },  desc: '+15 HP, +15 EP' },
-  // Capstone traits — deep specialisation (≥10 of 13 nodes).
+  // Capstone traits — deep specialisation (≥10 of 13 nodes). One per branch so a
+  // high-level hero (L50–100 point budget) is rewarded for committing to any path.
   { id: 'warlord',     name: 'Warlord',          branch: 'Combat',      threshold: 10, bonus: { atk: 10 },         desc: '+10 ATK' },
   { id: 'immortal',    name: 'Immortal',         branch: 'Defense',     threshold: 10, bonus: { hp: 60, def: 6 },  desc: '+60 HP, +6 DEF' },
+  { id: 'phantom',     name: 'Phantom',          branch: 'Stealth',     threshold: 10, bonus: { spd: 4, atk: 6 },  desc: '+4 SPD, +6 ATK' },
+  { id: 'transhuman',  name: 'Transhuman',       branch: 'Cybernetics', threshold: 10, bonus: { atk: 9, ep: 25 },  desc: '+9 ATK, +25 EP' },
+  { id: 'ghostwire',   name: 'Ghostwire',        branch: 'Hacking',     threshold: 10, bonus: { ep: 35, atk: 4 },  desc: '+35 EP, +4 ATK' },
+  { id: 'lifegiver',   name: 'Lifegiver',        branch: 'Healing',     threshold: 10, bonus: { hp: 80 },          desc: '+80 HP' },
+  { id: 'soulbound',   name: 'Soulbound',        branch: 'Pet Bond',    threshold: 10, bonus: { atk: 6, def: 6 },  desc: '+6 ATK, +6 DEF' },
+  { id: 'ascendant',   name: 'Ascendant',        branch: 'Faction',     threshold: 10, bonus: { atk: 7, def: 7 },  desc: '+7 ATK, +7 DEF' },
+  { id: 'worldheart',  name: 'Worldheart',       branch: 'Terraform',   threshold: 10, bonus: { hp: 40, ep: 20 },  desc: '+40 HP, +20 EP' },
+  { id: 'quicksilver', name: 'Quicksilver',      branch: 'Mobility',    threshold: 10, bonus: { spd: 7 },          desc: '+7 SPD' },
+  { id: 'concord',     name: 'Concord',          branch: 'Diplomacy',   threshold: 10, bonus: { def: 7, ep: 20 },  desc: '+7 DEF, +20 EP' },
+  { id: 'magnate',     name: 'Magnate',          branch: 'Scavenging',  threshold: 10, bonus: { hp: 30, ep: 30 },  desc: '+30 HP, +30 EP' },
 ];
 
 function branchCounts(unlocked: string[], nodes: SkillNode[]): Record<string, number> {
