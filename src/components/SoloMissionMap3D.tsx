@@ -26,7 +26,7 @@ import { useSkillStore } from '../store/skillStore';
 import { skillEffectFor, type SkillEffect } from '../store/skillData';
 import { pruneEffects, aggregateEffects, type ActiveEffect } from '../services/statusEffects';
 import { getLevelFromXp, getTotalXpForLevel, getXpForNextLevel } from '../services/playerExpEconomy';
-import { scaledMissionXp, scaledMissionFp, rivalRampRate } from '../services/balance';
+import { scaledMissionXp, scaledMissionFp, rivalMissionGain } from '../services/balance';
 import { IsometricCharacter } from './IsometricCharacter';
 import type { Archetype, CharacterLoadout } from '../types/loadout';
 import { GameHUD, type MinimapData, type Ability, type Item } from './gameHUD';
@@ -890,6 +890,18 @@ function cloneVictory(v: FactionVictory): FactionVictory {
 }
 // Each rival faction's off-screen 4X progress accrues on its ethos-aligned track.
 const NATURAL_TRACK: Record<Faction, VictoryTrack> = { PAA: 'prosperity', ASF: 'domination', WC: 'exploitation' };
+
+// Mission approaches are SKILL-GATED (GDD: the skill tree unlocks strategic options):
+// tactical diplomacy needs the Diplomacy core ("Negotiation"), quiet takeovers need the
+// Stealth core ("Stealth Mode"). Assault/help/loot are always available.
+const APPROACH_SKILL: Record<'negotiate' | 'infiltrate', { skillId: string; label: string }> = {
+  negotiate:  { skillId: 'diplomacy_core', label: 'Negotiation (Diplomacy core)' },
+  infiltrate: { skillId: 'stealth_core',   label: 'Stealth Mode (Stealth core)' },
+};
+function approachSkillUnlocked(approach: string): boolean {
+  const req = (APPROACH_SKILL as Record<string, { skillId: string }>)[approach];
+  return !req || useSkillStore.getState().unlocked.includes(req.skillId);
+}
 
 /** A remote MOBA hero (another player OR an AI faction). Interpolated between the host's
  *  15 Hz world snapshots; faction-coloured. Reads its live position from the shared
@@ -2836,7 +2848,11 @@ export default function SoloMissionMap3D({
     const hw = axialToWorld({ q: hero.pos.q, r: hero.pos.r }, hexSize);
     if (camp.mode === 'loot') {
       if (approach === 'loot') lootRefugee();
-      else negotiateRefugee();                 // any non-force choice → peaceful resolution
+      else {
+        // Peaceful resolution is a Diplomacy play — locked until Negotiation is skilled.
+        if (!approachSkillUnlocked('negotiate')) { spawnCombatText(hw.x, hw.z, `🔒 Requires ${APPROACH_SKILL.negotiate.label}`, '#fbbf24'); return; }
+        negotiateRefugee();
+      }
       return;
     }
     // Own-faction camp → HELP by delivering the required resource.
@@ -2996,16 +3012,22 @@ export default function SoloMissionMap3D({
     const saved = (profile.progress as any)?.reputation as Partial<PlaystyleReputation> | undefined;
     if (saved) setReputation({ ...emptyReputation(), ...saved });
   }, [profile]);
+  // Skill-gated approach availability (reactive — prompt buttons update as skills unlock).
+  const unlockedSkillIds = useSkillStore(s => s.unlocked);
+  const canNegotiate = unlockedSkillIds.includes(APPROACH_SKILL.negotiate.skillId);
+  const canInfiltrate = unlockedSkillIds.includes(APPROACH_SKILL.infiltrate.skillId);
   // ── Solo victory tracks — the multi-path win race against the AI factions ─────
   const soloEnabled = !autoMultiplayer && !mobaMode;
   const [soloVictory, setSoloVictory] = useState<FactionVictory>(() => emptyVictory());
   const soloVictoryRef = React.useRef(soloVictory); soloVictoryRef.current = soloVictory;
   // Which victory track's detail popover is open in the top HUD (null = collapsed).
   const [expandedTrack, setExpandedTrack] = useState<VictoryTrack | null>(null);
+  // The decided result persists (campaign stays decided until a reset); dismissing the
+  // overlay only hides it — it does NOT un-decide the campaign.
   const [soloVictoryResult, setSoloVictoryResult] = useState<{ faction: Faction; track: VictoryTrack } | null>(null);
-  const soloResolvedRef = React.useRef(false); // match decided this session — freezes track accrual
+  const [soloResultDismissed, setSoloResultDismissed] = useState(false);
+  const soloResolvedRef = React.useRef(false); // match decided — freezes track accrual until a campaign reset
   const soloWinRewardedRef = React.useRef(false);
-  const soloStartRef = React.useRef(0);        // first director tick — anchors the rival ramp
 
   const resolveSolo = (vr: { faction: Faction; track: VictoryTrack }) => {
     soloResolvedRef.current = true;
@@ -3015,35 +3037,22 @@ export default function SoloMissionMap3D({
   const resolveSoloRef = React.useRef(resolveSolo); resolveSoloRef.current = resolveSolo;
 
   // Add points to a faction's victory track (solo only), and resolve the match if a track fills.
+  // When the PLAYER earns points from a mission, every rival advances its natural track by a
+  // fraction of that gain (rivalMissionGain) — the race is paced by YOUR mission completions,
+  // never by wall-clock time, so a persistent campaign can't be lost while you're offline.
   const bumpSoloVictory = React.useCallback((faction: Faction, track: VictoryTrack, base: number) => {
     if (!soloEnabled || soloResolvedRef.current) return;
     const next = cloneVictory(soloVictoryRef.current);
     addVictory(next, faction, track, base);
+    if (faction === playerFactionKey) {
+      const rivals = (['PAA', 'ASF', 'WC'] as Faction[]).filter(f => f !== playerFactionKey);
+      for (const f of rivals) addVictory(next, f, NATURAL_TRACK[f], rivalMissionGain(base));
+    }
     soloVictoryRef.current = next; setSoloVictory(next);
     const vr = evaluateVictory(next);
     if (vr) resolveSoloRef.current(vr);
-  }, [soloEnabled]);
-  const bumpSoloVictoryRef = React.useRef(bumpSoloVictory); bumpSoloVictoryRef.current = bumpSoloVictory;
-
-  // Rival factions advance their off-screen empires on a doctrine-weighted tick, so solo is a
-  // real race: reach a victory track before an AI faction does.
-  React.useEffect(() => {
-    if (!soloEnabled) return;
-    const id = window.setInterval(() => {
-      if (inputPausedRef.current || soloResolvedRef.current) return;
-      // Rival income RAMPS with elapsed time — a relaxed early game that snowballs into a
-      // tense late-game race (empires accelerate), so faction goals feel progressive.
-      if (!soloStartRef.current) soloStartRef.current = Date.now();
-      const rate = rivalRampRate(1.0, Date.now() - soloStartRef.current);
-      const rivals = (['PAA', 'ASF', 'WC'] as Faction[]).filter(f => f !== playerFactionKey);
-      const next = cloneVictory(soloVictoryRef.current);
-      for (const f of rivals) addVictory(next, f, NATURAL_TRACK[f], rate);
-      soloVictoryRef.current = next; setSoloVictory(next);
-      const vr = evaluateVictory(next);
-      if (vr) resolveSoloRef.current(vr);
-    }, 5000);
-    return () => window.clearInterval(id);
   }, [soloEnabled, playerFactionKey]);
+  const bumpSoloVictoryRef = React.useRef(bumpSoloVictory); bumpSoloVictoryRef.current = bumpSoloVictory;
 
   const recordPlaystyle = React.useCallback((p: Playstyle) => {
     setReputation(prev => {
@@ -3097,35 +3106,86 @@ export default function SoloMissionMap3D({
   // Hydrate ONCE, after the profile has loaded and the world has generated. Guarded so the
   // auto-save below never fires (and overwrites the save with empty state) before this runs.
   const soloHydratedRef = React.useRef(false);
+  const [soloHydrated, setSoloHydrated] = useState(false); // state mirror for effects that must wait
+  const explorationRewardedRef = React.useRef(false); // one-time exploration reward (persisted)
+  const victorySeenRef = React.useRef(false);         // result overlay already dismissed
   React.useEffect(() => {
     if (soloHydratedRef.current || autoMultiplayer || mobaMode || !profile || outposts.size === 0) return;
     soloHydratedRef.current = true;
-    const solo = (profile.progress as any)?.solo as { outpostsOwned?: string[]; terraformProgress?: number; refugeeCampsDone?: string[] } | undefined;
+    setSoloHydrated(true);
+    const solo = (profile.progress as any)?.solo as NonNullable<import('../types/player').PlayerProgress['solo']> | undefined;
     if (!solo) return;
     if (solo.outpostsOwned?.length) applyOutpostOwnership(solo.outpostsOwned);
     if (solo.refugeeCampsDone?.length) applyRefugeeCompleted(solo.refugeeCampsDone);
     if (typeof solo.terraformProgress === 'number' && solo.terraformProgress > 0) setTerraformProgress(solo.terraformProgress);
+    explorationRewardedRef.current = !!solo.explorationRewarded;
+    // Victory race: restore every faction's track points (missing keys default to 0).
+    if (solo.victory) {
+      const v = emptyVictory();
+      for (const f of FACTIONS) for (const t of VICTORY_TRACKS) v[f][t] = Number(solo.victory?.[f]?.[t]) || 0;
+      soloVictoryRef.current = v; setSoloVictory(v);
+    }
+    // A decided campaign stays decided (tracks frozen); only re-show the overlay if the
+    // player hasn't dismissed it yet — otherwise they resume free play until a reset.
+    if (solo.victoryResult) {
+      soloResolvedRef.current = true;
+      soloWinRewardedRef.current = true; // never re-award the win shards on reload
+      victorySeenRef.current = !!solo.victorySeen;
+      setSoloVictoryResult(solo.victoryResult as { faction: Faction; track: VictoryTrack });
+      setSoloResultDismissed(!!solo.victorySeen);
+    }
   }, [profile, outposts.size, autoMultiplayer, mobaMode, applyOutpostOwnership, applyRefugeeCompleted]);
+  // ── Campaign reset — wipes the solo WORLD (territory, terraform, camps, exploration,
+  // victory race) but keeps the HERO (level, skills, pet, shards, inventory). The map is
+  // seed-fixed, so reloading after the wipe yields a clean campaign.
+  const campaignResettingRef = React.useRef(false);
+  const [campaignResetting, setCampaignResetting] = useState(false);
+  const resetCampaign = React.useCallback(() => {
+    if (campaignResettingRef.current) return;
+    campaignResettingRef.current = true; // blocks the debounced auto-save from re-writing old state
+    setCampaignResetting(true);
+    saveProgress({
+      explored: [],
+      heroPosition: { q: 0, r: 0 },
+      solo: {
+        outpostsOwned: [], terraformProgress: 0, refugeeCampsDone: [],
+        victory: emptyVictory(), victoryResult: null, victorySeen: false, explorationRewarded: false,
+      },
+    } as any);
+    // saveProgress rate-limits network writes to a 1.5s window — reload after the flush.
+    window.setTimeout(() => window.location.reload(), 1800);
+  }, [saveProgress]);
   // Debounced auto-save of the solo world state whenever it changes (solo only, post-hydration).
   React.useEffect(() => {
-    if (autoMultiplayer || mobaMode || !soloHydratedRef.current) return;
+    if (autoMultiplayer || mobaMode || !soloHydratedRef.current || campaignResettingRef.current) return;
     const t = setTimeout(() => {
+      if (campaignResettingRef.current) return;
       saveProgress({ solo: {
         outpostsOwned: Array.from(outposts.values()).filter(o => o.owner === 'player').map(o => o.key),
         terraformProgress,
         refugeeCampsDone: Array.from(refugeeCamps.values()).filter(c => c.completed).map(c => c.key),
+        victory: soloVictoryRef.current,
+        victoryResult: soloVictoryResult ?? null,
+        victorySeen: victorySeenRef.current,
+        explorationRewarded: explorationRewardedRef.current,
       } } as any);
     }, 900);
     return () => clearTimeout(t);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [outpostControl.owned, terraformProgress, refugeeProgress.done, autoMultiplayer, mobaMode]);
+  }, [outpostControl.owned, terraformProgress, refugeeProgress.done, soloVictory, soloVictoryResult, soloResultDismissed, autoMultiplayer, mobaMode]);
 
   // Capture the adjacent outpost via a chosen approach; also submits the MOBA capture intent.
+  // Infiltrate/negotiate are skill-gated (Stealth/Diplomacy cores) — locked picks just warn.
   const captureOutpostWith = React.useCallback((approach: 'assault' | 'infiltrate' | 'negotiate') => {
+    if (!approachSkillUnlocked(approach)) {
+      const hw = axialToWorld({ q: heroPosRef.current.q, r: heroPosRef.current.r }, hexSize);
+      spawnCombatText(hw.x, hw.z, `🔒 Requires ${APPROACH_SKILL[approach as 'negotiate' | 'infiltrate'].label}`, '#fbbf24');
+      return;
+    }
     captureApproachRef.current = approach;
     const ok = captureNearbyRef.current();
     if (ok && mobaActiveRef.current) { const no = nearbyOutpostRef.current; if (no) mobaRequestCaptureRef.current(`${no.q},${no.r}`); }
-  }, []);
+  }, [hexSize, spawnCombatText]);
   const captureOutpostWithRef = React.useRef(captureOutpostWith); captureOutpostWithRef.current = captureOutpostWith;
 
   // Match-win shard rewards (once per result). MOBA win pays more than a 1v1 duel win.
@@ -3464,10 +3524,13 @@ export default function SoloMissionMap3D({
   const [exploredCount, setExploredCount] = useState(0);
   const explorationGoal = 100; // exploration objective: discover 100 tiles
   const [explorationComplete, setExplorationComplete] = useState(false);
-  // Seed from profile once when profile loads
+  // Seed from profile once when profile loads. Also re-derive the HUD count and the
+  // completion flag, so a reloaded save doesn't show 0/100 (or lose its ✓) until you move.
   useEffect(() => {
     if (profile?.progress?.explored && exploredRef.current.size === 0) {
       for (const k of profile.progress.explored) exploredRef.current.add(k);
+      setExploredCount(exploredRef.current.size);
+      if (exploredRef.current.size >= explorationGoal) setExplorationComplete(true);
     }
   }, [profile]);
   // petVisible computed before explored accumulation so it can be unioned into exploredRef
@@ -3528,10 +3591,31 @@ export default function SoloMissionMap3D({
       console.log('[objective] exploration complete');
     }
     const to = setTimeout(() => {
+      if (campaignResettingRef.current) return; // don't resurrect explored tiles mid-reset
       saveProgress({ explored: Array.from(exploredRef.current) });
     }, 800);
     return () => clearTimeout(to);
   }, [heroVisible, petVisible, saveProgress]);
+
+  // Exploration objective is a real MISSION: completing it (once per campaign) pays
+  // level-scaled XP/FP + shards and advances your victory race — which in turn paces the
+  // rivals (bumpSoloVictory). The one-time flag persists so reloads never re-award it.
+  useEffect(() => {
+    // Solo-only, and only AFTER the solo save hydrated — otherwise a reloaded, already-
+    // rewarded campaign would pay out again before its explorationRewarded flag arrives.
+    if (!soloEnabled || !soloHydrated || !explorationComplete || explorationRewardedRef.current) return;
+    explorationRewardedRef.current = true;
+    const lvl = playerLevelRef.current;
+    awardFactionPoints(scaledMissionFp(8, lvl));
+    awardHeroXp(scaledMissionXp(60, lvl));
+    awardShardsRef.current(20);
+    // Discovery/scouting feeds the Exploitation track (the "work the land" path).
+    bumpSoloVictoryRef.current?.(playerFactionKey, 'exploitation', 20);
+    saveProgress({ solo: { explorationRewarded: true } } as any);
+    const hw = axialToWorld(heroPosRef.current, hexSize);
+    spawnCombatText(hw.x, hw.z, '🧭 Exploration complete!', '#6ee7b7');
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [explorationComplete, soloHydrated]);
 
   // Explored tiles outside RENDER_RADIUS — rendered as cheap "memory" layer so explored
   // tiles don't disappear as the hero walks away. Capped at MEMORY_RADIUS to bound count.
@@ -4511,10 +4595,12 @@ export default function SoloMissionMap3D({
                     <div className="flex flex-wrap items-center justify-center gap-2">
                       <button onClick={() => captureOutpostWithRef.current('assault')} title="Take it by force — fast, but rival defenders respond."
                         className="px-3 py-1.5 rounded-lg font-bold bg-rose-700/80 hover:bg-rose-600 ring-1 ring-rose-400/40">⚔️ Assault</button>
-                      <button onClick={() => captureOutpostWithRef.current('infiltrate')} title="Slip in quietly — no reprisal (best with a Stealth build)."
-                        className="px-3 py-1.5 rounded-lg font-bold bg-violet-700/80 hover:bg-violet-600 ring-1 ring-violet-400/40">🥷 Infiltrate</button>
-                      <button onClick={() => captureOutpostWithRef.current('negotiate')} title="Tactical diplomacy — peaceful, earns extra faction standing."
-                        className="px-3 py-1.5 rounded-lg font-bold bg-sky-700/80 hover:bg-sky-600 ring-1 ring-sky-400/40">🕊️ Negotiate</button>
+                      <button onClick={() => captureOutpostWithRef.current('infiltrate')} disabled={!canInfiltrate}
+                        title={canInfiltrate ? 'Slip in quietly — no reprisal (best with a Stealth build).' : `Locked — unlock ${APPROACH_SKILL.infiltrate.label} in the skill tree.`}
+                        className={`px-3 py-1.5 rounded-lg font-bold ring-1 ${canInfiltrate ? 'bg-violet-700/80 hover:bg-violet-600 ring-violet-400/40' : 'bg-gray-800/70 ring-white/10 opacity-50 cursor-not-allowed'}`}>{canInfiltrate ? '🥷' : '🔒'} Infiltrate</button>
+                      <button onClick={() => captureOutpostWithRef.current('negotiate')} disabled={!canNegotiate}
+                        title={canNegotiate ? 'Tactical diplomacy — peaceful, earns extra faction standing.' : `Locked — unlock ${APPROACH_SKILL.negotiate.label} in the skill tree.`}
+                        className={`px-3 py-1.5 rounded-lg font-bold ring-1 ${canNegotiate ? 'bg-sky-700/80 hover:bg-sky-600 ring-sky-400/40' : 'bg-gray-800/70 ring-white/10 opacity-50 cursor-not-allowed'}`}>{canNegotiate ? '🕊️' : '🔒'} Negotiate</button>
                     </div>
                     <div className="text-[10px] opacity-50"><span className="px-1 rounded bg-white/10 font-bold">G</span> = quick assault</div>
                   </div>
@@ -4538,8 +4624,9 @@ export default function SoloMissionMap3D({
                       <div className="flex flex-wrap items-center justify-center gap-2">
                         {loot ? (
                           <>
-                            <button onClick={() => resolveRefugeeRef.current('negotiate')} title={PLAYSTYLES.negotiate.desc}
-                              className="px-3 py-1.5 rounded-lg font-bold bg-sky-700/80 hover:bg-sky-600 ring-1 ring-sky-400/40">🕊️ Negotiate</button>
+                            <button onClick={() => resolveRefugeeRef.current('negotiate')} disabled={!canNegotiate}
+                              title={canNegotiate ? PLAYSTYLES.negotiate.desc : `Locked — unlock ${APPROACH_SKILL.negotiate.label} in the skill tree.`}
+                              className={`px-3 py-1.5 rounded-lg font-bold ring-1 ${canNegotiate ? 'bg-sky-700/80 hover:bg-sky-600 ring-sky-400/40' : 'bg-gray-800/70 ring-white/10 opacity-50 cursor-not-allowed'}`}>{canNegotiate ? '🕊️' : '🔒'} Negotiate</button>
                             <button onClick={() => resolveRefugeeRef.current('loot')} title={PLAYSTYLES.loot.desc}
                               className="px-3 py-1.5 rounded-lg font-bold bg-orange-700/80 hover:bg-orange-600 ring-1 ring-orange-400/40">🔥 Loot</button>
                           </>
@@ -4548,7 +4635,7 @@ export default function SoloMissionMap3D({
                             className="px-3 py-1.5 rounded-lg font-bold bg-emerald-700/80 hover:bg-emerald-600 ring-1 ring-emerald-400/40">✚ Help — deliver {resLbl}</button>
                         )}
                       </div>
-                      <div className="text-[10px] opacity-50"><span className="px-1 rounded bg-white/10 font-bold">H</span> = {loot ? 'negotiate' : 'help'} (peaceful default)</div>
+                      <div className="text-[10px] opacity-50"><span className="px-1 rounded bg-white/10 font-bold">H</span> = {loot ? (canNegotiate ? 'negotiate' : 'negotiate (🔒 needs Diplomacy)') : 'help'} (peaceful default)</div>
                     </div>
                   </div>
                 );
@@ -4801,8 +4888,9 @@ export default function SoloMissionMap3D({
                 </div>
               )}
 
-              {/* Solo victory-track result — a faction filled a track first. Win (you) or loss (AI). */}
-              {soloEnabled && soloVictoryResult && (() => {
+              {/* Solo victory-track result — a faction filled a track first. Win (you) or loss (AI).
+                  The campaign stays decided (tracks frozen) until the player starts a new one. */}
+              {soloEnabled && soloVictoryResult && !soloResultDismissed && (() => {
                 const won = soloVictoryResult.faction === playerFactionKey;
                 const def = VICTORY_TRACK_DEFS[soloVictoryResult.track];
                 return (
@@ -4817,7 +4905,16 @@ export default function SoloMissionMap3D({
                         <span className="font-bold">{def.icon} {def.label}</span>
                       </div>
                       <div className="opacity-70 text-sm mb-4">{won ? `You reached the ${def.label} threshold first. +60 shards.` : `${soloVictoryResult.faction} filled the ${def.label} track before you.`}</div>
-                      <button onClick={() => setSoloVictoryResult(null)} className={`px-6 py-2 rounded-lg font-bold ${won ? 'bg-emerald-700 hover:bg-emerald-600' : 'bg-rose-700 hover:bg-rose-600'}`}>Continue</button>
+                      <div className="flex items-center justify-center gap-3">
+                        <button disabled={campaignResetting} onClick={resetCampaign} title="Reset the world — territory, terraforming, camps and the victory race start over. Your hero, skills, pet, shards and items carry over."
+                          className="px-6 py-2 rounded-lg font-bold bg-emerald-700 hover:bg-emerald-600 disabled:opacity-60">
+                          {campaignResetting ? 'Resetting…' : '🔁 New Campaign'}
+                        </button>
+                        <button disabled={campaignResetting} onClick={() => { victorySeenRef.current = true; setSoloResultDismissed(true); }}
+                          className="px-6 py-2 rounded-lg font-bold bg-white/10 hover:bg-white/20 ring-1 ring-white/20">
+                          Keep Playing
+                        </button>
+                      </div>
                     </div>
                   </div>
                 );

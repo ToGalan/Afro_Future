@@ -12,12 +12,13 @@ interface UsePlayerProfileOptions {
 // field-by-field. Crucial so e.g. a skill save can send hero.{traits,unlockedSkillIds}
 // WITHOUT re-supplying hero.xp/level (which would clobber the XP system's values).
 export type ProgressPatch =
-  Partial<Omit<PlayerProgress, 'hero' | 'pet' | 'skillTokens' | 'avatar' | 'abilityLoadout'>> & {
+  Partial<Omit<PlayerProgress, 'hero' | 'pet' | 'skillTokens' | 'avatar' | 'abilityLoadout' | 'solo'>> & {
     hero?: Partial<NonNullable<PlayerProgress['hero']>>;
     pet?: Partial<NonNullable<PlayerProgress['pet']>>;
     skillTokens?: Partial<NonNullable<PlayerProgress['skillTokens']>>;
     avatar?: Partial<NonNullable<PlayerProgress['avatar']>>;
     abilityLoadout?: Partial<NonNullable<PlayerProgress['abilityLoadout']>>;
+    solo?: Partial<NonNullable<PlayerProgress['solo']>>;
   };
 
 function mergeProgress(base: PlayerProgress, partial: ProgressPatch): PlayerProgress {
@@ -29,6 +30,7 @@ function mergeProgress(base: PlayerProgress, partial: ProgressPatch): PlayerProg
     skillTokens: partial.skillTokens ? { ...(base.skillTokens as any), ...partial.skillTokens } : base.skillTokens,
     avatar: partial.avatar ? { ...(base.avatar as any), ...partial.avatar, parts: { ...(base.avatar?.parts||{}), ...((partial.avatar as any)?.parts||{}) }, colors: { ...(base.avatar?.colors||{}), ...((partial.avatar as any)?.colors||{}) } } : base.avatar,
     abilityLoadout: partial.abilityLoadout ? { ...(base.abilityLoadout as any), ...partial.abilityLoadout } : base.abilityLoadout,
+    solo: partial.solo ? { ...(base.solo as any), ...partial.solo } : base.solo,
   } as PlayerProgress;
 }
 
@@ -74,10 +76,12 @@ export function usePlayerProfile(opts: UsePlayerProfileOptions = {}) {
             progress 
           });
         } else if (autoCreate) {
+          // Only include identity fields that exist — Firestore rejects `undefined`
+          // values outright (anon users have neither email nor displayName).
           const initial: PlayerProfile = {
             uid: user.uid,
-            email: user.email || undefined,  // Save email from auth
-            displayName: user.displayName || undefined, // Save display name from auth
+            ...(user.email ? { email: user.email } : {}),
+            ...(user.displayName ? { displayName: user.displayName } : {}),
             createdAt: Date.now(),
             progress: {
               heroPosition: { q: 0, r: 0 },

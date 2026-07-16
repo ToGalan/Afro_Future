@@ -7,7 +7,7 @@
  * Design principle: the XP-to-next curve steepens with level, so rewards must scale too —
  * either with the LEVEL of the content you beat (deeper = more) or with YOUR level (missions
  * stay relevant). Combat rewards scale with content depth; missions scale gently with player
- * level; rival faction income ramps over match time so a solo campaign builds to real tension.
+ * level; rival faction income is paced by the player's own mission completions.
  *
  * All knobs live here — tune the game from this file.
  */
@@ -51,10 +51,13 @@ export function tierFromDistance(dist: number): number {
 
 // ── Faction goals: progressive rival competition ────────────────────────────────
 /**
- * A rival faction's off-screen victory-track income, RAMPING with elapsed match time so a
- * solo campaign is relaxed early and tense late (empires snowball). Returns points/tick.
+ * Rival empires advance ONLY when the player completes missions (capture, terraform,
+ * refugee aid, exploration…), never on wall-clock time — a perpetual campaign can't be
+ * lost to idle/offline time. Each player victory-track gain hands every rival this
+ * fraction of it on the rival's natural track, so the race always paces the player.
  */
-export function rivalRampRate(base: number, elapsedMs: number, rampPerMin = 0.18): number {
-  const minutes = Math.max(0, elapsedMs) / 60000;
-  return base * (1 + minutes * rampPerMin);
+export const RIVAL_MISSION_PACE = 0.5;
+/** Victory points a rival earns when the player earns `playerBase` from a mission. */
+export function rivalMissionGain(playerBase: number): number {
+  return playerBase * RIVAL_MISSION_PACE;
 }

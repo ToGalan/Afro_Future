@@ -26,18 +26,22 @@ const CATEGORY_COLORS: Record<SkillType, string> = {
 function branchColor(t: SkillType) { return CATEGORY_COLORS[t] ?? '#9ca3af'; }
 
 // Classic radial "snowflake" layout: Origin at centre, each branch fanning outward at its
-// own angle, node radius growing with tier.
+// own angle, node radius growing with tier. Each branch has THREE prerequisite chains
+// (node n requires n-3), so every chain gets its own stable sub-spoke: the three nodes of
+// a ring fan out at -1/0/+1 sub-angles instead of stacking on the branch axis.
 function layoutSnowflake(nodes: SkillNode[], size: number): PositionedNode[] {
   const cx = size / 2; const cy = size / 2;
   const maxTier = Math.max(...nodes.map(n => n.tier));
   const perBranchAngle = (2 * Math.PI) / BRANCHES.length;
   // 0.42 (not 0.5) leaves a margin so the outer ring + the branch labels (at 0.46) fit.
   const radiusStep = (size * 0.42) / Math.max(1, maxTier);
+  const chainSpread = perBranchAngle / 3; // sub-spoke separation; ±1/3 branch keeps neighbours clear
   return nodes.map(n => {
     if (n.id === 'root') return { ...n, x: cx, y: cy };
     const branchAngle = n.branch >= 0 ? n.branch * perBranchAngle : 0;
-    const jitter = n.id.includes('_core') ? 0 : ((parseInt(n.id.replace(/\D/g, '')) % 7) - 3) * (Math.PI / 180) * 5;
-    const angle = branchAngle + jitter;
+    const num = parseInt(n.id.replace(/\D/g, ''), 10);
+    const chain = n.id.includes('_core') || Number.isNaN(num) ? 1 : (num - 1) % 3; // 0|1|2, core centred
+    const angle = branchAngle + (chain - 1) * chainSpread;
     const r = radiusStep * n.tier + (n.id.includes('_core') ? 0 : 20);
     return { ...n, x: cx + Math.cos(angle) * r, y: cy + Math.sin(angle) * r };
   });

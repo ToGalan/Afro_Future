@@ -48,7 +48,9 @@
       "Skill(artifact-design)",
       "Skill(artifact-design:*)",
       "WebFetch(domain:edgegap.com)",
-      "Bash(node -e ' *)"
+      "Bash(node -e ' *)",
+      "Bash(npx firebase-tools *)",
+      "PowerShell(Start-Process cmd -ArgumentList '/k', 'npx firebase-tools login --reauth' -WorkingDirectory 'D:\\\\Afro Future -Dev Backup\\\\New Dev 2025\\\\v3')"
     ]
   }
 }

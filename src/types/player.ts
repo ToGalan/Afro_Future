@@ -15,6 +15,14 @@ export interface PlayerProgress {
     outpostsOwned?: string[];    // "q,r" keys of captured outposts
     terraformProgress?: number;  // 0..100
     refugeeCampsDone?: string[]; // "q,r" keys of resolved camps
+    /** Victory-track race state (faction → track → points). Mirrors FactionVictory. */
+    victory?: Record<string, Record<string, number>>;
+    /** Set once a faction fills a track — the campaign is decided until a reset. */
+    victoryResult?: { faction: string; track: string } | null;
+    /** Player dismissed the win/loss overlay (don't re-show it every session). */
+    victorySeen?: boolean;
+    /** One-time exploration-objective reward already granted this campaign. */
+    explorationRewarded?: boolean;
   };
   hero?: {
     level: number;

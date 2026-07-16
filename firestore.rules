@@ -5,16 +5,30 @@ service cloud.firestore {
     function isOwner(uid) { return isSignedIn() && request.auth.uid == uid; }
     function isAdmin() { return isSignedIn() && request.auth.token.admin == true; }
 
-    // players/{uid}
+    // players/{uid} — the account profile + all game progression (usePlayerProfile.ts).
+    // Top-level keys the app writes: identity (uid/email/displayName/avatarUrl/faction),
+    // timestamps (createdAt/updatedAt), the whole `progress` map (hero/pet/skills/avatar/
+    // inventories/explored/solo campaign), and `migratedFrom` (anon → signed-in migration).
+    // NOTE: writes use setDoc(..., {merge:true}), and rules validate the POST-MERGE doc —
+    // so hasOnly() must list every key that can exist on the doc, not just the patch.
+    function playerKeys() {
+      return ['uid','email','displayName','avatarUrl','faction',
+              'createdAt','updatedAt','progress','migratedFrom'];
+    }
     match /players/{playerId} {
-      allow create: if isOwner(request.resource.id)
-                    && request.resource.data.keys().hasOnly(['name','avatar','progress','updatedAt'])
-                    && request.resource.data.updatedAt == request.time;
+      allow create: if isOwner(playerId)
+                    && request.resource.data.keys().hasOnly(playerKeys());
       allow read: if isOwner(playerId) || isAdmin();
       allow update: if (isOwner(playerId) || isAdmin())
-                    && request.resource.data.keys().hasOnly(['name','avatar','progress','updatedAt'])
+                    && request.resource.data.keys().hasOnly(playerKeys())
                     && request.resource.data.updatedAt == request.time;
       allow delete: if isOwner(playerId) || isAdmin();
+    }
+
+    // dev_tests/{docId} — connectivity probe written by DatabaseTestPanel (doc id is
+    // "test_<uid>", so each user can only touch their own probe).
+    match /dev_tests/{docId} {
+      allow read, write: if isSignedIn() && docId == 'test_' + request.auth.uid;
     }
 
     // public/{doc} (readable by everyone, writable by admins)
