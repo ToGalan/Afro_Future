@@ -1,6 +1,7 @@
 import { useEffect, useRef } from 'react';
 import { usePlayerProfile } from './usePlayerProfile';
 import { useSkillStore } from '../store/skillStore';
+import { totalSkillPointsForLevel } from '../services/balance';
 
 // Throttled skill progress auto-sync: watches unlocked, unlockOrder, level, spent
 export function useAutoSyncSkills(enabled: boolean = true) {
@@ -26,10 +27,10 @@ export function useAutoSyncSkills(enabled: boolean = true) {
           unlockOrder: state.unlockOrder,
         },
         skillTokens: (() => {
-          // Must mirror availablePoints() in skillStore: base + 1/level + a bonus every
-          // 5th level. The per-level term (level-1) was previously missing, understating
-          // the persisted token totals versus what the player can actually spend.
-          const earned = state.basePoints + (state.level - 1) + Math.floor((state.level - 1) / 5) * state.bonusPer5;
+          // Same balance.ts curve availablePoints() uses — never a hand-copied formula
+          // again (a previous copy here dropped the per-level multiplier and understated
+          // the persisted totals versus what the player could actually spend).
+          const earned = totalSkillPointsForLevel(Math.max(1, state.level));
           return { earned, spent: state.spent, remaining: earned - state.spent };
         })(),
         abilityLoadout: {

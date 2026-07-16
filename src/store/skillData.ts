@@ -109,9 +109,14 @@ function coreEffect(kind: EffectKind): SkillEffect {
 }
 
 export const PLAYER_LEVEL_CAP = 100;
-export const SKILL_POINTS_BASE = 3;
-export const SKILL_POINTS_PER_LEVEL = 2;    // scaled-cost tree → a touch more income per level
-export const SKILL_POINTS_BONUS_PER_5 = 2;
+// Skill-point INCOME lives in balance.ts (the central balance knobs) so it scales with
+// the same curves as XP/rewards — re-exported here for consumers of the old names.
+export {
+  SKILL_POINTS_BASE,
+  SKILL_POINT_MILESTONE_BONUS as SKILL_POINTS_BONUS_PER_5,
+  skillPointsAtLevel,
+  totalSkillPointsForLevel,
+} from '../services/balance';
 
 const TIER_NODES = 12; // 4 rings × 3 nodes (tiers 2–5)
 // Scaling skill-point cost by tier: L1 cheap, outer rings steeply expensive.

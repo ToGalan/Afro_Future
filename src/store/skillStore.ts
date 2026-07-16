@@ -1,7 +1,7 @@
 import { create } from 'zustand';
 import {
   makeTree, deriveTraits, deriveTraitBonus, sumSkillStats, sumSkillCost,
-  SKILL_POINTS_BASE, SKILL_POINTS_PER_LEVEL, SKILL_POINTS_BONUS_PER_5, PLAYER_LEVEL_CAP,
+  SKILL_POINTS_BASE, SKILL_POINTS_BONUS_PER_5, totalSkillPointsForLevel, PLAYER_LEVEL_CAP,
   type SkillNode,
 } from './skillData';
 import type { StatBlock } from '../services/playerStats';
@@ -134,11 +134,10 @@ export const useSkillStore = create<SkillState>((set) => ({
   reset: () => set({ level: 1, unlocked: ['root'], unlockOrder: [], spent: 0, attack: 0, defense: 0, utility: 0, traitTags: [], traitBonus: {}, primaryBranch: undefined, primaryType: undefined, abilityLoadout: { offensive: [null, null, null, null], defensive: [null, null, null, null] } }),
 }));
 
-// Scaling economy: BASE + PER_LEVEL/level + a bonus every 5th level. `spent` is the total
-// skill-POINT cost of unlocked nodes, so rising per-node costs (skillData.skillCostForLevel)
-// pace how much of the grid a player can afford at a given level.
+// Scaling economy: income comes from balance.ts's level-scaled curve (2/level early,
+// rising to 5/level late, + a milestone bonus every 5th level) so skill points keep
+// pace with the steepening XP curve. `spent` is the total skill-POINT cost of unlocked
+// nodes, so rising per-node tier costs pace how deep a player can go at a given level.
 export function availablePoints(state: SkillState) {
-  const lvl = Math.max(1, state.level);
-  const bonusBlocks = Math.floor((lvl - 1) / 5);
-  return state.basePoints + (lvl - 1) * SKILL_POINTS_PER_LEVEL + bonusBlocks * state.bonusPer5 - state.spent;
+  return totalSkillPointsForLevel(Math.max(1, state.level)) - state.spent;
 }

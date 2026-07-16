@@ -10,6 +10,8 @@
  * - Soft scaling to prevent grind fatigue
  */
 
+import { skillPointsAtLevel, SKILL_POINTS_BASE } from './balance';
+
 export interface PlayerExpConfig {
   baseXpPerLevel: number;      // Starting XP requirement (level 1→2)
   scalingFactor: number;        // Multiplier for exp growth per level
@@ -127,8 +129,9 @@ export function getLevelProgress(currentXp: number, currentLevel: number, config
  * Level-up reward distribution
  */
 export function getLevelReward(newLevel: number): LevelReward {
-  // Grant 1 skill token per 5 levels, plus 1 at level 1
-  const skillTokens = newLevel === 1 ? 1 : Math.floor(newLevel / 5);
+  // Skill points come from the ONE balance.ts curve (level-scaled, milestone every 5th)
+  // so this always matches what the skill tree actually lets the player spend.
+  const skillTokens = newLevel <= 1 ? SKILL_POINTS_BASE : skillPointsAtLevel(newLevel);
 
   // Major milestones unlock rank titles — spanning the full L1–100 progression.
   const traits: string[] = [];

@@ -1931,6 +1931,32 @@ function AvatarCollisionDetector({
   return null; // No rendering, just collision updates
 }
 
+// ── Shared geometry & material caches ─────────────────────────────────────────
+// The map renders 1500+ hex tiles plus FoW/territory overlays; giving each mesh its
+// own geometry/material (the JSX-child form) multiplies GPU state and memory for
+// objects that are all identical. These caches hand every tile the SAME geometry
+// and one material per distinct colour, which is a large chunk of the frame budget.
+const hexGeoCache = new Map<string, THREE.CylinderGeometry>();
+function sharedHexGeo(radius: number, h: number): THREE.CylinderGeometry {
+  const k = `${radius}:${h}`;
+  let g = hexGeoCache.get(k);
+  if (!g) { g = new THREE.CylinderGeometry(radius, radius, h, 6); hexGeoCache.set(k, g); }
+  return g;
+}
+const tileMatCache = new Map<string, THREE.MeshStandardMaterial>();
+function sharedTileMat(color: string): THREE.MeshStandardMaterial {
+  let m = tileMatCache.get(color);
+  if (!m) { m = new THREE.MeshStandardMaterial({ color }); tileMatCache.set(color, m); }
+  return m;
+}
+const overlayMatCache = new Map<string, THREE.MeshBasicMaterial>();
+function sharedOverlayMat(color: string, opacity: number): THREE.MeshBasicMaterial {
+  const k = `${color}:${opacity}`;
+  let m = overlayMatCache.get(k);
+  if (!m) { m = new THREE.MeshBasicMaterial({ color, transparent: true, opacity, depthWrite: false }); overlayMatCache.set(k, m); }
+  return m;
+}
+
 function HexTile({ t, size, onClick, onHover }: { t: Tile; size: number; onClick: (t: Tile) => void; onHover?: (t: Tile | null) => void }) {
   const h = heightFor(t);
   const color = tileColor(t);
@@ -1944,10 +1970,9 @@ function HexTile({ t, size, onClick, onHover }: { t: Tile; size: number; onClick
         receiveShadow
         // Rotate by 30deg so flat-top hex aligns by sides (cylinderGeometry default is pointy-up).
         rotation={[0, Math.PI / 6, 0]}
-      >
-        <cylinderGeometry args={[size, size, h, 6]} />
-        <meshStandardMaterial color={color} />
-      </mesh>
+        geometry={sharedHexGeo(size, h)}
+        material={sharedTileMat(color)}
+      />
     </group>
   );
 }
@@ -4192,12 +4217,135 @@ export default function SoloMissionMap3D({
   // Keyboard hex movement (pointy axial layout with q,r; adapt to 6 neighbors)
   // Keyboard disabled for now
 
+  // ── Memoized tile fields ────────────────────────────────────────────────────
+  // The map is ~1500 active + up to ~2000 memory tiles, each with several meshes.
+  // Rebuilding that JSX on EVERY component render (vitals ticks, combat text,
+  // enemy movement, 15Hz MP snapshots…) made React reconcile thousands of elements
+  // per frame. Memoizing means the whole subtree bails out of reconciliation unless
+  // something that actually affects tiles (movement, capture, terraform…) changed.
+  const exploredMemoryField = React.useMemo(() => (
+    <>
+      {exploredMemoryTiles.map(t => {
+        const { x, z } = axialToWorld(t, hexSize);
+        const key = `exp-mem-${t.q},${t.r}`;
+        const tileTop = heightFor(t);
+        return (
+          <group key={key} position={[x, 0, z]}>
+            <HexTile t={t} size={hexSize} onClick={() => {}} onHover={setHover} />
+            <mesh rotation={[0, Math.PI / 6, 0]} position={[0, tileTop + 0.016, 0]} renderOrder={14}
+              geometry={sharedHexGeo(hexSize, 0.03)} material={sharedOverlayMat('#000', 0.42)} />
+          </group>
+        );
+      })}
+    </>
+  ), [exploredMemoryTiles, hexSize]);
+
+  const tileField = React.useMemo(() => (
+    <>
+      {culledTiles.map((rawT) => {
+        const key = `${rawT.q},${rawT.r}`;
+        // Apply the terraforming override so greened tiles render as fertile.
+        const ov = terraformedTiles.get(key);
+        const t: Tile = ov ? { ...rawT, type: ov } : rawT;
+        const { x, z } = axialToWorld(t, hexSize);
+        const inHero = heroVisible.has(key);
+        const inPet = petVisible.has(key);
+        const inVision = inHero || inPet;
+        const explored = exploredRef.current.has(key);
+        const tileTop = heightFor(t);
+        // Keep camp / outpost / terraformer tiles AND the ring of tiles around
+        // them clear of terrain clutter so the player can fight/capture/deliver
+        // with clear sightlines (no trees or rocks overlaying the area).
+        const blockDeco = decoBlockedKeys.has(key);
+        return (
+          <group key={key} position={[x, 0, z]}>
+            <HexTile t={t} size={hexSize} onClick={() => {}} onHover={setHover} />
+            {/* Terrain decorations — visible now OR previously explored (FoW dim sits on top) */}
+            {(inVision || explored) && t.type === 'forest' && !collectibleMushrooms.has(key) && !blockDeco && (
+              <group position={[0, tileTop, 0]}><TreeCluster size={hexSize} seed={t.q * 31 + t.r * 17} /></group>
+            )}
+            {(inVision || explored) && t.type === 'jungle' && !blockDeco && (
+              <group position={[0, tileTop, 0]}><TreeCluster size={hexSize} seed={t.q * 31 + t.r * 17} /></group>
+            )}
+            {(inVision || explored) && t.type === 'mountain' && !blockDeco && (
+              <group position={[0, tileTop, 0]}><MountainDeco size={hexSize} seed={t.q * 31 + t.r * 17} /></group>
+            )}
+            {(inVision || explored) && t.type === 'hills' && !blockDeco && (
+              <group position={[0, tileTop, 0]}><HillsDeco size={hexSize} seed={t.q * 31 + t.r * 17} /></group>
+            )}
+            {(inVision || explored) && t.type === 'water' && (
+              <group position={[0, tileTop, 0]}><WaterWaves size={hexSize} /></group>
+            )}
+            {(inVision || explored) && t.type === 'plains' && !blockDeco && (
+              <group position={[0, tileTop, 0]}><GrassCluster size={hexSize} seed={t.q * 37 + t.r * 13} /></group>
+            )}
+            {(inVision || explored) && t.type === 'desert' && !blockDeco && (
+              <group position={[0, tileTop, 0]} renderOrder={5}><DesertDunes size={hexSize} seed={t.q * 41 + t.r * 19} /></group>
+            )}
+            {/* Gatherable resource node (ore / energy / bio) — removed from the
+                map on collect, so drive it off the collectible map, not t.resource. */}
+            {(inVision || explored) && collectibleResources.has(key) && (
+              <group position={[0, tileTop, 0]} renderOrder={22}><ResourceProp type={collectibleResources.get(key)!} size={hexSize} seed={t.q * 29 + t.r * 23} /></group>
+            )}
+            {/* Collectible healing flowers (plains only) */}
+            {inVision && collectibleFlowers.has(key) && (
+              <group position={[0, tileTop, 0]} renderOrder={23}>
+                <CollectibleFlower size={hexSize} />
+              </group>
+            )}
+            {/* Collectible mushrooms (forest only) - raised so they show above trees */}
+            {inVision && collectibleMushrooms.has(key) && (
+              <group position={[0, tileTop, 0]} renderOrder={30}>
+                <CollectibleMushroom size={hexSize} />
+              </group>
+            )}
+            {/* FoW: solid black over completely unexplored+invisible tiles */}
+            {!inVision && !explored && (
+              <mesh rotation={[0, Math.PI / 6, 0]} position={[0, tileTop + 0.02, 0]} renderOrder={15}
+                geometry={sharedHexGeo(hexSize, 0.04)} material={sharedOverlayMat('#000', 0.88)} />
+            )}
+            {/* FoW: dim overlay on explored-but-not-currently-visible tiles */}
+            {!inVision && explored && (
+              <mesh rotation={[0, Math.PI / 6, 0]} position={[0, tileTop + 0.016, 0]} renderOrder={14}
+                geometry={sharedHexGeo(hexSize, 0.03)} material={sharedOverlayMat('#000', 0.38)} />
+            )}
+            {/* Territory ownership — each tile tinted by its controlling outpost's
+                owner (faction colour if captured, grey if neutral). Owned ground is
+                always shown faintly so the map reads as claimed territory; the 'O'
+                overlay reveals the FULL partition (incl. neutral) with bright borders. */}
+            {(inVision || explored) && outpostTerritory.has(key) && (() => {
+              const owned = outposts.get(outpostTerritory.get(key)!)?.owner === 'player';
+              // Without the overlay, only owned tiles tint (ownership feedback).
+              if (!showOutpostZones && !owned) return null;
+              const onBorder = zoneBoundary.has(key);
+              const col = owned ? heroColors.primary : '#8a8f96';
+              const op = showOutpostZones
+                ? (owned ? (onBorder ? 0.42 : 0.16) : (onBorder ? 0.24 : 0.06))
+                : (onBorder ? 0.30 : 0.10); // always-on owned tint
+              return (
+                <mesh rotation={[0, Math.PI / 6, 0]} position={[0, tileTop + 0.05, 0]} renderOrder={13}
+                  geometry={sharedHexGeo(hexSize * (onBorder ? 1 : 0.9), 0.02)} material={sharedOverlayMat(col, op)} />
+              );
+            })()}
+          </group>
+        );
+      })}
+    </>
+  // exploredCount proxies the exploredRef set (it grows on movement).
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  ), [culledTiles, terraformedTiles, heroVisible, petVisible, decoBlockedKeys,
+      collectibleFlowers, collectibleMushrooms, collectibleResources,
+      outpostTerritory, zoneBoundary, showOutpostZones, outposts,
+      heroColors.primary, hexSize, exploredCount]);
+
   return (
   <div className="relative w-screen h-screen bg-[#111827] overflow-hidden">
       {/* Helper overlay removed for production */}
       <div className="absolute inset-0 select-none">
     {/* Camera elevation ≈ 33.3° above the ground plane (height/horizontal = tan(33.3°)). */}
-    <Canvas shadows camera={{ position: [0, 14.47, 22], fov: 45 }} gl={{ alpha: false }} style={{ background: '#111827' }} onCreated={({ gl, scene }) => { gl.setClearColor('#111827', 1); scene.background = new THREE.Color('#111827'); }}>
+    {/* Perf: dpr capped at 1.5 (high-DPI screens otherwise render 2x+ the pixels),
+        plain PCF shadows (soft PCF costs extra taps per fragment), no stencil. */}
+    <Canvas shadows="percentage" dpr={[1, 1.5]} camera={{ position: [0, 14.47, 22], fov: 45 }} gl={{ alpha: false, powerPreference: 'high-performance', stencil: false }} style={{ background: '#111827' }} onCreated={({ gl, scene }) => { gl.setClearColor('#111827', 1); scene.background = new THREE.Color('#111827'); }}>
   <MapCameraController
     bounds={mapBounds}
     gameMode={true}
@@ -4219,7 +4367,7 @@ export default function SoloMissionMap3D({
               <SceneBridge outerRadius={hexSize} onReady={(caps) => { setRefMountains(!!caps.mountain); setRefTrees(!!caps.tree); setRefWater(!!caps.water); setRefHills(!!caps.hills); setRefDesert(!!caps.desert); }} />
               <Sky inclination={0.6} azimuth={0.25} sunPosition={[50, 50, 10]} turbidity={2} rayleigh={0.7} mieCoefficient={0.005} mieDirectionalG={0.8} />
               <hemisphereLight args={["#bde0fe", "#e6f3ff", 0.8]} />
-              <directionalLight position={[30, 40, 15]} intensity={0.7} castShadow shadow-mapSize-width={2048} shadow-mapSize-height={2048} />
+              <directionalLight position={[30, 40, 15]} intensity={0.7} castShadow shadow-mapSize-width={1024} shadow-mapSize-height={1024} />
               <group position={[0, 0, 0]}>
                 {/* Dark ground plane: prevents white canvas showing at RENDER_RADIUS edge */}
                 <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, -0.1, 0]}>
@@ -4228,116 +4376,10 @@ export default function SoloMissionMap3D({
                 </mesh>
 
                 {/* ── Explored-memory tiles outside RENDER_RADIUS — dim overlay, no decorations ── */}
-                {exploredMemoryTiles.map(t => {
-                  const { x, z } = axialToWorld(t, hexSize);
-                  const key = `exp-mem-${t.q},${t.r}`;
-                  const tileTop = heightFor(t);
-                  return (
-                    <group key={key} position={[x, 0, z]}>
-                      <HexTile t={t} size={hexSize} onClick={() => {}} onHover={setHover} />
-                      <mesh rotation={[0, Math.PI / 6, 0]} position={[0, tileTop + 0.016, 0]} renderOrder={14}>
-                        <cylinderGeometry args={[hexSize, hexSize, 0.03, 6]} />
-                        <meshBasicMaterial color="#000" transparent opacity={0.42} depthWrite={false} />
-                      </mesh>
-                    </group>
-                  );
-                })}
+                {exploredMemoryField}
 
                 {/* ── Active render radius tiles ── */}
-                {culledTiles.map((rawT) => {
-                  const key = `${rawT.q},${rawT.r}`;
-                  // Apply the terraforming override so greened tiles render as fertile.
-                  const ov = terraformedTiles.get(key);
-                  const t: Tile = ov ? { ...rawT, type: ov } : rawT;
-                  const { x, z } = axialToWorld(t, hexSize);
-                  const inHero = heroVisible.has(key);
-                  const inPet = petVisible.has(key);
-                  const inVision = inHero || inPet;
-                  const explored = exploredRef.current.has(key);
-                  const tileTop = heightFor(t);
-                  // Keep camp / outpost / terraformer tiles AND the ring of tiles around
-                  // them clear of terrain clutter so the player can fight/capture/deliver
-                  // with clear sightlines (no trees or rocks overlaying the area).
-                  const blockDeco = decoBlockedKeys.has(key);
-                  return (
-                    <group key={key} position={[x, 0, z]}>
-                      <HexTile t={t} size={hexSize} onClick={() => {}} onHover={setHover} />
-                      {/* Terrain decorations — visible now OR previously explored (FoW dim sits on top) */}
-                      {(inVision || explored) && t.type === 'forest' && !collectibleMushrooms.has(key) && !blockDeco && (
-                        <group position={[0, tileTop, 0]}><TreeCluster size={hexSize} seed={t.q * 31 + t.r * 17} /></group>
-                      )}
-                      {(inVision || explored) && t.type === 'jungle' && !blockDeco && (
-                        <group position={[0, tileTop, 0]}><TreeCluster size={hexSize} seed={t.q * 31 + t.r * 17} /></group>
-                      )}
-                      {(inVision || explored) && t.type === 'mountain' && !blockDeco && (
-                        <group position={[0, tileTop, 0]}><MountainDeco size={hexSize} seed={t.q * 31 + t.r * 17} /></group>
-                      )}
-                      {(inVision || explored) && t.type === 'hills' && !blockDeco && (
-                        <group position={[0, tileTop, 0]}><HillsDeco size={hexSize} seed={t.q * 31 + t.r * 17} /></group>
-                      )}
-                      {(inVision || explored) && t.type === 'water' && (
-                        <group position={[0, tileTop, 0]}><WaterWaves size={hexSize} /></group>
-                      )}
-                      {(inVision || explored) && t.type === 'plains' && !blockDeco && (
-                        <group position={[0, tileTop, 0]}><GrassCluster size={hexSize} seed={t.q * 37 + t.r * 13} /></group>
-                      )}
-                      {(inVision || explored) && t.type === 'desert' && !blockDeco && (
-                        <group position={[0, tileTop, 0]} renderOrder={5}><DesertDunes size={hexSize} seed={t.q * 41 + t.r * 19} /></group>
-                      )}
-                      {/* Gatherable resource node (ore / energy / bio) — removed from the
-                          map on collect, so drive it off the collectible map, not t.resource. */}
-                      {(inVision || explored) && collectibleResources.has(key) && (
-                        <group position={[0, tileTop, 0]} renderOrder={22}><ResourceProp type={collectibleResources.get(key)!} size={hexSize} seed={t.q * 29 + t.r * 23} /></group>
-                      )}
-                      {/* Collectible healing flowers (plains only) */}
-                      {inVision && collectibleFlowers.has(key) && (
-                        <group position={[0, tileTop, 0]} renderOrder={23}>
-                          <CollectibleFlower size={hexSize} />
-                        </group>
-                      )}
-                      {/* Collectible mushrooms (forest only) - raised so they show above trees */}
-                      {inVision && collectibleMushrooms.has(key) && (
-                        <group position={[0, tileTop, 0]} renderOrder={30}>
-                          <CollectibleMushroom size={hexSize} />
-                        </group>
-                      )}
-                      {/* FoW: solid black over completely unexplored+invisible tiles */}
-                      {!inVision && !explored && (
-                        <mesh rotation={[0, Math.PI / 6, 0]} position={[0, tileTop + 0.02, 0]} renderOrder={15}>
-                          <cylinderGeometry args={[hexSize, hexSize, 0.04, 6]} />
-                          <meshBasicMaterial color="#000" transparent opacity={0.88} depthWrite={false} />
-                        </mesh>
-                      )}
-                      {/* FoW: dim overlay on explored-but-not-currently-visible tiles */}
-                      {!inVision && explored && (
-                        <mesh rotation={[0, Math.PI / 6, 0]} position={[0, tileTop + 0.016, 0]} renderOrder={14}>
-                          <cylinderGeometry args={[hexSize, hexSize, 0.03, 6]} />
-                          <meshBasicMaterial color="#000" transparent opacity={0.38} depthWrite={false} />
-                        </mesh>
-                      )}
-                      {/* Territory ownership — each tile tinted by its controlling outpost's
-                          owner (faction colour if captured, grey if neutral). Owned ground is
-                          always shown faintly so the map reads as claimed territory; the 'O'
-                          overlay reveals the FULL partition (incl. neutral) with bright borders. */}
-                      {(inVision || explored) && outpostTerritory.has(key) && (() => {
-                        const owned = outposts.get(outpostTerritory.get(key)!)?.owner === 'player';
-                        // Without the overlay, only owned tiles tint (ownership feedback).
-                        if (!showOutpostZones && !owned) return null;
-                        const onBorder = zoneBoundary.has(key);
-                        const col = owned ? heroColors.primary : '#8a8f96';
-                        const op = showOutpostZones
-                          ? (owned ? (onBorder ? 0.42 : 0.16) : (onBorder ? 0.24 : 0.06))
-                          : (onBorder ? 0.30 : 0.10); // always-on owned tint
-                        return (
-                          <mesh rotation={[0, Math.PI / 6, 0]} position={[0, tileTop + 0.05, 0]} renderOrder={13}>
-                            <cylinderGeometry args={[hexSize * (onBorder ? 1 : 0.9), hexSize * (onBorder ? 1 : 0.9), 0.02, 6]} />
-                            <meshBasicMaterial color={col} transparent opacity={op} depthWrite={false} />
-                          </mesh>
-                        );
-                      })()}
-                    </group>
-                  );
-                })}
+                {tileField}
                 {/* Actor markers */}
                 {/* Hero avatar replaced with billboard; pet retains simple sphere marker */}
                 {/* Hero avatar — inlined JSX (not a sub-component) so React never
