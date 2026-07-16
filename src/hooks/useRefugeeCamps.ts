@@ -64,8 +64,10 @@ function hash(q: number, r: number): number {
 }
 export function factionKey(f?: string): FactionKey {
   const k = (f || '').toUpperCase();
-  if (k.includes('SOVEREIGN') || k === 'ASF') return 'ASF';
-  if (k.includes('COALITION') || k === 'WC') return 'WC';
+  // Accept the bare key ("WC"), a label starting with it ("WC – World Confederates"),
+  // or a distinctive word — the WC label has used both "Coalition" and "Confederates".
+  if (k.includes('SOVEREIGN') || k === 'ASF' || k.startsWith('ASF ') || k.startsWith('ASF –') || k.startsWith('ASF-')) return 'ASF';
+  if (k.includes('COALITION') || k.includes('CONFEDER') || k === 'WC' || k.startsWith('WC ') || k.startsWith('WC –') || k.startsWith('WC-')) return 'WC';
   return 'PAA';
 }
 

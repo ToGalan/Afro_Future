@@ -18,7 +18,7 @@ import { watchOpenRooms } from '../services/duelSignaling';
 import { watchOpenMatches } from '../services/matchSignaling';
 import { useMobaMatch, type MobaHero } from '../hooks/useMobaMatch';
 import {
-  MOBA_SCORING, VICTORY_TRACKS, VICTORY_TRACK_DEFS, trackLeader, emptyVictory, addVictory, evaluateVictory, FACTIONS,
+  MOBA_SCORING, VICTORY_TRACKS, VICTORY_TRACK_DEFS, VICTORY_POINTS, trackLeader, emptyVictory, addVictory, evaluateVictory, FACTIONS,
   type Faction, type FactionVictory, type VictoryTrack,
 } from '../services/mobaMatch';
 import { PLAYSTYLES, PLAYSTYLE_ORDER, emptyReputation, dominantPlaystyle, type Playstyle, type PlaystyleReputation } from '../services/playstyles';
@@ -2610,8 +2610,10 @@ export default function SoloMissionMap3D({
       const approach = captureApproachRef.current;
       const hw = axialToWorld({ q: heroPosRef.current.q, r: heroPosRef.current.r }, hexSize);
       { const lvl = playerLevelRef.current; awardFactionPoints(scaledMissionFp(regionCleared ? 6 : 2, lvl)); awardHeroXp(scaledMissionXp(regionCleared ? 40 : 15, lvl)); }
-      // Taking/holding ground advances the Control victory track.
-      bumpSoloVictoryRef.current?.(playerFactionKey, 'control', regionCleared ? 20 : 8);
+      // Taking/holding ground advances the Control victory track (1 pt per outpost; a
+      // completed region pays the region bonus on top — ~100 outposts fill the track).
+      bumpSoloVictoryRef.current?.(playerFactionKey, 'control',
+        VICTORY_POINTS.outpostCapture + (regionCleared ? VICTORY_POINTS.regionControl : 0));
       // Approach-specific outcome (GDD: "stealth operations, combat engagements, or tactical diplomacy").
       if (approach === 'assault') {
         enemyProvokeRef.current?.(heroPosRef.current.q, heroPosRef.current.r, undefined, 7); // loud → defenders respond
@@ -2737,7 +2739,7 @@ export default function SoloMissionMap3D({
       const o = outposts.get(key);
       if (o) { const w = axialToWorld({ q: o.q, r: o.r }, hexSize); spawnCombatText(w.x, w.z, '⚑ raided', '#ff5555'); }
       // A successful raid advances that faction's Domination track (aggressive expansion).
-      bumpSoloVictoryRef.current?.(fk as Faction, 'domination', 8);
+      bumpSoloVictoryRef.current?.(fk as Faction, 'domination', VICTORY_POINTS.raid);
       setRaidBanner({ faction: fk, at: Date.now() });
       if (raidBannerTimerRef.current) clearTimeout(raidBannerTimerRef.current);
       raidBannerTimerRef.current = setTimeout(() => setRaidBanner(null), 4000);
@@ -2973,7 +2975,8 @@ export default function SoloMissionMap3D({
   // ── 1v1v1 MOBA (host-authoritative, Firestore-signaled WebRTC) ───────────────
   const [mobaLobbyOpen, setMobaLobbyOpen] = useState(false);
   const [mobaJoinCode, setMobaJoinCode] = useState('');
-  const [mobaFactionPick, setMobaFactionPick] = useState<Faction>('PAA');
+  // Default the lobby pick to the faction the player chose at onboarding (still changeable).
+  const [mobaFactionPick, setMobaFactionPick] = useState<Faction>(playerFactionKey as Faction);
   const [mobaDeathReported, setMobaDeathReported] = useState(false);
   const [mobaCodeCopied, setMobaCodeCopied] = useState(false);
   const [mobaWaiting, setMobaWaiting] = useState(0); // players in the MOBA quick-match queue
@@ -3061,8 +3064,15 @@ export default function SoloMissionMap3D({
       return next;
     });
     // Playstyle actions also advance your victory track (help/negotiate→Prosperity,
-    // scavenge/loot→Exploitation, dominate→Domination).
-    const pv = ({ help: ['prosperity', 16], negotiate: ['prosperity', 14], scavenge: ['exploitation', 8], loot: ['exploitation', 12], dominate: ['domination', 12] } as Record<string, [VictoryTrack, number]>)[p];
+    // scavenge/loot→Exploitation, dominate→Domination). One camp/outpost/defeat ≈ 1 pt
+    // against the 100-point threshold; a resource scavenge is a half-point minor act.
+    const pv = ({
+      help: ['prosperity', VICTORY_POINTS.campResolve],
+      negotiate: ['prosperity', VICTORY_POINTS.campResolve],
+      scavenge: ['exploitation', VICTORY_POINTS.resource],
+      loot: ['exploitation', VICTORY_POINTS.campResolve],
+      dominate: ['domination', VICTORY_POINTS.kill],
+    } as Record<string, [VictoryTrack, number]>)[p];
     if (pv) bumpSoloVictoryRef.current(playerFactionKey, pv[0], pv[1]);
   }, [saveProgress, playerFactionKey]);
   const recordPlaystyleRef = React.useRef(recordPlaystyle); recordPlaystyleRef.current = recordPlaystyle;
@@ -3610,7 +3620,7 @@ export default function SoloMissionMap3D({
     awardHeroXp(scaledMissionXp(60, lvl));
     awardShardsRef.current(20);
     // Discovery/scouting feeds the Exploitation track (the "work the land" path).
-    bumpSoloVictoryRef.current?.(playerFactionKey, 'exploitation', 20);
+    bumpSoloVictoryRef.current?.(playerFactionKey, 'exploitation', VICTORY_POINTS.exploration);
     saveProgress({ solo: { explorationRewarded: true } } as any);
     const hw = axialToWorld(heroPosRef.current, hexSize);
     spawnCombatText(hw.x, hw.z, '🧭 Exploration complete!', '#6ee7b7');
@@ -4932,7 +4942,7 @@ export default function SoloMissionMap3D({
                         <span className="text-sm font-extrabold tabular-nums text-white">{moba.scores[f] ?? 0}</span>
                       </div>
                     ))}
-                    <span className="text-[10px] opacity-50 ml-1">/ 300</span>
+                    <span className="text-[10px] opacity-50 ml-1">score</span>
                   </div>
                 </div>
               )}
@@ -5068,7 +5078,7 @@ export default function SoloMissionMap3D({
                   {mobaActive && (
                     <div className="space-y-2">
                       <div className="text-center text-emerald-400 font-bold text-[13px]">Match live — {FACTION_LABEL[moba.myFaction ?? 'PAA']}</div>
-                      <div className="text-[11px] opacity-70 text-center">Get adjacent to an outpost & press <span className="px-1 rounded bg-white/10 font-bold">G</span> to capture. Reach 300 to win.</div>
+                      <div className="text-[11px] opacity-70 text-center">Get adjacent to an outpost & press <span className="px-1 rounded bg-white/10 font-bold">G</span> to capture. Fill a victory track to win.</div>
                       <button onClick={() => moba.leave()} className="w-full py-1.5 rounded-lg bg-white/10 hover:bg-white/20 text-xs">Leave match</button>
                     </div>
                   )}

@@ -5,7 +5,8 @@
  *   • 1v1v1  — three players, one per faction (PAA / ASF / WC), free-for-all.
  *   • 2v2v2  — three teams of two, one faction per team.
  *   • Objectives: resource gathering, capturing/holding outposts, controlling regions.
- *   • Win by accumulating enough score from those objectives (+ eliminations).
+ *   • Win by filling a VICTORY TRACK (~100 resolved outposts/camps — defeated, captured,
+ *     or negotiated; see VICTORY_POINTS) or by being the last faction standing.
  *
  * This module is deliberately network-agnostic and side-effect free so the SAME rules
  * run on the authoritative server (server.js match loop) and on the client (prediction/UI).
@@ -71,8 +72,6 @@ export const MOBA_SCORING = {
   resourceScore: 2,
   /** Seconds between scoring ticks. */
   tickSeconds: 5,
-  /** First faction to reach this total score wins the match. */
-  targetScore: 300,
 };
 
 /** eXploit-pillar objectives that grant faction score outside of capture/kills. */
@@ -111,6 +110,27 @@ export const VICTORY_TRACK_DEFS: Record<VictoryTrack, VictoryTrackDef> = {
 };
 /** A faction earns this multiplier on its natural track (its lean, not a hard lane). */
 export const NATURAL_TRACK_BONUS = 1.5;
+
+/**
+ * Victory-track points per action — the pacing knob for how LONG a campaign/match runs.
+ * Calibration: one resolved outpost or camp (defeated/captured/negotiated) ≈ 1 point,
+ * so with threshold 100 a faction must resolve on the order of 100 objectives to win.
+ * Minor acts (a resource pickup, a passive hold tick) are worth fractions; big one-time
+ * feats (terraform, full exploration) are worth a few.
+ */
+export const VICTORY_POINTS = {
+  outpostCapture: 1,       // capturing an outpost by ANY approach (assault/infiltrate/negotiate) → Control
+  regionControl: 2,        // extra for completing a whole region → Control
+  enemyOutpostTaken: 1,    // wresting an outpost from a rival (on top of capture) → Domination
+  elimination: 2,          // eliminating a rival HERO (MOBA) → Domination
+  kill: 1,                 // a solo dominant act (enemy defeated, assault capture) → Domination
+  campResolve: 1,          // resolving a refugee camp (help/negotiate/loot) → Prosperity or Exploitation
+  terraform: 2,            // completing a region terraform → Prosperity
+  resource: 0.5,           // gathering a resource node → Exploitation
+  exploration: 5,          // one-time full-map exploration feat → Exploitation
+  raid: 1,                 // raiding/flipping a rival outpost → Domination
+  holdTickPerOutpost: 0.05, // per owned outpost per scoring tick (passive hold income) → Control
+};
 
 export type FactionVictory = Record<Faction, Record<VictoryTrack, number>>;
 
@@ -265,13 +285,13 @@ export function applyCapture(state: MatchState, key: string, faction: Faction): 
   o.owner = faction;
   let delta = MOBA_SCORING.captureBonus;
   // Every capture extends your Control; wresting one from a rival also feeds Domination.
-  addVictory(state.victory, faction, 'control', 8);
-  if (prevOwner !== 'neutral') addVictory(state.victory, faction, 'domination', 6);
+  addVictory(state.victory, faction, 'control', VICTORY_POINTS.outpostCapture);
+  if (prevOwner !== 'neutral') addVictory(state.victory, faction, 'domination', VICTORY_POINTS.enemyOutpostTaken);
   // Region newly completed?
   const regionOutposts = Object.values(state.outposts).filter(x => x.region === o.region);
   if (regionOutposts.length > 0 && regionOutposts.every(x => x.owner === faction)) {
     delta += MOBA_SCORING.regionControlBonus;
-    addVictory(state.victory, faction, 'control', 20);
+    addVictory(state.victory, faction, 'control', VICTORY_POINTS.regionControl);
   }
   state.score[faction] += delta;
   return delta;
@@ -285,14 +305,14 @@ export function applyScoreTick(state: MatchState): void {
     if (held <= 0) continue;
     state.score[f] += held * MOBA_SCORING.outpostTickScore;
     // Holding ground steadily builds the Control track (the eXpand/hold path).
-    addVictory(state.victory, f, 'control', held * MOBA_SCORING.outpostTickScore);
+    addVictory(state.victory, f, 'control', held * VICTORY_POINTS.holdTickPerOutpost);
   }
 }
 
 /** Record an elimination: award score to the killer's faction. */
 export function applyElimination(state: MatchState, killerFaction: Faction): void {
   state.score[killerFaction] += MOBA_SCORING.eliminationScore;
-  addVictory(state.victory, killerFaction, 'domination', 12);
+  addVictory(state.victory, killerFaction, 'domination', VICTORY_POINTS.elimination);
 }
 
 /** Award an eXploit-pillar objective to a faction. Returns the score delta.
@@ -301,7 +321,11 @@ export function applyObjective(state: MatchState, faction: Faction, kind: MobaOb
   const delta = OBJECTIVE_SCORE[kind] ?? 0;
   state.score[faction] += delta;
   const track: VictoryTrack = (kind === 'terraform' || kind === 'refugee') ? 'prosperity' : 'exploitation';
-  addVictory(state.victory, faction, track, kind === 'terraform' ? 22 : kind === 'refugee' ? 16 : 10);
+  addVictory(state.victory, faction, track,
+    kind === 'terraform' ? VICTORY_POINTS.terraform
+    : kind === 'refugee' ? VICTORY_POINTS.campResolve
+    : kind === 'loot' ? VICTORY_POINTS.campResolve
+    : VICTORY_POINTS.resource);
   return delta;
 }
 
@@ -394,19 +418,13 @@ export function chooseAIObjective(
 }
 
 /**
- * Evaluate the match winner, or null if none yet.
- * Win conditions (GDD): reach the target score, OR be the only faction with any
- * living players (last faction standing).
+ * Evaluate a non-track match winner, or null if none yet.
+ * The race-to-a-score win was RETIRED (it ended matches in minutes): the victory tracks
+ * (~100 resolved outposts/camps, see VICTORY_POINTS) decide the match everywhere — solo
+ * and multiplayer — and `score` is now just the scoreboard metric. The only remaining
+ * instant win here is last faction standing.
  */
 export function evaluateWinner(state: MatchState): Faction | null {
-  // Target score reached → highest score wins (ties broken by outpost control).
-  const reached = FACTIONS.filter(f => state.score[f] >= MOBA_SCORING.targetScore);
-  if (reached.length > 0) {
-    const control = computeControl(state.outposts);
-    return reached.sort((a, b) =>
-      (state.score[b] - state.score[a]) || (control[b].outposts - control[a].outposts),
-    )[0];
-  }
   // Last faction standing (only meaningful once the match is active with players).
   if (state.players.length > 0) {
     const factionsAlive = new Set(state.players.filter(p => p.alive).map(p => p.faction));

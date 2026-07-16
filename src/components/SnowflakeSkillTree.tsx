@@ -166,14 +166,14 @@ export default function SnowflakeSkillTree({ initialLevel = 1 }: SnowflakeSkillT
   }, [hoverId]);
 
   return (
-    <div className="w-full h-full bg-[#0f1218] text-gray-100 p-4 overflow-hidden relative">
-      <div className="flex items-center justify-between mb-3">
+    <div className="w-full h-full bg-[#0f1218] text-gray-100 p-4 overflow-hidden relative flex flex-col">
+      <div className="flex items-center justify-between mb-3 shrink-0">
         <div className="text-xl font-semibold">Skills &amp; Traits Map</div>
         <div className="text-sm opacity-80">Spent: {spent} • Points Left: {ptsLeft}</div>
       </div>
-      <div className="grid grid-cols-12 gap-4">
-        <div className="col-span-9">
-          <div className="relative mx-auto select-none w-full aspect-square max-w-[min(100%,760px)]" onWheel={onWheel}>
+      <div className="grid grid-cols-12 gap-4 flex-1 min-h-0">
+        <div className="col-span-9 h-full min-h-0">
+          <div className="relative mx-auto select-none w-full h-full" onWheel={onWheel}>
             <svg width="100%" height="100%" viewBox={`0 0 ${size} ${size}`} preserveAspectRatio="xMidYMid meet" onPointerDown={onPointerDown} onPointerMove={onPointerMove} onPointerUp={onPointerUp} style={{ cursor: dragging ? 'grabbing' : scale > 1.02 ? 'grab' : 'default' }}>
               <defs>
                 <filter id="glow" x="-50%" y="-50%" width="200%" height="200%">
@@ -260,7 +260,7 @@ export default function SnowflakeSkillTree({ initialLevel = 1 }: SnowflakeSkillT
             )}
           </div>
         </div>
-        <div className="col-span-3">
+        <div className="col-span-3 h-full min-h-0 overflow-y-auto">
           <div className="rounded-2xl p-4 bg-white/5 border border-white/10">
             <div className="text-lg font-semibold">Traits</div>
             <div className="mt-2 text-sm">Primary Path: <span className="opacity-80">{traitsTopBranch ?? '—'}</span></div>

@@ -242,6 +242,21 @@ export default function App() {
       const _b64a = (token.split('.')[1] || 'e30').replace(/-/g, '+').replace(/_/g, '/');
       const payload = JSON.parse(atob(_b64a.padEnd(Math.ceil(_b64a.length / 4) * 4, '=')));
   const prof = { sub: payload.sub, name: payload.name || payload.given_name || payload.family_name, email: payload.email, picture: payload.picture };
+      // The saved hero belongs to ONE Google account. If a different account signs in on
+      // this browser, drop the cached loadout + skills instead of inheriting them — the
+      // new account either restores its own hero from its profile or goes to onboarding.
+      try {
+        const owner = localStorage.getItem('afrofuture.loadoutOwner');
+        if (owner && owner !== payload.sub) {
+          localStorage.removeItem('afrofuture.activeLoadout');
+          localStorage.removeItem('afrofuture.loadoutOwner');
+          setActiveLoadout(null);
+          (useSkillStore.getState() as any).reset?.();
+        } else if (!owner && localStorage.getItem('afrofuture.activeLoadout')) {
+          // Legacy save from before owner-tagging — claim it for this account.
+          localStorage.setItem('afrofuture.loadoutOwner', payload.sub);
+        }
+      } catch {}
       setProfile(prof);
       try { localStorage.setItem('afrofuture.profile', JSON.stringify(prof)); } catch {}
       // Mirror base profile to Chrome Sync (best-effort)
@@ -263,7 +278,7 @@ export default function App() {
           chromeSyncSet({ 'afrofuture.loadout': normalized }).catch(()=>{});
         }
         try { localStorage.setItem('afrofuture.profile', JSON.stringify(mergedProf)); } catch {}
-        if(serverProf.loadout){ try { localStorage.setItem('afrofuture.activeLoadout', JSON.stringify(serverProf.loadout)); } catch {} }
+        if(serverProf.loadout){ try { localStorage.setItem('afrofuture.activeLoadout', JSON.stringify(serverProf.loadout)); localStorage.setItem('afrofuture.loadoutOwner', payload.sub); } catch {} }
         // Hydrate skills from server if present
         if (serverProf.skills && typeof serverProf.skills === 'object') {
           try {
@@ -311,6 +326,10 @@ export default function App() {
   }
   function handleSignOut(){
     localStorage.removeItem('afrofuture.idToken');
+    // Drop the cached identity + connection state; the hero loadout stays (owner-tagged),
+    // so the SAME account re-signing in keeps it while a different one gets a clean slate.
+    localStorage.removeItem('afrofuture.profile');
+    localStorage.removeItem('afrofuture.rtcState');
     setIdToken(null);
     setPhase('auth');
     setProfile(null);
@@ -485,6 +504,9 @@ export default function App() {
         try { rtc.dc.send(JSON.stringify({ type: 'loadoutUpdate', loadout: newLoadout })); } catch(err){ console.warn('[rtc] broadcast failed', err); }
       }
     }
+    // Tag the saved hero with the signed-in account so another account on this browser
+    // can't inherit it (checked in handleSignedIn).
+    try { if (profile?.sub) localStorage.setItem('afrofuture.loadoutOwner', profile.sub); } catch {}
     setPhase('main');
   }
 

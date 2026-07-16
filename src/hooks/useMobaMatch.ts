@@ -225,7 +225,8 @@ export function useMobaMatch(opts: MobaOpts = {}) {
             lastScoreTickRef.current = now;
             applyScoreTick(ms);
           }
-          // Victory tracks are the primary win condition; fall back to score/last-standing.
+          // Victory tracks (~100 resolved objectives) are the win condition; the only
+          // fallback is last faction standing — the score race was retired.
           const vr = evaluateVictory(ms.victory);
           const w = vr ? vr.faction : evaluateWinner(ms);
           if (w && !ms.winner) { ms.winner = w; ms.winningTrack = vr?.track ?? null; ms.phase = 'ended'; host.updateRoom({ phase: 'ended', winner: w }); }

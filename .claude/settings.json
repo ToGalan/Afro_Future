@@ -50,7 +50,24 @@
       "WebFetch(domain:edgegap.com)",
       "Bash(node -e ' *)",
       "Bash(npx firebase-tools *)",
-      "PowerShell(Start-Process cmd -ArgumentList '/k', 'npx firebase-tools login --reauth' -WorkingDirectory 'D:\\\\Afro Future -Dev Backup\\\\New Dev 2025\\\\v3')"
+      "PowerShell(Start-Process cmd -ArgumentList '/k', 'npx firebase-tools login --reauth' -WorkingDirectory 'D:\\\\Afro Future -Dev Backup\\\\New Dev 2025\\\\v3')",
+      "PowerShell(npx tsc --noEmit)",
+      "PowerShell(npx vite build)",
+      "PowerShell(npx firebase login:list)",
+      "PowerShell(npx firebase projects:list)",
+      "PowerShell(npx firebase logout)",
+      "PowerShell(npx firebase login)",
+      "PowerShell(Start-Process powershell -ArgumentList '-NoExit','-Command','Write-Host \"Firebase CLI login - sign in with togalan3637@gmail.com in the browser window\" -ForegroundColor Green; npx firebase login')",
+      "PowerShell(npx firebase apps:list --project afro-future-7ed63)",
+      "PowerShell(npx firebase apps:list --project afrofuture)",
+      "Bash(git -C \"d:/Afro Future -Dev Backup/New Dev 2025/v3\" check-ignore -v .env.local .env.production.local)",
+      "Bash(git -C \"d:/Afro Future -Dev Backup/New Dev 2025/v3\" status --porcelain)",
+      "PowerShell(npx firebase apps:create WEB \"Afro-Future Rising\" --project afrofuture)",
+      "PowerShell(npx firebase apps:sdkconfig WEB 1:312560749704:web:8a24e41ebdf8cfd224e33d --project afrofuture)",
+      "PowerShell(npx firebase firestore:databases:create \"\\(default\\)\" --location=eur3 --project afrofuture)",
+      "PowerShell(try { \\(Get-Command gcloud -ErrorAction Stop\\).Source } catch { \"gcloud not installed\" })",
+      "PowerShell(npx firebase deploy --only firestore:rules --project afrofuture)",
+      "PowerShell(npx firebase deploy --only database --project afrofuture)"
     ]
   }
 }
