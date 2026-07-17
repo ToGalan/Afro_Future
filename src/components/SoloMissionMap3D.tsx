@@ -6,7 +6,7 @@ import { useCollectibles, RESOURCE_DEFS } from '../hooks/useCollectibles';
 import type { Mesh } from 'three';
 import * as THREE from 'three';
 import { Canvas, useThree, useFrame } from '@react-three/fiber';
-import { OrbitControls, Text, Sky, ContactShadows } from '@react-three/drei';
+import { OrbitControls, Text, Sky, ContactShadows, Stats } from '@react-three/drei';
 import { EffectComposer, Bloom, Vignette } from '@react-three/postprocessing';
 import { arcFor, beatReady, storyNpc, storyText, type StoryBeat, type StoryChoice, type StoryWorldState } from '../services/storyline';
 import { GameAvatar, type AvatarColors } from './GameAvatarMesh';
@@ -4588,6 +4588,7 @@ export default function SoloMissionMap3D({
     {/* Perf: dpr capped at 1.5 (high-DPI screens otherwise render 2x+ the pixels),
         plain PCF shadows (soft PCF costs extra taps per fragment), no stencil. */}
     <Canvas shadows="percentage" dpr={[1, 1.5]} camera={{ position: [0, 14.47, 22], fov: 45 }} gl={{ alpha: false, powerPreference: 'high-performance', stencil: false }} style={{ background: '#111827' }} onCreated={({ gl, scene }) => { gl.setClearColor('#111827', 1); scene.background = new THREE.Color('#111827'); gl.toneMappingExposure = 1.12; }}>
+  {import.meta.env.DEV && <Stats />}
   <MapCameraController
     bounds={mapBounds}
     gameMode={true}

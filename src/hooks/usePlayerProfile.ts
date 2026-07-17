@@ -22,16 +22,36 @@ export type ProgressPatch =
   };
 
 function mergeProgress(base: PlayerProgress, partial: ProgressPatch): PlayerProgress {
-  return {
-    ...base,
-    ...partial,
-    hero: partial.hero ? { ...(base.hero as any), ...partial.hero } : base.hero,
-    pet: partial.pet ? { ...(base.pet as any), ...partial.pet } : base.pet,
-    skillTokens: partial.skillTokens ? { ...(base.skillTokens as any), ...partial.skillTokens } : base.skillTokens,
-    avatar: partial.avatar ? { ...(base.avatar as any), ...partial.avatar, parts: { ...(base.avatar?.parts||{}), ...((partial.avatar as any)?.parts||{}) }, colors: { ...(base.avatar?.colors||{}), ...((partial.avatar as any)?.colors||{}) } } : base.avatar,
-    abilityLoadout: partial.abilityLoadout ? { ...(base.abilityLoadout as any), ...partial.abilityLoadout } : base.abilityLoadout,
-    solo: partial.solo ? { ...(base.solo as any), ...partial.solo } : base.solo,
-  } as PlayerProgress;
+  const merged: any = { ...base, ...partial };
+  // Nested objects merge field-by-field rather than being replaced wholesale — but only
+  // when there's an actual value on either side. Firestore's setDoc() rejects `undefined`
+  // outright, so an optional field (abilityLoadout/solo aren't part of the default new-
+  // profile shape) must never end up as an explicit `key: undefined` in the merged object.
+  if (partial.hero || base.hero) merged.hero = partial.hero ? { ...(base.hero as any), ...partial.hero } : base.hero;
+  if (partial.pet || base.pet) merged.pet = partial.pet ? { ...(base.pet as any), ...partial.pet } : base.pet;
+  if (partial.skillTokens || base.skillTokens) merged.skillTokens = partial.skillTokens ? { ...(base.skillTokens as any), ...partial.skillTokens } : base.skillTokens;
+  if (partial.avatar || base.avatar) merged.avatar = partial.avatar ? { ...(base.avatar as any), ...partial.avatar, parts: { ...(base.avatar?.parts||{}), ...((partial.avatar as any)?.parts||{}) }, colors: { ...(base.avatar?.colors||{}), ...((partial.avatar as any)?.colors||{}) } } : base.avatar;
+  if (partial.abilityLoadout || base.abilityLoadout) merged.abilityLoadout = partial.abilityLoadout ? { ...(base.abilityLoadout as any), ...partial.abilityLoadout } : base.abilityLoadout;
+  if (partial.solo || base.solo) merged.solo = partial.solo ? { ...(base.solo as any), ...partial.solo } : base.solo;
+  return merged as PlayerProgress;
+}
+
+// Recursively strips keys whose value is `undefined` (Firestore's setDoc() rejects them
+// outright, crashing the write — and in this app's case, the whole 3D scene since the
+// save is awaited during boot). Arrays are walked but not compacted (nulls are fine).
+function stripUndefinedDeep<T>(value: T): T {
+  if (Array.isArray(value)) {
+    return value.map(stripUndefinedDeep) as unknown as T;
+  }
+  if (value && typeof value === 'object' && !(value as any).toDate /* skip Firestore sentinels */) {
+    const out: any = {};
+    for (const [k, v] of Object.entries(value as any)) {
+      if (v === undefined) continue;
+      out[k] = stripUndefinedDeep(v);
+    }
+    return out;
+  }
+  return value;
 }
 
 export function usePlayerProfile(opts: UsePlayerProfileOptions = {}) {
@@ -181,7 +201,7 @@ export function usePlayerProfile(opts: UsePlayerProfileOptions = {}) {
     const merged = progressRef.current;
     if (!uid || !merged) return;
     saveThrottle.current = Date.now();
-    setDoc(doc(db, 'players', uid), { progress: merged, updatedAt: serverTimestamp() }, { merge: true })
+    setDoc(doc(db, 'players', uid), { progress: stripUndefinedDeep(merged), updatedAt: serverTimestamp() }, { merge: true })
       .catch(() => {/* swallow */});
   }, []);
 
