@@ -195,18 +195,20 @@ export function usePlayerProfile(opts: UsePlayerProfileOptions = {}) {
     }
   }, [profile]);
 
-  // Persist the latest accumulated progress to Firestore (bypasses throttle).
-  const writeProgress = useCallback(() => {
+  // Persist the latest accumulated progress to Firestore (bypasses throttle). Returns
+  // a promise that resolves once the write actually lands, so callers that need a
+  // guarantee (e.g. an explicit "Save Game" action) can await it.
+  const writeProgress = useCallback((): Promise<void> => {
     const uid = uidRef.current;
     const merged = progressRef.current;
-    if (!uid || !merged) return;
+    if (!uid || !merged) return Promise.resolve();
     saveThrottle.current = Date.now();
-    setDoc(doc(db, 'players', uid), { progress: stripUndefinedDeep(merged), updatedAt: serverTimestamp() }, { merge: true })
+    return setDoc(doc(db, 'players', uid), { progress: stripUndefinedDeep(merged), updatedAt: serverTimestamp() }, { merge: true })
       .catch(() => {/* swallow */});
   }, []);
 
-  const saveProgress = useCallback((partial: ProgressPatch) => {
-    if (!profile) return;
+  const saveProgress = useCallback((partial: ProgressPatch, opts?: { immediate?: boolean }): Promise<void> => {
+    if (!profile) return Promise.resolve();
     const now = Date.now();
     // Merge onto the freshest progress (progressRef is updated synchronously so
     // rapid successive saves in the same tick accumulate instead of clobbering).
@@ -217,18 +219,31 @@ export function usePlayerProfile(opts: UsePlayerProfileOptions = {}) {
     // Always update local state immediately so the UI (and profileRef consumers
     // such as useCollectibles) reflect the new XP without waiting on the throttle.
     setProfile(prev => (prev ? { ...prev, progress: merged } : prev));
+    // An explicit immediate save (the manual "Save Game" button, a campaign reset, a
+    // tab-hide flush) always bypasses the throttle and returns the real write promise —
+    // without this, a save right before exiting to the Dashboard could still be sitting
+    // in the trailing-flush timer when the next screen re-fetches the profile, making a
+    // real save look like it "didn't take" (a fresh campaign on return).
+    if (opts?.immediate) {
+      if (pendingTimer.current) { clearTimeout(pendingTimer.current); pendingTimer.current = null; }
+      return writeProgress();
+    }
     // Rate-limit the network write, but never DROP it: schedule a trailing flush
     // so the last value within a throttle window is still persisted.
     const elapsed = now - saveThrottle.current;
     if (elapsed >= 1500) {
       if (pendingTimer.current) { clearTimeout(pendingTimer.current); pendingTimer.current = null; }
-      writeProgress();
-    } else if (!pendingTimer.current) {
-      pendingTimer.current = setTimeout(() => {
-        pendingTimer.current = null;
-        writeProgress();
-      }, 1500 - elapsed);
+      return writeProgress();
     }
+    if (!pendingTimer.current) {
+      return new Promise<void>((resolve) => {
+        pendingTimer.current = setTimeout(() => {
+          pendingTimer.current = null;
+          writeProgress().then(resolve);
+        }, 1500 - elapsed);
+      });
+    }
+    return Promise.resolve();
   }, [profile, writeProgress]);
 
   // Keep progressRef aligned with externally-driven profile changes, and flush

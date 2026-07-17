@@ -3458,6 +3458,9 @@ export default function SoloMissionMap3D({
     if (campaignResettingRef.current) return;
     campaignResettingRef.current = true; // blocks the debounced auto-save from re-writing old state
     setCampaignResetting(true);
+    // { immediate: true } bypasses the throttle and is awaited, so the reload below only
+    // happens once the wipe has actually landed on Firestore (previously this guessed a
+    // fixed 1800ms delay, which could reload before the write actually completed).
     saveProgress({
       explored: [],
       heroPosition: { q: 0, r: 0 },
@@ -3465,9 +3468,7 @@ export default function SoloMissionMap3D({
         outpostsOwned: [], rivalOutposts: {}, storyBeat: 0, terraformProgress: 0, refugeeCampsDone: [],
         victory: emptyVictory(), victoryResult: null, victorySeen: false, explorationRewarded: false,
       },
-    } as any);
-    // saveProgress rate-limits network writes to a 1.5s window — reload after the flush.
-    window.setTimeout(() => window.location.reload(), 1800);
+    } as any, { immediate: true }).finally(() => window.location.reload());
   }, [saveProgress]);
   // Ref always holding the latest "build the solo snapshot" closure so the debounced
   // autosave, the manual Save Game button, and the tab-hide/close flush all persist
@@ -3507,7 +3508,7 @@ export default function SoloMissionMap3D({
     if (autoMultiplayer || mobaMode) return;
     const flush = () => {
       if (!soloHydratedRef.current || campaignResettingRef.current) return;
-      saveProgress({ solo: buildSoloSnapshotRef.current() } as any);
+      saveProgress({ solo: buildSoloSnapshotRef.current() } as any, { immediate: true });
     };
     const onVisibility = () => { if (document.visibilityState === 'hidden') flush(); };
     document.addEventListener('visibilitychange', onVisibility);
@@ -5686,17 +5687,21 @@ export default function SoloMissionMap3D({
                 petTokens={0}
                 minimapData={minimapData}
                 onMenu={onExit}
-                onSave={autoMultiplayer ? undefined : () => {
+                onSave={autoMultiplayer ? undefined : async () => {
                   // Explicit "Save Game" (solo only): flush a full live snapshot so the
                   // player can quit and resume exactly where they left off. Reuses the
                   // same buildSoloSnapshotRef as the auto-save/tab-close flush, so the
-                  // fields never drift out of sync. Disabled in multiplayer duels where
-                  // the arena position isn't meaningful to save.
+                  // fields never drift out of sync. { immediate: true } bypasses the
+                  // network throttle and is awaited so "Save & Exit to Dashboard" can't
+                  // race the next screen's profile fetch (that race made a real save
+                  // look like it "didn't take" — landing back in a fresh campaign).
+                  // Disabled in multiplayer duels where the arena position isn't
+                  // meaningful to save.
                   try {
                     const s = useSkillStore.getState();
                     const lvl = Math.max(1, getLevelFromXp(Math.floor(heroXpLive)), s.level);
                     s.setLevel(lvl);
-                    saveProgress({
+                    await saveProgress({
                       heroPosition: { q: heroPosRef.current.q, r: heroPosRef.current.r },
                       hero: { xp: Math.floor(heroXpLive), level: lvl, unlockedSkillIds: s.unlocked, unlockOrder: s.unlockOrder },
                       heroInventory: localHeroInventory as any,
@@ -5705,7 +5710,7 @@ export default function SoloMissionMap3D({
                       // Solo world state — captured territory, terraforming, resolved camps,
                       // rival outposts, story progress, victory tracks, resource counter.
                       solo: buildSoloSnapshotRef.current(),
-                    } as any);
+                    } as any, { immediate: true });
                   } catch {}
                 }}
                 skillPoints={skillPoints}
