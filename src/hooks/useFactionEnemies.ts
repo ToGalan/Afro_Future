@@ -131,7 +131,7 @@ interface UseFactionEnemiesOptions {
    * with current ownership. Rival roamers/champions march on the player's captured outposts
    * and RAID them (flip back to neutral) at a doctrine-paced rate, so the player must defend.
    */
-  strategicTargets?: Array<{ key: string; q: number; r: number; owner: 'player' | 'neutral' }>;
+  strategicTargets?: Array<{ key: string; q: number; r: number; owner: string }>;
   /** Called when a rival unit raids a player-owned outpost (map flips it to neutral). */
   onRaidOutpost?: (key: string, faction: FactionKey) => void;
 }

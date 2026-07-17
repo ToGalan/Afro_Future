@@ -67,7 +67,9 @@
       "PowerShell(npx firebase firestore:databases:create \"\\(default\\)\" --location=eur3 --project afrofuture)",
       "PowerShell(try { \\(Get-Command gcloud -ErrorAction Stop\\).Source } catch { \"gcloud not installed\" })",
       "PowerShell(npx firebase deploy --only firestore:rules --project afrofuture)",
-      "PowerShell(npx firebase deploy --only database --project afrofuture)"
+      "PowerShell(npx firebase deploy --only database --project afrofuture)",
+      "Bash(git commit -m 'Creep kills no longer feed the Domination victory track *)",
+      "PowerShell(npm install @react-three/postprocessing@^2.16.0)"
     ]
   }
 }

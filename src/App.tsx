@@ -1008,7 +1008,7 @@ function MissionScreen({ onExit, onOpenSkillTree, activeLoadout, autoMultiplayer
   const factionNames: Record<string, string> = {
     PAA: 'PAA – Pan-African Alliance',
     ASF: 'ASF – African Sovereignty Front',
-    WC: 'WC – World Confederates'
+    WC: 'WC – World Coalition'
   };
   const factionName = factionNames[loadout.faction] || loadout.faction;
 
@@ -1354,7 +1354,7 @@ function FirstTimeFlow({ faction, archetype, pet, onFaction, onArchetype, onPet,
       lore: 'Forged from centuries of resistance, the ASF is relentless in its pursuit of autonomy. They remember colonization’s scars and vow never to repeat them, embodying the warrior spirit of sovereignty at all costs.'
     },
     WC: {
-      name: 'WC – World Confederates',
+      name: 'WC – World Coalition',
       mission: 'Survival through opportunism; gather resources wherever possible to ensure continuity of fragmented global powers.',
       objectives: 'Secure supplies, dominate weaker groups, and re-establish their authority over contested zones.',
       lore: 'The remnants of old world governments and corporations, the WC cling to power with desperation. Their past mistakes haunt them, but they push forward, scavenging tech and enforcing control to survive in the Afro-Future age.'
@@ -2052,7 +2052,11 @@ function RightPlayerPanel({ className = '', loadout, onCustomize, onPlay }: { cl
             >
               <div className="flex flex-col items-center justify-center w-full text-center">
                 <span className="font-medium text-sm tracking-wide mb-0.5">{m.label}</span>
-                <span className="text-[11px] opacity-60">{m.enabled ? (m.key === 'single' ? 'Solo campaign map' : 'Find or invite an opponent') : 'Unavailable'}</span>
+                <span className="text-[11px] opacity-60">{m.enabled
+                  ? (m.key === 'single' ? 'Story campaign — race two rival empires'
+                    : m.key === 'multi' ? '1v1 duel — first to 3 takedowns'
+                    : 'Fill a victory track before your rivals')
+                  : 'Unavailable'}</span>
               </div>
               {/* Removed 'Active' badge per request */}
             </button>
@@ -2062,7 +2066,7 @@ function RightPlayerPanel({ className = '', loadout, onCustomize, onPlay }: { cl
   {/* Play footer pinned to bottom */}
   <div className="p-4 mt-auto bg-[#0f1218]">
           <Button className="w-full h-12 text-lg" onClick={startMatch}>{mode === 'multi' ? 'Play — Find Duel' : mode === 'moba' ? 'Play — 1v1v1 MOBA' : 'Play'}</Button>
-          <div className="mt-1 text-[11px] text-gray-300 h-4">{queue ?? (mode === 'multi' ? 'Opens the duel lobby on entry' : mode === 'moba' ? 'Opens the MOBA lobby — pick a faction, host or join' : '')}</div>
+          <div className="mt-1 text-[11px] text-gray-300 h-4">{queue ?? (mode === 'multi' ? 'Opens the duel lobby on entry' : mode === 'moba' ? 'Opens the MOBA lobby — pick a faction, host or join' : 'Continue your campaign — defeat, capture or negotiate to victory')}</div>
         </div>
     </aside>
   );

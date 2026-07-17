@@ -7,6 +7,8 @@ import type { Mesh } from 'three';
 import * as THREE from 'three';
 import { Canvas, useThree, useFrame } from '@react-three/fiber';
 import { OrbitControls, Text, Sky, ContactShadows } from '@react-three/drei';
+import { EffectComposer, Bloom, Vignette } from '@react-three/postprocessing';
+import { arcFor, beatReady, storyNpc, storyText, type StoryBeat, type StoryChoice, type StoryWorldState } from '../services/storyline';
 import { GameAvatar, type AvatarColors } from './GameAvatarMesh';
 import { resolveHeroModel } from '../config/heroModels';
 import { useCreeps, type CreepCamp } from '../hooks/useCreeps';
@@ -739,7 +741,14 @@ function tileColor(t: Tile) {
 }
 
 // All tiles same low height for flat prototype
-function heightFor(_t: Tile) { return 0.4; }
+// Per-terrain tile heights — the map reads as relief instead of a flat carpet.
+// Mountains are impassable (tall is safe); water is player-impassable (sunken reads as
+// depth; the pet "swims" slightly lower when crossing). Walkable land stays in a gentle
+// 0.36–0.6 band and every actor anchors via tileTopAt(), so nothing floats or clips.
+const TILE_HEIGHT: Record<string, number> = {
+  water: 0.26, desert: 0.36, plains: 0.4, forest: 0.46, jungle: 0.5, hills: 0.6, mountain: 1.0,
+};
+function heightFor(t: Tile) { return TILE_HEIGHT[t.type] ?? 0.4; }
 
 /**
  * Remote duelist — renders the opponent's hero + pet, INTERPOLATING position/facing from
@@ -1931,6 +1940,97 @@ function AvatarCollisionDetector({
   return null; // No rendering, just collision updates
 }
 
+/**
+ * Explored-memory tile layer as ONE instanced mesh. These tiles are pure map "memory"
+ * (no interaction, dimmed, outside active play), yet they used to render as a full
+ * HexTile + FoW overlay each — thousands of shadow-casting draw calls that GREW as the
+ * player explored, which is exactly the "lags more the longer I play" curve. One
+ * instanced draw with the FoW dim baked into per-instance colour replaces all of it.
+ */
+const MEMORY_TILE_CAP = 6000;
+function MemoryTileField({ tiles: memTiles, hexSize }: { tiles: Tile[]; hexSize: number }) {
+  const ref = React.useRef<THREE.InstancedMesh>(null);
+  const geo = React.useMemo(() => new THREE.CylinderGeometry(hexSize, hexSize, 1, 6), [hexSize]);
+  const mat = React.useMemo(() => new THREE.MeshLambertMaterial(), []);
+  React.useEffect(() => {
+    const m = ref.current; if (!m) return;
+    const M = new THREE.Matrix4();
+    const P = new THREE.Vector3();
+    const Q = new THREE.Quaternion().setFromEuler(new THREE.Euler(0, Math.PI / 6, 0));
+    const S = new THREE.Vector3();
+    const c = new THREE.Color();
+    const n = Math.min(memTiles.length, MEMORY_TILE_CAP);
+    for (let i = 0; i < n; i++) {
+      const t = memTiles[i];
+      const { x, z } = axialToWorld(t, hexSize);
+      const h = heightFor(t);
+      P.set(x, h / 2, z); S.set(1, h, 1);
+      M.compose(P, Q, S);
+      m.setMatrixAt(i, M);
+      c.set(tileColor(t)).multiplyScalar(0.48); // baked-in FoW "memory" dim
+      m.setColorAt(i, c);
+    }
+    m.count = n;
+    m.instanceMatrix.needsUpdate = true;
+    if (m.instanceColor) m.instanceColor.needsUpdate = true;
+  }, [memTiles, hexSize]);
+  return <instancedMesh ref={ref} args={[undefined as any, undefined as any, MEMORY_TILE_CAP]} geometry={geo} material={mat} frustumCulled={false} />;
+}
+
+/**
+ * Far-LOD stand-in for a rival unit: past FAR_ENEMY_DIST tiles the full chibi character
+ * rig (dozens of meshes + a per-unit animation frame-loop) is wasted on a few pixels —
+ * a faction-coloured cone using the shared material cache reads the same at that range.
+ */
+const FAR_ENEMY_DIST = 12;
+const farConeGeoCache = new Map<string, THREE.ConeGeometry>();
+function sharedFarConeGeo(size: number): THREE.ConeGeometry {
+  const k = `${size}`;
+  let g = farConeGeoCache.get(k);
+  if (!g) { g = new THREE.ConeGeometry(size * 0.22, size * 0.7, 6); farConeGeoCache.set(k, g); }
+  return g;
+}
+
+/**
+ * Golden-hour sun that FOLLOWS the hero. The three.js default directional-light shadow
+ * camera is a ±5-unit box at the world origin — on this map that meant shadows only
+ * existed near spawn while every mesh still paid the castShadow cost. This wraps the
+ * light + its target so the (wide) shadow frustum tracks the hero, giving real sun
+ * shadows across the whole visible map at the same GPU price.
+ */
+function SunLight({ heroWorld, quality }: { heroWorld: { x: number; z: number }; quality: 'high' | 'low' }) {
+  const lightRef = React.useRef<THREE.DirectionalLight>(null);
+  const target = React.useMemo(() => new THREE.Object3D(), []);
+  React.useEffect(() => {
+    const l = lightRef.current; if (!l) return;
+    l.position.set(heroWorld.x + 26, 38, heroWorld.z + 14);
+    target.position.set(heroWorld.x, 0, heroWorld.z);
+    target.updateMatrixWorld();
+  }, [heroWorld.x, heroWorld.z, target]);
+  const mapSize = quality === 'high' ? 2048 : 1024;
+  return (
+    <>
+      <primitive object={target} />
+      <directionalLight
+        ref={lightRef}
+        color="#ffd9a0"
+        intensity={1.25}
+        castShadow
+        target={target}
+        shadow-mapSize-width={mapSize}
+        shadow-mapSize-height={mapSize}
+        shadow-camera-left={-30}
+        shadow-camera-right={30}
+        shadow-camera-top={30}
+        shadow-camera-bottom={-30}
+        shadow-camera-near={2}
+        shadow-camera-far={110}
+        shadow-bias={-0.00035}
+      />
+    </>
+  );
+}
+
 // ── Shared geometry & material caches ─────────────────────────────────────────
 // The map renders 1500+ hex tiles plus FoW/territory overlays; giving each mesh its
 // own geometry/material (the JSX-child form) multiplies GPU state and memory for
@@ -1944,9 +2044,17 @@ function sharedHexGeo(radius: number, h: number): THREE.CylinderGeometry {
   return g;
 }
 const tileMatCache = new Map<string, THREE.MeshStandardMaterial>();
-function sharedTileMat(color: string): THREE.MeshStandardMaterial {
-  let m = tileMatCache.get(color);
-  if (!m) { m = new THREE.MeshStandardMaterial({ color }); tileMatCache.set(color, m); }
+// `variant` (0|1|2) nudges lightness ±3% so the terrain isn't a uniform carpet, while
+// still sharing ONE material per (colour, variant) pair across the whole map.
+function sharedTileMat(color: string, variant = 1): THREE.MeshStandardMaterial {
+  const k = `${color}:${variant}`;
+  let m = tileMatCache.get(k);
+  if (!m) {
+    const c = new THREE.Color(color);
+    c.offsetHSL(0, 0, (variant - 1) * 0.03);
+    m = new THREE.MeshStandardMaterial({ color: c });
+    tileMatCache.set(k, m);
+  }
   return m;
 }
 const overlayMatCache = new Map<string, THREE.MeshBasicMaterial>();
@@ -1960,6 +2068,8 @@ function sharedOverlayMat(color: string, opacity: number): THREE.MeshBasicMateri
 function HexTile({ t, size, onClick, onHover }: { t: Tile; size: number; onClick: (t: Tile) => void; onHover?: (t: Tile | null) => void }) {
   const h = heightFor(t);
   const color = tileColor(t);
+  // Deterministic per-tile shade variant — breaks the flat-carpet look for free.
+  const variant = Math.abs(t.q * 31 + t.r * 57) % 3;
   return (
     <group position={[0, h / 2, 0]}>
       <mesh
@@ -1971,7 +2081,7 @@ function HexTile({ t, size, onClick, onHover }: { t: Tile; size: number; onClick
         // Rotate by 30deg so flat-top hex aligns by sides (cylinderGeometry default is pointy-up).
         rotation={[0, Math.PI / 6, 0]}
         geometry={sharedHexGeo(size, h)}
-        material={sharedTileMat(color)}
+        material={sharedTileMat(color, variant)}
       />
     </group>
   );
@@ -2625,15 +2735,16 @@ export default function SoloMissionMap3D({
 
   // ── Outposts / region control ────────────────────────────────────────────────
   const {
-    outposts, nearbyOutpost, captureNearby, raidOutpost, control: outpostControl,
-    territory: outpostTerritory, regions: outpostRegions, nearestOwnedOutpost, applyOwnership: applyOutpostOwnership,
+    outposts, nearbyOutpost, captureNearby, raidOutpost, claimForFaction, control: outpostControl,
+    territory: outpostTerritory, regions: outpostRegions, nearestOwnedOutpost,
+    applyOwnership: applyOutpostOwnership, applyRivalOwnership,
   } = useOutposts({
     tiles,
     heroQ: hero.pos.q,
     heroR: hero.pos.r,
     centerQ: centerAxial.q,
     centerR: centerAxial.r,
-    onCapture: (_region, regionCleared) => {
+    onCapture: (_region, regionCleared, prevOwner) => {
       const approach = captureApproachRef.current;
       const hw = axialToWorld({ q: heroPosRef.current.q, r: heroPosRef.current.r }, hexSize);
       { const lvl = playerLevelRef.current; awardFactionPoints(scaledMissionFp(regionCleared ? 6 : 2, lvl)); awardHeroXp(scaledMissionXp(regionCleared ? 40 : 15, lvl)); }
@@ -2641,6 +2752,12 @@ export default function SoloMissionMap3D({
       // completed region pays the region bonus on top — ~100 outposts fill the track).
       bumpSoloVictoryRef.current?.(playerFactionKey, 'control',
         VICTORY_POINTS.outpostCapture + (regionCleared ? VICTORY_POINTS.regionControl : 0));
+      // RECONQUEST — wresting ground back from a rival empire also feeds Domination.
+      const rivalHeld = prevOwner !== 'neutral' && prevOwner !== 'player';
+      if (rivalHeld) {
+        bumpSoloVictoryRef.current?.(playerFactionKey, 'domination', VICTORY_POINTS.enemyOutpostTaken);
+        spawnCombatText(hw.x, hw.z, `⚔️ Reconquered from ${prevOwner}!`, '#ffd24a');
+      }
       // Approach-specific outcome (GDD: "stealth operations, combat engagements, or tactical diplomacy").
       if (approach === 'assault') {
         enemyProvokeRef.current?.(heroPosRef.current.q, heroPosRef.current.r, undefined, 7); // loud → defenders respond
@@ -2730,15 +2847,36 @@ export default function SoloMissionMap3D({
   const playerFactionKey = factionKey(factionName);
   const paaPlayer = playerFactionKey === 'PAA';
 
+  // ── Story arc (solo narrative) — state lives up here so the enemy AI can pause while
+  // a beat's dialog is open; triggers/choice handling live below with the solo systems.
+  const storyArc = React.useMemo(() => arcFor(playerFactionKey), [playerFactionKey]);
+  const [storyBeatIdx, setStoryBeatIdx] = useState(0);   // beats COMPLETED (persisted)
+  const storyBeatIdxRef = React.useRef(0);
+  const [activeStoryBeat, setActiveStoryBeat] = useState<StoryBeat | null>(null);
+  const [storyOutcome, setStoryOutcome] = useState<string | null>(null);
+  const storyChoicesRef = React.useRef<Record<string, string>>({});
+
   // Outpost ownership snapshot the rival-faction AI reads to contest the player's territory
   // (solo only — MOBA/duel run their own authoritative outpost systems).
   const outpostStrategicTargets = React.useMemo(
     () => Array.from(outposts.values()).map(o => ({ key: o.key, q: o.q, r: o.r, owner: o.owner })),
     [outposts],
   );
-  const [raidBanner, setRaidBanner] = useState<{ faction: string; at: number } | null>(null);
+  const [raidBanner, setRaidBanner] = useState<{ faction: string; at: number; text?: string } | null>(null);
   const raidBannerTimerRef = React.useRef<ReturnType<typeof setTimeout> | null>(null);
   React.useEffect(() => () => { if (raidBannerTimerRef.current) clearTimeout(raidBannerTimerRef.current); }, []);
+  const showRivalBanner = React.useCallback((faction: string, text: string) => {
+    setRaidBanner({ faction, at: Date.now(), text });
+    if (raidBannerTimerRef.current) clearTimeout(raidBannerTimerRef.current);
+    raidBannerTimerRef.current = setTimeout(() => setRaidBanner(null), 4500);
+  }, []);
+  // The story arc's "rival pressure" trigger — flips true the first time a rival empire
+  // claims or raids visibly on the map (also restored from a save with rival holdings).
+  const rivalPressureSeenRef = React.useRef(false);
+  const [rivalPressureSeen, setRivalPressureSeen] = useState(false);
+  const markRivalPressure = React.useCallback(() => {
+    if (!rivalPressureSeenRef.current) { rivalPressureSeenRef.current = true; setRivalPressureSeen(true); }
+  }, []);
 
   const {
     enemies: factionEnemies, nearbyEnemy: nearbyFactionEnemy,
@@ -2756,20 +2894,23 @@ export default function SoloMissionMap3D({
     heroHpFrac,
     incomingDamageScale: combatIncomingScale,
     enabled: !autoMultiplayer, // solo PvE only — duels are handled by useDuel
-    paused: !!inputPaused,     // freeze combat while the skill-tree overlay is open
+    paused: !!inputPaused || !!activeStoryBeat, // freeze combat during skill tree AND story dialogs
     getHeroStealthed: () => heroStealthRef.current, // Stealth branch shrinks enemy detection
     // Objective awareness: rival factions march on & raid the player's outposts (solo only).
     strategicTargets: (!autoMultiplayer && !mobaMode) ? outpostStrategicTargets : undefined,
     onRaidOutpost: (key: string, fk: string) => {
       if (autoMultiplayer || mobaMode) return;
-      if (!raidOutpost(key)) return;
+      // An ascendant rival (any track ≥ 50) PLANTS ITS FLAG on the raided outpost —
+      // you must ride out and reconquer it; a weaker rival only breaks your hold.
+      const rv = soloVictoryRef.current[fk as Faction];
+      const ascendant = rv && Math.max(rv.domination, rv.control, rv.prosperity, rv.exploitation) >= 50;
+      if (!raidOutpost(key, ascendant ? (fk as Faction) : undefined)) return;
       const o = outposts.get(key);
-      if (o) { const w = axialToWorld({ q: o.q, r: o.r }, hexSize); spawnCombatText(w.x, w.z, '⚑ raided', '#ff5555'); }
+      if (o) { const w = axialToWorld({ q: o.q, r: o.r }, hexSize); spawnCombatText(w.x, w.z, ascendant ? `⚑ ${fk} banner raised` : '⚑ raided', '#ff5555'); }
       // A successful raid advances that faction's Domination track (aggressive expansion).
       bumpSoloVictoryRef.current?.(fk as Faction, 'domination', VICTORY_POINTS.raid);
-      setRaidBanner({ faction: fk, at: Date.now() });
-      if (raidBannerTimerRef.current) clearTimeout(raidBannerTimerRef.current);
-      raidBannerTimerRef.current = setTimeout(() => setRaidBanner(null), 4000);
+      markRivalPressure();
+      showRivalBanner(fk, ascendant ? 'seized your outpost — ride out and reconquer it!' : 'raided your outpost — recapture it!');
     },
     onHeroDamage: (amt) => applyIncomingDamageRef.current(amt),
     awardXp: awardHeroXp,
@@ -3156,6 +3297,12 @@ export default function SoloMissionMap3D({
     const solo = (profile.progress as any)?.solo as NonNullable<import('../types/player').PlayerProgress['solo']> | undefined;
     if (!solo) return;
     if (solo.outpostsOwned?.length) applyOutpostOwnership(solo.outpostsOwned);
+    if (solo.rivalOutposts && Object.keys(solo.rivalOutposts).length) {
+      applyRivalOwnership(solo.rivalOutposts);
+      rivalPressureSeenRef.current = true; setRivalPressureSeen(true); // arc trigger survives reload
+    }
+    if (typeof solo.storyBeat === 'number') { storyBeatIdxRef.current = solo.storyBeat; setStoryBeatIdx(solo.storyBeat); }
+    if (solo.storyChoices) storyChoicesRef.current = { ...solo.storyChoices };
     if (solo.refugeeCampsDone?.length) applyRefugeeCompleted(solo.refugeeCampsDone);
     if (typeof solo.terraformProgress === 'number' && solo.terraformProgress > 0) setTerraformProgress(solo.terraformProgress);
     explorationRewardedRef.current = !!solo.explorationRewarded;
@@ -3175,6 +3322,62 @@ export default function SoloMissionMap3D({
       setSoloResultDismissed(!!solo.victorySeen);
     }
   }, [profile, outposts.size, autoMultiplayer, mobaMode, applyOutpostOwnership, applyRefugeeCompleted]);
+  // ── Rival empires EXIST on the map: each rival visibly claims one neutral outpost per
+  // 25 points on its leading victory track (25/50/75 → 1/2/3 outposts, faction-tinted).
+  // The top-bar race chips stop being a scoreboard and become a warning you can see.
+  React.useEffect(() => {
+    if (!soloEnabled || !soloHydrated || soloResolvedRef.current || outposts.size === 0) return;
+    const ownedBy = (f: Faction) => { let n = 0; for (const o of outposts.values()) if (o.owner === f) n++; return n; };
+    for (const f of (['PAA', 'ASF', 'WC'] as Faction[])) {
+      if (f === playerFactionKey) continue;
+      const rv = soloVictoryRef.current[f];
+      const best = Math.max(rv.domination, rv.control, rv.prosperity, rv.exploitation);
+      const target = Math.min(4, Math.floor(best / 25));
+      if (target > ownedBy(f)) {
+        const claimed = claimForFaction(f, target);
+        if (claimed.length) {
+          markRivalPressure();
+          const w = axialToWorld({ q: claimed[0].q, r: claimed[0].r }, hexSize);
+          spawnCombatText(w.x, w.z, `⚑ ${f} claims this outpost`, FACTION_COLORS[f]?.primary ?? '#ff5555');
+          showRivalBanner(f, `claimed ${claimed.length > 1 ? `${claimed.length} outposts` : 'an outpost'} — their empire is growing.`);
+        }
+      }
+    }
+    // soloVictory drives the milestones; outposts keeps ownedBy() honest after reconquests.
+  }, [soloVictory, outposts, soloEnabled, soloHydrated, playerFactionKey, claimForFaction, markRivalPressure, showRivalBanner, hexSize]);
+
+  // ── Story beat triggering — fire the NEXT beat when the world satisfies its trigger.
+  React.useEffect(() => {
+    if (!soloEnabled || !soloHydrated || activeStoryBeat || soloResolvedRef.current) return;
+    const beat = storyArc[storyBeatIdx];
+    if (!beat) return;
+    const pv = soloVictoryRef.current[playerFactionKey];
+    const world: StoryWorldState = {
+      started: true,
+      outpostsOwned: outpostControl.owned,
+      rivalPressureSeen,
+      bestTrackValue: Math.max(pv.domination, pv.control, pv.prosperity, pv.exploitation),
+    };
+    if (!beatReady(beat, world)) return;
+    const t = setTimeout(() => setActiveStoryBeat(beat), 900); // small beat — never mid-click
+    return () => clearTimeout(t);
+  }, [soloEnabled, soloHydrated, activeStoryBeat, storyArc, storyBeatIdx, outpostControl.owned, rivalPressureSeen, soloVictory, playerFactionKey]);
+
+  // Apply a story choice: effects route through the systems that already exist
+  // (reputation/victory via recordPlaystyle, FP, shards, XP), then persist the arc.
+  const chooseStory = React.useCallback((beat: StoryBeat, choice: StoryChoice) => {
+    const fx = choice.effect;
+    if (fx.playstyle) recordPlaystyleRef.current(fx.playstyle);
+    if (fx.fp) awardFactionPoints(fx.fp);
+    if (fx.shards) awardShardsRef.current(fx.shards);
+    if (fx.xp) awardHeroXp(fx.xp);
+    storyBeatIdxRef.current = beat.index;
+    setStoryBeatIdx(beat.index);
+    storyChoicesRef.current = { ...storyChoicesRef.current, [beat.id]: choice.id };
+    setStoryOutcome(choice.outcome); // raw — {player}/{npc} tokens resolve at render
+    saveProgress({ solo: { storyBeat: beat.index, storyChoices: storyChoicesRef.current } } as any);
+  }, [awardFactionPoints, awardHeroXp, saveProgress]);
+
   // ── Campaign reset — wipes the solo WORLD (territory, terraform, camps, exploration,
   // victory race) but keeps the HERO (level, skills, pet, shards, inventory). The map is
   // seed-fixed, so reloading after the wipe yields a clean campaign.
@@ -3188,7 +3391,7 @@ export default function SoloMissionMap3D({
       explored: [],
       heroPosition: { q: 0, r: 0 },
       solo: {
-        outpostsOwned: [], terraformProgress: 0, refugeeCampsDone: [],
+        outpostsOwned: [], rivalOutposts: {}, storyBeat: 0, terraformProgress: 0, refugeeCampsDone: [],
         victory: emptyVictory(), victoryResult: null, victorySeen: false, explorationRewarded: false,
       },
     } as any);
@@ -3202,6 +3405,12 @@ export default function SoloMissionMap3D({
       if (campaignResettingRef.current) return;
       saveProgress({ solo: {
         outpostsOwned: Array.from(outposts.values()).filter(o => o.owner === 'player').map(o => o.key),
+        rivalOutposts: Object.fromEntries(
+          Array.from(outposts.values())
+            .filter(o => o.owner !== 'player' && o.owner !== 'neutral')
+            .map(o => [o.key, o.owner]),
+        ),
+        storyBeat: storyBeatIdxRef.current,
         terraformProgress,
         refugeeCampsDone: Array.from(refugeeCamps.values()).filter(c => c.completed).map(c => c.key),
         victory: soloVictoryRef.current,
@@ -3856,6 +4065,28 @@ export default function SoloMissionMap3D({
     for (const t of tiles) m.set(`${t.q},${t.r}`, t);
     return m;
   }, [tiles]);
+
+  // Top surface height of the tile at (q,r), honouring the terraform override — every
+  // actor (hero, pet, enemies, camps, outposts) anchors through this so per-terrain
+  // tile heights never leave anything floating or buried.
+  const tileTopAt = React.useCallback((q: number, r: number) => {
+    const key = `${q},${r}`;
+    const t = tilesByKey.get(key);
+    if (!t) return 0.4;
+    const ov = terraformedTiles.get(key);
+    return heightFor(ov ? { ...t, type: ov } : t);
+  }, [tilesByKey, terraformedTiles]);
+
+  // Graphics quality — 'high' adds post-processing (bloom/vignette) + 2048 shadows;
+  // 'low' keeps the lean pipeline for weaker machines. Persisted per browser.
+  const [gfxHigh, setGfxHigh] = useState<boolean>(() => {
+    try { return localStorage.getItem('afrofuture.gfxHigh') !== '0'; } catch { return true; }
+  });
+  const toggleGfx = React.useCallback(() => setGfxHigh(v => {
+    const n = !v;
+    try { localStorage.setItem('afrofuture.gfxHigh', n ? '1' : '0'); } catch {}
+    return n;
+  }), []);
   // Separate type-only map for minimap canvas (avoids passing full Tile objects)
   const tileTypesMap = useMemo(() => {
     const m = new Map<string, string>();
@@ -4229,20 +4460,7 @@ export default function SoloMissionMap3D({
   // per frame. Memoizing means the whole subtree bails out of reconciliation unless
   // something that actually affects tiles (movement, capture, terraform…) changed.
   const exploredMemoryField = React.useMemo(() => (
-    <>
-      {exploredMemoryTiles.map(t => {
-        const { x, z } = axialToWorld(t, hexSize);
-        const key = `exp-mem-${t.q},${t.r}`;
-        const tileTop = heightFor(t);
-        return (
-          <group key={key} position={[x, 0, z]}>
-            <HexTile t={t} size={hexSize} onClick={() => {}} onHover={setHover} />
-            <mesh rotation={[0, Math.PI / 6, 0]} position={[0, tileTop + 0.016, 0]} renderOrder={14}
-              geometry={sharedHexGeo(hexSize, 0.03)} material={sharedOverlayMat('#000', 0.42)} />
-          </group>
-        );
-      })}
-    </>
+    <MemoryTileField tiles={exploredMemoryTiles} hexSize={hexSize} />
   ), [exploredMemoryTiles, hexSize]);
 
   const tileField = React.useMemo(() => (
@@ -4319,14 +4537,16 @@ export default function SoloMissionMap3D({
                 always shown faintly so the map reads as claimed territory; the 'O'
                 overlay reveals the FULL partition (incl. neutral) with bright borders. */}
             {(inVision || explored) && outpostTerritory.has(key) && (() => {
-              const owned = outposts.get(outpostTerritory.get(key)!)?.owner === 'player';
-              // Without the overlay, only owned tiles tint (ownership feedback).
-              if (!showOutpostZones && !owned) return null;
+              const owner = outposts.get(outpostTerritory.get(key)!)?.owner ?? 'neutral';
+              const owned = owner === 'player';
+              const rival = owner !== 'player' && owner !== 'neutral';
+              // Without the overlay, owned AND rival ground tints (threat must be visible).
+              if (!showOutpostZones && !owned && !rival) return null;
               const onBorder = zoneBoundary.has(key);
-              const col = owned ? heroColors.primary : '#8a8f96';
+              const col = owned ? heroColors.primary : rival ? (FACTION_COLORS[owner]?.primary ?? '#8a8f96') : '#8a8f96';
               const op = showOutpostZones
-                ? (owned ? (onBorder ? 0.42 : 0.16) : (onBorder ? 0.24 : 0.06))
-                : (onBorder ? 0.30 : 0.10); // always-on owned tint
+                ? ((owned || rival) ? (onBorder ? 0.42 : 0.16) : (onBorder ? 0.24 : 0.06))
+                : (onBorder ? 0.30 : 0.10); // always-on claimed-ground tint
               return (
                 <mesh rotation={[0, Math.PI / 6, 0]} position={[0, tileTop + 0.05, 0]} renderOrder={13}
                   geometry={sharedHexGeo(hexSize * (onBorder ? 1 : 0.9), 0.02)} material={sharedOverlayMat(col, op)} />
@@ -4350,7 +4570,7 @@ export default function SoloMissionMap3D({
     {/* Camera elevation ≈ 33.3° above the ground plane (height/horizontal = tan(33.3°)). */}
     {/* Perf: dpr capped at 1.5 (high-DPI screens otherwise render 2x+ the pixels),
         plain PCF shadows (soft PCF costs extra taps per fragment), no stencil. */}
-    <Canvas shadows="percentage" dpr={[1, 1.5]} camera={{ position: [0, 14.47, 22], fov: 45 }} gl={{ alpha: false, powerPreference: 'high-performance', stencil: false }} style={{ background: '#111827' }} onCreated={({ gl, scene }) => { gl.setClearColor('#111827', 1); scene.background = new THREE.Color('#111827'); }}>
+    <Canvas shadows="percentage" dpr={[1, 1.5]} camera={{ position: [0, 14.47, 22], fov: 45 }} gl={{ alpha: false, powerPreference: 'high-performance', stencil: false }} style={{ background: '#111827' }} onCreated={({ gl, scene }) => { gl.setClearColor('#111827', 1); scene.background = new THREE.Color('#111827'); gl.toneMappingExposure = 1.12; }}>
   <MapCameraController
     bounds={mapBounds}
     gameMode={true}
@@ -4370,9 +4590,22 @@ export default function SoloMissionMap3D({
               <PerformanceChecker />
               <AvatarCollisionDetector heroAvatarRef={heroAvatarRef} heroWorldPos={heroWorld} culledTiles={culledTiles} hexSize={hexSize} />
               <SceneBridge outerRadius={hexSize} onReady={(caps) => { setRefMountains(!!caps.mountain); setRefTrees(!!caps.tree); setRefWater(!!caps.water); setRefHills(!!caps.hills); setRefDesert(!!caps.desert); }} />
-              <Sky inclination={0.6} azimuth={0.25} sunPosition={[50, 50, 10]} turbidity={2} rayleigh={0.7} mieCoefficient={0.005} mieDirectionalG={0.8} />
-              <hemisphereLight args={["#bde0fe", "#e6f3ff", 0.8]} />
-              <directionalLight position={[30, 40, 15]} intensity={0.7} castShadow shadow-mapSize-width={1024} shadow-mapSize-height={1024} />
+              {/* Distance haze — adds depth and dissolves the render-radius edge into
+                  atmosphere instead of a hard cutoff. Colour sits between sky and dusk. */}
+              <fog attach="fog" args={['#2f4258', 34, 95]} />
+              {/* Sky sun aligned with the SunLight direction so highlights, shadows and
+                  the sky's bright spot all agree. */}
+              <Sky inclination={0.6} azimuth={0.25} sunPosition={[26, 38, 14]} turbidity={2.4} rayleigh={0.9} mieCoefficient={0.005} mieDirectionalG={0.8} />
+              {/* Golden-hour grade: warm key light (SunLight) vs cool blue sky fill with an
+                  earthy ground bounce — replaces the old flat near-white ambient wash. */}
+              <hemisphereLight args={["#b8d0ff", "#414a40", 0.55]} />
+              <SunLight heroWorld={heroWorld} quality={gfxHigh ? 'high' : 'low'} />
+              {gfxHigh && (
+                <EffectComposer multisampling={4}>
+                  <Bloom intensity={0.45} luminanceThreshold={0.72} luminanceSmoothing={0.2} mipmapBlur />
+                  <Vignette eskil={false} offset={0.22} darkness={0.5} />
+                </EffectComposer>
+              )}
               <group position={[0, 0, 0]}>
                 {/* Dark ground plane: prevents white canvas showing at RENDER_RADIUS edge */}
                 <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, -0.1, 0]}>
@@ -4391,7 +4624,7 @@ export default function SoloMissionMap3D({
                     unmounts/remounts this group on parent re-renders.
                     Positioned at tile surface (y = 0.4), with avatar mesh foot-anchored
                     so feet sit exactly at the surface. */}
-                <group ref={heroAvatarRef} position={[heroWorld.x, 0.48, heroWorld.z]} name="HeroAvatar" frustumCulled={false}>
+                <group ref={heroAvatarRef} position={[heroWorld.x, tileTopAt(hero.pos.q, hero.pos.r) + 0.08, heroWorld.z]} name="HeroAvatar" frustumCulled={false}>
                   {/* Drop shadow — renderOrder 20 */}
                   <mesh rotation={[-Math.PI/2, 0, 0]} position={[0, 0.01, 0]} receiveShadow renderOrder={20}>
                     <circleGeometry args={[hexSize * 0.42, 24]} />
@@ -4430,7 +4663,7 @@ export default function SoloMissionMap3D({
                   )}
                 </group>
                 {(() => { const world = axialToWorld(pet.pos, hexSize); const ps = hexSize * 0.32; return (
-                  <group key={pet.id} position={[world.x, 0.48, world.z]} rotation={[0, petFacingAngle, 0]} frustumCulled={false}>
+                  <group key={pet.id} position={[world.x, tileTopAt(pet.pos.q, pet.pos.r) + 0.08, world.z]} rotation={[0, petFacingAngle, 0]} frustumCulled={false}>
                     {isDog ? <IsometricDog ps={ps} isMoving={isPetMoving} /> : <IsometricPet ps={ps} isMoving={isPetMoving} />}
                     {/* Name label + role/attack counter */}
                     <Text position={[0, ps * 3.1, 0]} fontSize={ps * 0.5} color="#fff" anchorX="center" anchorY="middle" outlineWidth={ps * 0.03} outlineColor="#000">{isDog ? `Dog  ⚔️${petCombatBonus}` : `Cat  👁️+${petVisionBonus}`}</Text>
@@ -4452,7 +4685,7 @@ export default function SoloMissionMap3D({
                   if (axialDistance({ q: camp.q, r: camp.r }, hero.pos) > RENDER_RADIUS) return null;
                   const cw = axialToWorld({ q: camp.q, r: camp.r }, hexSize);
                   return (
-                    <group key={`camp-${camp.key}`} position={[cw.x, heightFor({ q: camp.q, r: camp.r, type: 'plains', char: 'P', resource: null }), cw.z]} frustumCulled={false}>
+                    <group key={`camp-${camp.key}`} position={[cw.x, tileTopAt(camp.q, camp.r), cw.z]} frustumCulled={false}>
                       <CreepCampMesh camp={camp} size={hexSize} />
                     </group>
                   );
@@ -4466,19 +4699,26 @@ export default function SoloMissionMap3D({
                   if (!exploredRef.current.has(ekey) && !heroVisible.has(ekey)) return null; // fog of war
                   if (axialDistance({ q: en.q, r: en.r }, hero.pos) > RENDER_RADIUS) return null;
                   const ew = axialToWorld({ q: en.q, r: en.r }, hexSize);
-                  const tile = tilesByKey.get(ekey);
-                  const y = heightFor(tile ?? { q: en.q, r: en.r, type: 'plains', char: 'P', resource: null });
+                  const y = tileTopAt(en.q, en.r);
+                  // Far-LOD: distant units render as a cheap faction-coloured marker instead
+                  // of the full animated chibi rig (bosses keep the rig — they're landmarks).
+                  if (en.role !== 'boss' && axialDistance({ q: en.q, r: en.r }, hero.pos) > FAR_ENEMY_DIST) {
+                    return (
+                      <mesh key={en.id} position={[ew.x, y + hexSize * 0.35, ew.z]}
+                        geometry={sharedFarConeGeo(hexSize)} material={sharedTileMat(DOCTRINE[en.faction].color)} />
+                    );
+                  }
                   return <EnemyUnitMesh key={en.id} enemy={en} size={hexSize} target={[ew.x, y, ew.z]} />;
                 })}
                 {/* Base / Command Center at spawn */}
                 {(() => { const bw = axialToWorld(baseAxial, hexSize); return (
-                  <group key="base" position={[bw.x, heightFor({ q: baseAxial.q, r: baseAxial.r, type: 'plains', char: 'P', resource: null }), bw.z]} frustumCulled={false}>
+                  <group key="base" position={[bw.x, tileTopAt(baseAxial.q, baseAxial.r), bw.z]} frustumCulled={false}>
                     <CommandCenter size={hexSize} color={heroColors.primary} />
                   </group>
                 ); })()}
                 {/* Terraformer objective */}
                 {(() => { const tw = axialToWorld(terraformAxial, hexSize); return (
-                  <group key="terraformer" position={[tw.x, heightFor({ q: terraformAxial.q, r: terraformAxial.r, type: 'plains', char: 'P', resource: null }), tw.z]} frustumCulled={false}>
+                  <group key="terraformer" position={[tw.x, tileTopAt(terraformAxial.q, terraformAxial.r), tw.z]} frustumCulled={false}>
                     <Terraformer size={hexSize} progress={terraformProgress} done={terraformDone} />
                     {terraformDone && <GrassCluster size={hexSize} seed={terraformAxial.q * 7 + terraformAxial.r} />}
                   </group>
@@ -4490,7 +4730,7 @@ export default function SoloMissionMap3D({
                   if (axialDistance({ q: o.q, r: o.r }, hero.pos) > RENDER_RADIUS) return null;
                   const ow = axialToWorld({ q: o.q, r: o.r }, hexSize);
                   return (
-                    <group key={`outpost-${o.key}`} position={[ow.x, heightFor({ q: o.q, r: o.r, type: 'plains', char: 'P', resource: null }), ow.z]} frustumCulled={false}>
+                    <group key={`outpost-${o.key}`} position={[ow.x, tileTopAt(o.q, o.r), ow.z]} frustumCulled={false}>
                       {(() => {
                         // In a MOBA, colour the banner by the authoritative owning faction;
                         // otherwise fall back to the single-player owned/neutral flag.
@@ -4500,7 +4740,10 @@ export default function SoloMissionMap3D({
                           const color = owned ? (FACTION_COLORS[mobaOwner as string]?.primary ?? heroColors.primary) : heroColors.primary;
                           return <OutpostMarker size={hexSize} owned={owned} color={color} />;
                         }
-                        return <OutpostMarker size={hexSize} owned={o.owner === 'player'} color={heroColors.primary} />;
+                        // Solo: a rival empire's outpost flies THEIR colours — visible threat.
+                        const rivalOwner = o.owner !== 'player' && o.owner !== 'neutral' ? o.owner : null;
+                        return <OutpostMarker size={hexSize} owned={o.owner === 'player' || !!rivalOwner}
+                          color={rivalOwner ? (FACTION_COLORS[rivalOwner]?.primary ?? '#8a8f96') : heroColors.primary} />;
                       })()}
                     </group>
                   );
@@ -4525,7 +4768,7 @@ export default function SoloMissionMap3D({
                   if (axialDistance({ q: c.q, r: c.r }, hero.pos) > RENDER_RADIUS) return null;
                   const rw = axialToWorld({ q: c.q, r: c.r }, hexSize);
                   return (
-                    <group key={`refugee-${c.key}`} position={[rw.x, heightFor({ q: c.q, r: c.r, type: 'plains', char: 'P', resource: null }), rw.z]} frustumCulled={false}>
+                    <group key={`refugee-${c.key}`} position={[rw.x, tileTopAt(c.q, c.r), rw.z]} frustumCulled={false}>
                       <RefugeeCampMarker
                         size={hexSize}
                         done={c.completed}
@@ -4792,6 +5035,13 @@ export default function SoloMissionMap3D({
                         ><span>🌍</span><span className="hidden sm:inline">MOBA</span>{mobaActive ? ' •' : ''}</button>
                       )}
                       <button
+                        onClick={toggleGfx}
+                        title={gfxHigh ? 'Graphics: High (bloom + sharp shadows) — click for Low' : 'Graphics: Low (max FPS) — click for High'}
+                        className={`flex items-center gap-1 px-2.5 py-1 rounded-md text-[12px] font-bold ring-1 shadow transition ${
+                          gfxHigh ? 'bg-[#141b26]/90 ring-amber-400/50 text-amber-200 hover:ring-amber-300' : 'bg-[#141b26]/90 ring-white/15 text-gray-400 hover:ring-white/40'
+                        }`}
+                      ><span>✨</span><span className="hidden sm:inline">{gfxHigh ? 'Hi' : 'Lo'}</span></button>
+                      <button
                         onClick={() => setHudMenuOpen(o => !o)}
                         title="Menu (Esc)"
                         className="flex items-center gap-1 px-2.5 py-1 rounded-md text-[12px] font-bold ring-1 ring-white/15 bg-[#141b26]/90 text-gray-200 hover:bg-[#1b2636]/90 shadow transition"
@@ -4898,6 +5148,56 @@ export default function SoloMissionMap3D({
                 </div>
               )}
 
+              {/* ── Current objective pointer — the story arc's compass (fixes cold start). */}
+              {soloEnabled && !activeStoryBeat && (
+                <div className="fixed top-11 left-3 z-30 pointer-events-none">
+                  <div className="px-3 py-1.5 rounded-lg bg-[#0c1219]/85 ring-1 ring-white/12 text-[11px] text-gray-200 max-w-[22rem] leading-snug shadow">
+                    <span className="opacity-60 mr-1">🎯</span>
+                    {storyArc[storyBeatIdx]?.objective ?? 'Fill a victory track to win the campaign.'}
+                  </div>
+                </div>
+              )}
+
+              {/* ── Story beat dialog — two lines, one meaningful choice, then the outcome. */}
+              {soloEnabled && activeStoryBeat && (
+                <div className="fixed inset-0 z-50 flex items-end justify-center pb-20 bg-black/45 backdrop-blur-[2px] pointer-events-auto">
+                  <div className="w-[min(34rem,94vw)] p-5 rounded-2xl bg-[#0c1219]/97 ring-1 ring-white/15 shadow-2xl text-gray-100">
+                    <div className="flex items-center gap-2 mb-1">
+                      <span className="w-2.5 h-2.5 rounded-full" style={{ background: FACTION_COLORS[playerFactionKey]?.primary ?? '#8a8f96' }} />
+                      <span className="text-[11px] uppercase tracking-wider opacity-60">
+                        Chapter {activeStoryBeat.index} · {activeStoryBeat.title}
+                      </span>
+                    </div>
+                    <div className="font-bold mb-2" style={{ color: FACTION_COLORS[playerFactionKey]?.label ?? '#e5e7eb' }}>
+                      {storyNpc(playerFactionKey, heroGender ?? 'FEMALE')}
+                    </div>
+                    {storyOutcome ? (
+                      <>
+                        <div className="text-sm leading-relaxed opacity-90 italic mb-4">{storyText(storyOutcome, playerFactionKey, heroGender ?? 'FEMALE')}</div>
+                        <button
+                          onClick={() => { setActiveStoryBeat(null); setStoryOutcome(null); }}
+                          className="w-full py-2 rounded-lg bg-emerald-700 hover:bg-emerald-600 font-bold"
+                        >Continue</button>
+                      </>
+                    ) : (
+                      <>
+                        <div className="text-sm leading-relaxed opacity-90 mb-1">“{storyText(activeStoryBeat.lines[0], playerFactionKey, heroGender ?? 'FEMALE')}”</div>
+                        <div className="text-sm leading-relaxed opacity-90 mb-4">“{storyText(activeStoryBeat.lines[1], playerFactionKey, heroGender ?? 'FEMALE')}”</div>
+                        <div className="grid gap-2">
+                          {activeStoryBeat.choices.map(c => (
+                            <button
+                              key={c.id}
+                              onClick={() => chooseStory(activeStoryBeat, c)}
+                              className="w-full text-left px-4 py-2.5 rounded-lg bg-[#1c2838] hover:bg-[#243448] ring-1 ring-white/15 text-sm font-semibold transition"
+                            >{c.label}</button>
+                          ))}
+                        </div>
+                      </>
+                    )}
+                  </div>
+                </div>
+              )}
+
               {/* Rival raid alert — a faction AI retook one of your outposts (go defend/recapture). */}
               {raidBanner && (
                 <div className="fixed top-24 left-1/2 -translate-x-1/2 z-40 pointer-events-none">
@@ -4906,7 +5206,7 @@ export default function SoloMissionMap3D({
                     <span className="text-sm font-bold text-rose-200" style={{ color: FACTION_COLORS[raidBanner.faction]?.label ?? '#fecaca' }}>
                       {FACTION_LABEL[raidBanner.faction] ?? raidBanner.faction}
                     </span>
-                    <span className="text-sm font-semibold text-rose-100">raided your outpost — recapture it!</span>
+                    <span className="text-sm font-semibold text-rose-100">{raidBanner.text ?? 'raided your outpost — recapture it!'}</span>
                   </div>
                 </div>
               )}

@@ -12,10 +12,14 @@ import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 type TileType = 'water' | 'desert' | 'plains' | 'forest' | 'jungle' | 'hills' | 'mountain';
 interface MinTile { q: number; r: number; type: TileType }
 
+/** Rival empires that can hold ground on the solo map. */
+export type RivalFaction = 'PAA' | 'ASF' | 'WC';
+export type OutpostOwner = 'neutral' | 'player' | RivalFaction;
+
 export interface Outpost {
   key: string; q: number; r: number;
   region: number;
-  owner: 'neutral' | 'player';
+  owner: OutpostOwner;
 }
 
 /** A named strategic region grouping several outposts. */
@@ -50,7 +54,8 @@ interface UseOutpostsOptions {
   heroR: number;
   centerQ: number;
   centerR: number;
-  onCapture?: (region: number, regionCleared: boolean) => void;
+  /** `prevOwner` distinguishes claiming neutral ground from RECONQUERING rival ground. */
+  onCapture?: (region: number, regionCleared: boolean, prevOwner: OutpostOwner) => void;
 }
 
 export function useOutposts({ tiles, heroQ, heroR, centerQ, centerR, onCapture }: UseOutpostsOptions) {
@@ -163,22 +168,49 @@ export function useOutposts({ tiles, heroQ, heroR, centerQ, centerR, onCapture }
     // Region cleared if every outpost in this region is now player-owned.
     const regionCleared = Array.from(next.values()).filter(x => x.region === o.region).every(x => x.owner === 'player');
     setOutposts(next);
-    onCaptureRef.current?.(o.region, regionCleared);
+    onCaptureRef.current?.(o.region, regionCleared, o.owner);
     console.log(`[outposts] Captured ${key} (region ${o.region})${regionCleared ? ' — REGION CONTROLLED' : ''}`);
     return true;
   }, [engagedKey]);
 
-  // Rival raid — a faction AI retakes a player-owned outpost, flipping it back to neutral.
-  // Returns true if an owned outpost was actually flipped (so callers can surface a banner).
-  const raidOutpost = useCallback((key: string): boolean => {
+  // Rival raid — a faction AI retakes a player-owned outpost. A weak rival only breaks
+  // your hold (→ neutral); a rival empire in ascendancy (caller passes `byFaction`)
+  // PLANTS ITS FLAG, and you must ride out and reconquer.
+  const raidOutpost = useCallback((key: string, byFaction?: RivalFaction): boolean => {
     const cur = outpostsRef.current;
     const o = cur.get(key);
     if (!o || o.owner !== 'player') return false;
     const next = new Map(cur);
-    next.set(key, { ...o, owner: 'neutral' });
+    next.set(key, { ...o, owner: byFaction ?? 'neutral' });
     setOutposts(next);
-    console.log(`[outposts] Raided ${key} (region ${o.region}) — lost to a rival faction`);
+    console.log(`[outposts] Raided ${key} (region ${o.region}) — lost to ${byFaction ?? 'a rival faction'}`);
     return true;
+  }, []);
+
+  // A rival empire visibly claims neutral ground to MATCH its victory-track progress
+  // (its off-screen expansion made real on the map). Ensures `faction` owns at least
+  // `targetCount` outposts; claims deep, far-from-spawn neutral outposts first, then
+  // grows outward from its existing holdings. Returns the newly claimed outposts.
+  const claimForFaction = useCallback((faction: RivalFaction, targetCount: number): Outpost[] => {
+    const cur = outpostsRef.current;
+    const mine = Array.from(cur.values()).filter(o => o.owner === faction);
+    const need = targetCount - mine.length;
+    if (need <= 0) return [];
+    const neutral = Array.from(cur.values()).filter(o => o.owner === 'neutral');
+    if (!neutral.length) return [];
+    const score = (o: Outpost) => {
+      // Prefer growing a contiguous empire; a first claim goes deep (far from spawn).
+      const nearMine = mine.length
+        ? Math.min(...mine.map(m => axialDist(o.q, o.r, m.q, m.r)))
+        : -axialDist(o.q, o.r, 0, 0);
+      return nearMine;
+    };
+    const picked = neutral.sort((a, b) => score(a) - score(b)).slice(0, need);
+    const next = new Map(cur);
+    for (const o of picked) { next.set(o.key, { ...o, owner: faction }); mine.push(o); }
+    setOutposts(next);
+    if (picked.length) console.log(`[outposts] ${faction} claimed ${picked.map(o => o.key).join(', ')}`);
+    return picked.map(o => next.get(o.key)!);
   }, []);
 
   // Restore saved ownership (solo save/load) — flip the given "q,r" keys to player-owned.
@@ -189,6 +221,23 @@ export function useOutposts({ tiles, heroQ, heroR, centerQ, centerR, onCapture }
       let changed = false;
       const next = new Map(prev);
       for (const [k, o] of next) if (set.has(k) && o.owner !== 'player') { next.set(k, { ...o, owner: 'player' }); changed = true; }
+      return changed ? next : prev;
+    });
+  }, []);
+
+  // Restore saved RIVAL ownership (solo save/load) — key → faction.
+  const applyRivalOwnership = useCallback((owners: Record<string, string>) => {
+    if (!owners) return;
+    const entries = Object.entries(owners).filter(([, f]) => f === 'PAA' || f === 'ASF' || f === 'WC');
+    if (!entries.length) return;
+    setOutposts(prev => {
+      let changed = false;
+      const next = new Map(prev);
+      for (const [k, f] of entries) {
+        const o = next.get(k);
+        // Never clobber the player's hold — their save is authoritative for owned keys.
+        if (o && o.owner !== 'player' && o.owner !== f) { next.set(k, { ...o, owner: f as RivalFaction }); changed = true; }
+      }
       return changed ? next : prev;
     });
   }, []);
@@ -238,5 +287,5 @@ export function useOutposts({ tiles, heroQ, heroR, centerQ, centerR, onCapture }
     return { owned, total: all.length, regionsControlled, regionCount: regions.length, ownedTiles, totalTiles, tilePct };
   }, [outposts, territory, regions]);
 
-  return { outposts, nearbyOutpost, captureNearby, raidOutpost, control, territory, regions, nearestOwnedOutpost, applyOwnership };
+  return { outposts, nearbyOutpost, captureNearby, raidOutpost, claimForFaction, control, territory, regions, nearestOwnedOutpost, applyOwnership, applyRivalOwnership };
 }

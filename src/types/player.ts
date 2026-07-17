@@ -13,6 +13,12 @@ export interface PlayerProgress {
   /** Solo-campaign world state — captured territory persists across sessions. */
   solo?: {
     outpostsOwned?: string[];    // "q,r" keys of captured outposts
+    /** Outposts held by rival empires — "q,r" key → 'PAA'|'ASF'|'WC'. */
+    rivalOutposts?: Record<string, string>;
+    /** Story-arc progress: number of beats completed (0..5). */
+    storyBeat?: number;
+    /** Choice made at each beat — beat id → choice id. */
+    storyChoices?: Record<string, string>;
     terraformProgress?: number;  // 0..100
     refugeeCampsDone?: string[]; // "q,r" keys of resolved camps
     /** Victory-track race state (faction → track → points). Mirrors FactionVictory. */
