@@ -299,6 +299,12 @@ const ITEM_TOOLTIPS: Record<string, string> = {
   '📦': 'Consumable Item'
 };
 
+// How much HP/EP each item icon restores when used — mirrors useCollectibles'
+// handleItemUse/RESOURCE_DEFS so the quick-action buttons pick the best available
+// item (highest value) and match what actually happens on use.
+const ITEM_HP_VALUE: Record<string, number> = { '🌸': 20, '🌿': 50 };
+const ITEM_EP_VALUE: Record<string, number> = { '🍄': 5, '⬢': 12, '⚡': 20 };
+
 export const GameHUD: React.FC<GameHUDProps> = ({
   team, clock, hero, pet, petBond, petAbilities, abilities, defensiveAbilities, items, resources, skillTokens,
   subtitles, onShop, onAbility, onItem, onMinimapClick, onMenu, onSettings, onTalents,
@@ -331,6 +337,10 @@ export const GameHUD: React.FC<GameHUDProps> = ({
   }, [onSave, saveState]);
   React.useEffect(() => () => { if (saveResetRef.current) clearTimeout(saveResetRef.current); }, []);
   const [menuTab, setMenuTab] = React.useState<'overview' | 'skills' | 'pet' | 'inventory' | 'settings'>('overview');
+  // Collapsible mobile HUD — the stacked mobile layout (minimap+buttons / hero / pet)
+  // can eat a large chunk of a phone screen; let the player tuck it away to see more
+  // of the map while still keeping vitals + quick actions reachable via the mini strip.
+  const [hudCollapsed, setHudCollapsed] = React.useState(false);
   // Controlled by the map (so QWER + HUD agree) when provided; else internal.
   const [internalMode, setInternalMode] = React.useState<'offense' | 'defense'>('offense');
   const abilityMode = abilityModeProp ?? internalMode;
@@ -354,6 +364,21 @@ export const GameHUD: React.FC<GameHUDProps> = ({
   const defensiveSlots = (defensiveAbilities || []).slice(0, 4);
   const abilitySlots = abilityMode === 'defense' ? defensiveSlots : offensiveSlots;
   const itemSlots = items.slice(0, 8);
+
+  // Quick-action items: the best (highest-value) HP-healing / EP-restoring item
+  // currently in the hotbar, if any (empty/zero-qty slots don't count). Only
+  // rendered when the player actually has one — "quick actions IF the resources
+  // are in the inventory".
+  const quickHealItem = React.useMemo(() => {
+    const candidates = itemSlots.filter(it => it.icon && (it.qty ?? 0) > 0 && ITEM_HP_VALUE[it.icon] !== undefined);
+    if (!candidates.length) return null;
+    return candidates.reduce((best, cur) => (ITEM_HP_VALUE[cur.icon!] > ITEM_HP_VALUE[best.icon!] ? cur : best));
+  }, [itemSlots]);
+  const quickEpItem = React.useMemo(() => {
+    const candidates = itemSlots.filter(it => it.icon && (it.qty ?? 0) > 0 && ITEM_EP_VALUE[it.icon] !== undefined);
+    if (!candidates.length) return null;
+    return candidates.reduce((best, cur) => (ITEM_EP_VALUE[cur.icon!] > ITEM_EP_VALUE[best.icon!] ? cur : best));
+  }, [itemSlots]);
 
   // ─── Panel background style shared across sections ─────────────────────────
   const panelCls = 'bg-[#0c1219]/88 backdrop-blur-sm ring-1 ring-white/8';
@@ -396,7 +421,50 @@ export const GameHUD: React.FC<GameHUDProps> = ({
           [MINIMAP]  [scan/glyph]  [HERO + ABILITIES — player]  │  [PET + INVENTORY — pet]
       */}
       <div className={`fixed bottom-0 left-0 right-0 z-30 ${panelCls} border-t border-white/5 shadow-2xl pointer-events-auto`}>
-        <div className="hud-bar flex flex-col sm:flex-row items-stretch overflow-visible gap-1 sm:gap-0 pb-1 sm:pb-0"> {/* mobile: stacked rows (minimap+buttons / hero / pet) so nothing overflows off-screen; desktop: single Dota-style row */}
+
+        {/* Mobile-only collapse tab \u2014 sits on the bar's top edge so it's always reachable
+            regardless of whether the full stacked layout or the mini strip is showing. */}
+        <button
+          onClick={() => setHudCollapsed(c => !c)}
+          className="sm:hidden absolute -top-6 left-1/2 -translate-x-1/2 w-16 h-6 rounded-t-lg bg-[#0c1219]/95 ring-1 ring-white/10 flex items-center justify-center text-white/70 active:scale-95 text-[10px] font-semibold tracking-wide"
+          title={hudCollapsed ? 'Expand HUD' : 'Collapse HUD'}
+        >
+          {hudCollapsed ? '\u25b2 HUD' : '\u25bc HUD'}
+        </button>
+
+        {/* Collapsed mobile strip \u2014 minimal vitals + quick heal/EP actions so the map
+            stays visible while HP/EP and item use are still one tap away. */}
+        {hudCollapsed && (
+          <div className="sm:hidden flex items-center gap-2 h-11 px-3">
+            <span className="text-[10px] font-bold text-white/60 shrink-0">Lv{hero.level}</span>
+            <div className="flex-1 min-w-0 flex flex-col gap-0.5">
+              <Bar value={hero.hp.current} max={hero.hp.max} color="bg-rose-500" h="h-2" />
+              <Bar value={hero.ep.current} max={hero.ep.max} color="bg-sky-400" h="h-2" />
+            </div>
+            {quickHealItem && (
+              <button
+                onClick={() => onItem && onItem(quickHealItem.id)}
+                disabled={hero.hp.current >= hero.hp.max}
+                title={`Use ${ITEM_TOOLTIPS[quickHealItem.icon || ''] || 'Heal'} (x${quickHealItem.qty})`}
+                className="shrink-0 w-7 h-7 rounded-md bg-rose-600/80 hover:bg-rose-500 active:scale-90 disabled:opacity-30 disabled:active:scale-100 ring-1 ring-white/10 flex items-center justify-center text-sm transition"
+              >
+                {quickHealItem.icon}
+              </button>
+            )}
+            {quickEpItem && (
+              <button
+                onClick={() => onItem && onItem(quickEpItem.id)}
+                disabled={hero.ep.current >= hero.ep.max}
+                title={`Use ${ITEM_TOOLTIPS[quickEpItem.icon || ''] || 'Restore EP'} (x${quickEpItem.qty})`}
+                className="shrink-0 w-7 h-7 rounded-md bg-sky-600/80 hover:bg-sky-500 active:scale-90 disabled:opacity-30 disabled:active:scale-100 ring-1 ring-white/10 flex items-center justify-center text-sm transition"
+              >
+                {quickEpItem.icon}
+              </button>
+            )}
+          </div>
+        )}
+
+        <div className={`hud-bar ${hudCollapsed ? 'hidden sm:flex' : 'flex'} flex-col sm:flex-row items-stretch overflow-visible gap-1 sm:gap-0 pb-1 sm:pb-0`}> {/* mobile: stacked rows (minimap+buttons / hero / pet) so nothing overflows off-screen; desktop: single Dota-style row */}
 
           {/* Mobile: minimap + mode buttons share a compact top row. sm:contents removes this
               wrapper from the flex layout on desktop, restoring the original single-row order. */}
@@ -491,8 +559,32 @@ export const GameHUD: React.FC<GameHUDProps> = ({
               {/* HP / EP / XP bars + abilities stacked */}
               <div className="flex-1 min-w-0 flex flex-col gap-0.5 h-full justify-center">
                 <span className="hud-name font-bold truncate leading-none mb-0.5">{hero.name} <span className="opacity-50 font-normal text-[10px]">Lv {hero.level}</span></span>
-                <Bar value={hero.hp.current} max={hero.hp.max} color="bg-rose-500" h="hud-bar-row" label={`${hero.hp.current}/${hero.hp.max} HP`} />
-                <Bar value={hero.ep.current} max={hero.ep.max} color="bg-sky-400" h="hud-bar-row" label={`${hero.ep.current}/${hero.ep.max} EP`} />
+                <div className="flex items-center gap-1">
+                  <Bar value={hero.hp.current} max={hero.hp.max} color="bg-rose-500" h="hud-bar-row" label={`${hero.hp.current}/${hero.hp.max} HP`} />
+                  {quickHealItem && (
+                    <button
+                      onClick={() => onItem && onItem(quickHealItem.id)}
+                      disabled={hero.hp.current >= hero.hp.max}
+                      title={`Use ${ITEM_TOOLTIPS[quickHealItem.icon || ''] || 'Heal'} (x${quickHealItem.qty})`}
+                      className="shrink-0 w-5 h-5 sm:w-6 sm:h-6 rounded bg-rose-600/80 hover:bg-rose-500 active:scale-90 disabled:opacity-30 disabled:active:scale-100 ring-1 ring-white/10 flex items-center justify-center text-[10px] sm:text-xs transition"
+                    >
+                      {quickHealItem.icon}
+                    </button>
+                  )}
+                </div>
+                <div className="flex items-center gap-1">
+                  <Bar value={hero.ep.current} max={hero.ep.max} color="bg-sky-400" h="hud-bar-row" label={`${hero.ep.current}/${hero.ep.max} EP`} />
+                  {quickEpItem && (
+                    <button
+                      onClick={() => onItem && onItem(quickEpItem.id)}
+                      disabled={hero.ep.current >= hero.ep.max}
+                      title={`Use ${ITEM_TOOLTIPS[quickEpItem.icon || ''] || 'Restore EP'} (x${quickEpItem.qty})`}
+                      className="shrink-0 w-5 h-5 sm:w-6 sm:h-6 rounded bg-sky-600/80 hover:bg-sky-500 active:scale-90 disabled:opacity-30 disabled:active:scale-100 ring-1 ring-white/10 flex items-center justify-center text-[10px] sm:text-xs transition"
+                    >
+                      {quickEpItem.icon}
+                    </button>
+                  )}
+                </div>
                 <Bar value={hero.xp.current} max={hero.xp.max} color="bg-amber-500" h="hud-bar-row" label={`${hero.xp.current}/${hero.xp.max} XP`} />
                 {/* Abilities — centered below bars */}
                 <div className={`flex justify-center gap-1 mt-0.5 p-1 rounded-lg ring-1 transition-all ${
