@@ -4,7 +4,7 @@ import { useSkillStore, availablePoints } from './store/skillStore';
 import { computeEffectiveStats, STAT_META } from './services/playerStats';
 import { getTotalXpForLevel, getXpForNextLevel, getLevelFromXp } from './services/playerExpEconomy';
 import { abilitiesForFaction, factionAbilityBonus, type FactionAbility } from './services/factionAbilities';
-import { getPetSpecies, derivePetStats } from './services/petSpecies';
+import { getPetSpecies, derivePetStats, bondTierIndex, bondTierProgress, petAbilitiesWithState, BOND_TIERS } from './services/petSpecies';
 import { makeTree, skillIconFor } from './store/skillData';
 import { GROUP_ORDER, getVariantsByGroup } from './assets/threeParts';
 import { buildAvatarConfig } from './services/avatarConfig';
@@ -1935,14 +1935,20 @@ function LeftPlayerPanel({ className = '', playerName, accountLevel, loadout, he
         </div>
         {/* Hero XP progress bar */}
         {(() => {
-          const heroXp = Math.floor(playerProfile?.progress?.hero?.xp ?? 0);
-          const heroLevel = playerProfile?.progress?.hero?.level ?? skillLevel;
-          const xpMax = 100 + (heroLevel - 1) * 40;
+          // Mirror the in-mission HUD calc exactly (App.tsx heroVitals): hero.xp is a
+          // LIFETIME cumulative total, not "progress within the current level" — the
+          // previous version compared the raw lifetime total against a per-level cap,
+          // which pinned the bar at 100% almost immediately. Derive level FROM xp (not
+          // the possibly-lagging stored hero.level) so the level + bar always agree.
+          const totalXp = Math.floor(playerProfile?.progress?.hero?.xp ?? 0);
+          const heroLevel = Math.max(1, getLevelFromXp(totalXp));
+          const heroXp = Math.max(0, totalXp - getTotalXpForLevel(heroLevel));
+          const xpMax = Math.max(1, getXpForNextLevel(heroLevel));
           const xpPct = Math.min(100, Math.round((heroXp / xpMax) * 100));
           return (
             <div className="mt-3 w-full rounded-2xl border border-white/10 bg-gradient-to-br from-amber-500/10 to-orange-500/10 p-3 text-[10px]">
               <div className="flex justify-between mb-1.5">
-                <span className="opacity-70">Hero XP</span>
+                <span className="opacity-70">Hero XP · Lv {heroLevel}</span>
                 <span className="font-semibold text-amber-300">{heroXp} / {xpMax}</span>
               </div>
               <div className="h-1.5 w-full rounded-full bg-white/10 overflow-hidden">
@@ -1969,19 +1975,50 @@ function LeftPlayerPanel({ className = '', playerName, accountLevel, loadout, he
           </div>
         </div>
       </div>
-      {/* Pet image card */}
+      {/* Pet image card — level/xp/bond/abilities come from the LIVE persisted profile
+          (profile.progress.pet), not the static avatar-configurator loadout, so this
+          reflects actual in-mission pet progress instead of always showing the pet's
+          creation-time level. */}
       <div className="px-4 py-4 flex flex-col items-center gap-4">
-        <div className="w-full max-w-[260px] aspect-[4/3] rounded-3xl border border-white/10 bg-white/5 overflow-hidden relative flex flex-col items-center justify-center p-4">
-          <div className="absolute inset-0 bg-gradient-to-tr from-[#0b0e13]/80 via-transparent to-[#0b0e13]/50" />
-          <img className="relative z-10 w-[52%] h-[52%] object-contain drop-shadow" src={PetIcon[loadout.pet.type]} alt="pet" />
-          <div className="relative z-10 mt-3 flex flex-col items-center text-center">
-            <div className="font-semibold text-white text-sm leading-tight tracking-wide">{loadout.pet.type === 'CYBER_DOG' ? 'Cyber-Dog' : 'Cyber-Cat'}</div>
-            <div className="mt-1 text-[10px] text-gray-300 flex items-center gap-2">
-              <span className="px-2 py-0.5 rounded-full bg-white/5 border border-white/10 tracking-wide">Lv {loadout.pet.level}</span>
-              <span>{loadout.pet.role}</span>
+        {(() => {
+          const petType = (playerProfile?.progress?.pet?.type as typeof loadout.pet.type) ?? loadout.pet.type;
+          const petLevel = playerProfile?.progress?.pet?.level ?? loadout.pet.level ?? 1;
+          const petBond = playerProfile?.progress?.pet?.bond ?? 0;
+          const species = getPetSpecies(petType);
+          const tierIdx = bondTierIndex(petBond);
+          const bondPct = Math.round(bondTierProgress(petBond) * 100);
+          const petAbilities = petAbilitiesWithState(petType, petLevel, petBond);
+          return (
+            <div className="w-full max-w-[260px] rounded-3xl border border-white/10 bg-white/5 overflow-hidden relative flex flex-col items-center p-4">
+              <div className="absolute inset-0 bg-gradient-to-tr from-[#0b0e13]/80 via-transparent to-[#0b0e13]/50" />
+              <img className="relative z-10 w-[42%] object-contain drop-shadow" src={PetIcon[petType]} alt="pet" />
+              <div className="relative z-10 mt-2 flex flex-col items-center text-center w-full">
+                <div className="font-semibold text-white text-sm leading-tight tracking-wide">{species.name}</div>
+                <div className="mt-1 text-[10px] text-gray-300 flex items-center gap-2">
+                  <span className="px-2 py-0.5 rounded-full bg-white/5 border border-white/10 tracking-wide">Lv {petLevel}</span>
+                  <span>{BOND_TIERS[tierIdx].name}</span>
+                </div>
+                <div className="mt-2 w-full">
+                  <div className="flex justify-between text-[9px] opacity-70 mb-0.5">
+                    <span>Bond</span><span>{bondPct}%</span>
+                  </div>
+                  <div className="h-1.5 w-full rounded-full bg-white/10 overflow-hidden">
+                    <div className="h-full bg-gradient-to-r from-pink-500 to-fuchsia-400" style={{ width: `${bondPct}%` }} />
+                  </div>
+                </div>
+                <div className="mt-2 w-full flex flex-wrap justify-center gap-1.5">
+                  {petAbilities.map(a => (
+                    <span
+                      key={a.id}
+                      title={a.unlocked ? `${a.name} — ${a.description}` : `${a.name} — Unlocks at Lv ${a.reqLevel}, ${BOND_TIERS[a.reqBondTier].name} bond`}
+                      className={`text-sm ${a.unlocked ? '' : 'opacity-30 grayscale'}`}
+                    >{a.unlocked ? a.icon : '🔒'}</span>
+                  ))}
+                </div>
+              </div>
             </div>
-          </div>
-        </div>
+          );
+        })()}
       </div>
       {/* Pet stat chips removed per request */}
     </aside>

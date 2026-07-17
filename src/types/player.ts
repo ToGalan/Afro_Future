@@ -29,6 +29,9 @@ export interface PlayerProgress {
     victorySeen?: boolean;
     /** One-time exploration-objective reward already granted this campaign. */
     explorationRewarded?: boolean;
+    /** Running count of resources (ore/energy/bio) collected/used — every 100 grants
+     *  1 pt on the Exploitation victory track (see bumpResourceCollected). */
+    resourcesCollected?: number;
   };
   hero?: {
     level: number;

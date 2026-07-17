@@ -242,6 +242,27 @@ export function usePlayerProfile(opts: UsePlayerProfileOptions = {}) {
     }
   }, [writeProgress]);
 
+  // Flush any pending throttled write immediately when the tab is hidden or the page
+  // is closed/refreshed — otherwise up to 1.5s (or, stacked with a caller's own
+  // debounce, several seconds) of progress can be silently lost, which is the classic
+  // "autosave doesn't save my last few actions" complaint.
+  useEffect(() => {
+    const flush = () => {
+      if (pendingTimer.current) {
+        clearTimeout(pendingTimer.current);
+        pendingTimer.current = null;
+        writeProgress();
+      }
+    };
+    const onVisibility = () => { if (document.visibilityState === 'hidden') flush(); };
+    document.addEventListener('visibilitychange', onVisibility);
+    window.addEventListener('pagehide', flush);
+    return () => {
+      document.removeEventListener('visibilitychange', onVisibility);
+      window.removeEventListener('pagehide', flush);
+    };
+  }, [writeProgress]);
+
   const updateProfile = useCallback((fields: Partial<Omit<PlayerProfile, 'progress' | 'uid' | 'createdAt'>>) => {
     if (!profile) return;
     const ref = doc(db, 'players', profile.uid);

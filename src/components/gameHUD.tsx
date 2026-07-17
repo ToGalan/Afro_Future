@@ -165,6 +165,10 @@ export interface GameHUDProps {
     buffs?: string[]; debuffs?: string[];
   };
   pet?: { name: string; hp: { current: number; max: number }; ep: { current: number; max: number }; xp?: { current: number; max: number }; level: number; icon?: string; portraitUrl?: string };
+  /** Bonding progression (GDD "Bonding and Skills") — shown in the Pet tab. */
+  petBond?: { tierName: string; pct: number };
+  /** Bond/level-gated pet abilities, locked and unlocked, for the Pet tab. */
+  petAbilities?: Array<{ id: string; name: string; icon: string; description: string; unlocked: boolean; reqLevel: number; reqBondTierName: string }>;
   abilities: Ability[];
   defensiveAbilities?: Ability[];
   /** Controlled attack/defense mode (shared with in-game QWER); falls back to internal state. */
@@ -296,7 +300,7 @@ const ITEM_TOOLTIPS: Record<string, string> = {
 };
 
 export const GameHUD: React.FC<GameHUDProps> = ({
-  team, clock, hero, pet, abilities, defensiveAbilities, items, resources, skillTokens,
+  team, clock, hero, pet, petBond, petAbilities, abilities, defensiveAbilities, items, resources, skillTokens,
   subtitles, onShop, onAbility, onItem, onMinimapClick, onMenu, onSettings, onTalents,
   onScoreboard, minimapData, onSave,
   skillPoints, totalPlayTime, heroInventory, petInventory, playerProfile,
@@ -816,6 +820,41 @@ export const GameHUD: React.FC<GameHUDProps> = ({
                         </div>
                         <div className="w-full bg-black/50 rounded-full h-2">
                           <div className="bg-amber-500 h-2 rounded-full" style={{ width: `${(pet.xp.current / pet.xp.max) * 100}%` }} />
+                        </div>
+                      </div>
+                    )}
+
+                    {/* Bonding (GDD "Bonding and Skills") — grows with time spent together */}
+                    {petBond && (
+                      <div className="bg-black/30 rounded-lg p-3 mb-4">
+                        <div className="flex justify-between text-xs mb-1">
+                          <span className="opacity-60">Bond — {petBond.tierName}</span>
+                          <span className="font-bold text-pink-300">{petBond.pct}%</span>
+                        </div>
+                        <div className="w-full bg-black/50 rounded-full h-2">
+                          <div className="bg-pink-500 h-2 rounded-full" style={{ width: `${petBond.pct}%` }} />
+                        </div>
+                      </div>
+                    )}
+
+                    {/* Bond/level-gated abilities */}
+                    {petAbilities && petAbilities.length > 0 && (
+                      <div className="mb-4">
+                        <h4 className="text-sm font-bold mb-2 opacity-70">Abilities</h4>
+                        <div className="space-y-1.5">
+                          {petAbilities.map(a => (
+                            <div
+                              key={a.id}
+                              title={a.unlocked ? a.description : `Unlocks at Lv ${a.reqLevel}, ${a.reqBondTierName} bond`}
+                              className={`flex items-center gap-2 text-xs rounded-lg p-2 border ${a.unlocked ? 'bg-black/30 border-white/10' : 'bg-black/10 border-white/5 opacity-50'}`}
+                            >
+                              <span>{a.unlocked ? a.icon : '🔒'}</span>
+                              <span className="font-semibold">{a.name}</span>
+                              {!a.unlocked && (
+                                <span className="ml-auto opacity-70">Lv{a.reqLevel}·{a.reqBondTierName}</span>
+                              )}
+                            </div>
+                          ))}
                         </div>
                       </div>
                     )}

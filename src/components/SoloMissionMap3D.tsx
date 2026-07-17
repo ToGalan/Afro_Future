@@ -2,6 +2,7 @@ import React, { useMemo, useState, useEffect, Suspense, useRef } from 'react';
 import { usePlayerProfile } from '../hooks/usePlayerProfile';
 import { usePlayerSession } from '../hooks/usePlayerSession';
 import { usePetXP } from '../hooks/usePetXP';
+import { derivePetStats, bondTierIndex, bondTierProgress, unlockedPetAbilities, petAbilitiesWithState, BOND_TIERS } from '../services/petSpecies';
 import { useCollectibles, RESOURCE_DEFS } from '../hooks/useCollectibles';
 import type { Mesh } from 'three';
 import * as THREE from 'three';
@@ -2650,9 +2651,38 @@ export default function SoloMissionMap3D({
   // ── Pet type & roles (GDD): Dog = strength/combat assist, Cat = stealth/recon ──
   const petType: string = (heroAvatar as any)?.pet?.type ?? profile?.progress?.pet?.type ?? 'CYBER_CAT';
   const isDog = petType === 'CYBER_DOG';
-  const petLevel = petData?.level ?? profile?.progress?.pet?.level ?? 1;
-  const petCombatBonus = isDog ? 3 + petLevel * 2 : 0;         // Dog fights alongside you
-  const petVisionBonus = isDog ? 0 : 1;                        // Cat scouts (+vision)
+  // Live level (from usePetXP, NOT the static avatar-configurator loadout) so the
+  // combat/vision bonus below actually grows as the pet earns XP in-game.
+  const petLevel = petXPSystem.petLevel;
+  const petBond = petXPSystem.petBond;
+  const petBondTier = bondTierIndex(petBond);
+  const petUnlockedAbilities = useMemo(
+    () => unlockedPetAbilities(petType, petLevel, petBond),
+    [petType, petLevel, petBond],
+  );
+  const hasPetAbility = (id: string) => petUnlockedAbilities.some(a => a.id === id);
+  const petStats = useMemo(() => derivePetStats(petType, petLevel), [petType, petLevel]);
+  // Dog fights alongside you — passive attack bonus scales with species+level (petStats),
+  // plus +2 once "Guard" (lvl5 / Familiar bond) is unlocked (GDD "Bonding … unlocks abilities").
+  const petCombatBonus = isDog ? Math.round(petStats.attack + (hasPetAbility('dog_guard') ? 2 : 0)) : 0;
+  // Cat scouts (+vision); "Sneak" is unlocked from lvl1 so this is always at least 1, and
+  // widens further once "Distract" (lvl5 / Familiar bond) is unlocked.
+  const petVisionBonus = isDog ? 0 : (hasPetAbility('cat_distract') ? 2 : 1);
+  // "Guard" also has the dog physically soak some incoming damage for the hero.
+  const petIncomingDamageMult = isDog && hasPetAbility('dog_guard') ? 0.9 : 1;
+  // HUD display data (Bonding & Skills panel) — surfaces bond tier + locked/unlocked
+  // abilities to the player, which were previously computed but never shown anywhere.
+  const petBondDisplay = useMemo(() => ({
+    tierName: BOND_TIERS[petBondTier].name,
+    pct: Math.round(bondTierProgress(petBond) * 100),
+  }), [petBondTier, petBond]);
+  const petAbilitiesDisplay = useMemo(
+    () => petAbilitiesWithState(petType, petLevel, petBond).map(a => ({
+      id: a.id, name: a.name, icon: a.icon, description: a.description,
+      unlocked: a.unlocked, reqLevel: a.reqLevel, reqBondTierName: BOND_TIERS[a.reqBondTier].name,
+    })),
+    [petType, petLevel, petBond],
+  );
 
   // Attack/Defense mode — drives which ability set QWER uses AND the fight math:
   // Attack mode hits harder; Defense mode hits softer but you take far less damage.
@@ -2693,6 +2723,10 @@ export default function SoloMissionMap3D({
   const [terraformProgress, setTerraformProgress] = React.useState(0);
   const terraformDone = terraformProgress >= 100;
   const nearTerraformer = axialDistance(hero.pos, terraformAxial) <= 1;
+  // Resources collected/used toward the Exploitation victory track (1 pt per 100 —
+  // see bumpResourceCollected below, once playerFactionKey/bumpSoloVictoryRef exist).
+  const resourcesCollectedRef = React.useRef(0);
+  const [resourcesCollected, setResourcesCollected] = useState(0);
   const TERRAFORM_RADIUS = 3; // tiles greened around the terraformer on completion
 
   // Terrain that has been terraformed: tile key → new (greener) type. Applied as a
@@ -2761,10 +2795,11 @@ export default function SoloMissionMap3D({
       // completed region pays the region bonus on top — ~100 outposts fill the track).
       bumpSoloVictoryRef.current?.(playerFactionKey, 'control',
         VICTORY_POINTS.outpostCapture + (regionCleared ? VICTORY_POINTS.regionControl : 0));
-      // RECONQUEST — wresting ground back from a rival empire also feeds Domination.
+      // RECONQUEST — wresting ground back from a rival empire is still called out, but no
+      // longer feeds Domination directly: Domination is earned ONLY by killing enemy units
+      // (see the useFactionEnemies onEvent 'kill' handler below) — 1 pt per unit killed.
       const rivalHeld = prevOwner !== 'neutral' && prevOwner !== 'player';
       if (rivalHeld) {
-        bumpSoloVictoryRef.current?.(playerFactionKey, 'domination', VICTORY_POINTS.enemyOutpostTaken);
         spawnCombatText(hw.x, hw.z, `⚔️ Reconquered from ${prevOwner}!`, '#ffd24a');
       }
       // Approach-specific outcome (GDD: "stealth operations, combat engagements, or tactical diplomacy").
@@ -2827,7 +2862,9 @@ export default function SoloMissionMap3D({
         const gain = Math.max(1, Math.round(camp.loot.amount * 0.5)) + diplo;
         grantResource(camp.loot.resource, gain);
         spawnCombatText(cw.x, cw.z, `🕊️ Peace · +${gain} ${resLbl}${diplo ? ' (diplomacy)' : ''}`, '#7dd3fc');
-        recordPlaystyleRef.current('negotiate');
+        // Prosperity is earned per camp HELPED (the 'help' branch below) only — negotiating
+        // still builds reputation/standing but no longer double-credits the track.
+        recordPlaystyleRef.current('negotiate', { victory: false });
         awardHeroXp(scaledMissionXp(Math.round(camp.reward.xp * 0.8), lvl)); awardFactionPoints(scaledMissionFp(camp.reward.fp + 2 + Math.floor(diplo / 2), lvl));
       } else { // aid / help — heal the camp, build standing
         spawnCombatText(cw.x, cw.z, `✚ Camp aided`, '#7fd66b');
@@ -2908,7 +2945,7 @@ export default function SoloMissionMap3D({
     guardPosts: enemyGuardPosts,
     heroAttack: Math.round((heroAttack + petCombatBonus) * combatAtkMult),
     heroHpFrac,
-    incomingDamageScale: combatIncomingScale,
+    incomingDamageScale: combatIncomingScale * petIncomingDamageMult,
     enabled: !autoMultiplayer, // solo PvE only — duels are handled by useDuel
     paused: !!inputPaused || !!activeStoryBeat, // freeze combat during skill tree AND story dialogs
     getHeroStealthed: () => heroStealthRef.current, // Stealth branch shrinks enemy detection
@@ -3264,16 +3301,29 @@ export default function SoloMissionMap3D({
   }, [saveProgress, playerFactionKey]);
   const recordPlaystyleRef = React.useRef(recordPlaystyle); recordPlaystyleRef.current = recordPlaystyle;
   const dominantStyle = React.useMemo(() => dominantPlaystyle(reputation), [reputation]);
+  // Resources gathered toward the Exploitation track: 1 pt per 100 collected/used
+  // (VICTORY_POINTS.resourceMilestone) — replaces the old per-pickup fractional credit
+  // so resource spam alone can't out-race the other victory tracks.
+  const bumpResourceCollected = React.useCallback(() => {
+    resourcesCollectedRef.current += 1;
+    setResourcesCollected(resourcesCollectedRef.current);
+    if (resourcesCollectedRef.current % 100 === 0) {
+      bumpSoloVictoryRef.current?.(playerFactionKey, 'exploitation', VICTORY_POINTS.resourceMilestone);
+    }
+  }, [playerFactionKey]);
   // Gathering a world resource node is the "scavenge" approach.
   const handleCollectWithStyle = React.useCallback(
     (flowerKey: string | null, mushroomKey: string | null, resource?: { key: string; type: 'ore' | 'energy' | 'bio' } | null) => {
       if (resource) {
-        recordPlaystyle('scavenge');
+        // Victory-track credit for resources is handled by bumpResourceCollected (100
+        // collected/used → 1 pt) instead of a per-pickup fraction; reputation still accrues.
+        recordPlaystyle('scavenge', { victory: false });
+        bumpResourceCollected();
         // Resource gathering is a core GDD MOBA objective → feed the competitive score.
         if (mobaActiveRef.current) mobaReportObjectiveRef.current('resource');
       }
       handleCollect(flowerKey, mushroomKey, resource);
-    }, [handleCollect, recordPlaystyle]);
+    }, [handleCollect, recordPlaystyle, bumpResourceCollected]);
   // Factions already claimed by OTHER players (for lobby dedupe).
   const mobaTakenFactions = React.useMemo(() => {
     const s = new Set<Faction>();
@@ -3321,6 +3371,10 @@ export default function SoloMissionMap3D({
     if (solo.storyChoices) storyChoicesRef.current = { ...solo.storyChoices };
     if (solo.refugeeCampsDone?.length) applyRefugeeCompleted(solo.refugeeCampsDone);
     if (typeof solo.terraformProgress === 'number' && solo.terraformProgress > 0) setTerraformProgress(solo.terraformProgress);
+    if (typeof solo.resourcesCollected === 'number' && solo.resourcesCollected > 0) {
+      resourcesCollectedRef.current = solo.resourcesCollected;
+      setResourcesCollected(solo.resourcesCollected);
+    }
     explorationRewardedRef.current = !!solo.explorationRewarded;
     // Victory race: restore every faction's track points (missing keys default to 0).
     if (solo.victory) {
@@ -3415,30 +3469,54 @@ export default function SoloMissionMap3D({
     // saveProgress rate-limits network writes to a 1.5s window — reload after the flush.
     window.setTimeout(() => window.location.reload(), 1800);
   }, [saveProgress]);
+  // Ref always holding the latest "build the solo snapshot" closure so the debounced
+  // autosave, the manual Save Game button, and the tab-hide/close flush all persist
+  // identical, fresh data (fixes the Save Game button previously omitting several fields).
+  const buildSoloSnapshotRef = React.useRef<() => Record<string, unknown>>(() => ({}));
+  buildSoloSnapshotRef.current = () => ({
+    outpostsOwned: Array.from(outposts.values()).filter(o => o.owner === 'player').map(o => o.key),
+    rivalOutposts: Object.fromEntries(
+      Array.from(outposts.values())
+        .filter(o => o.owner !== 'player' && o.owner !== 'neutral')
+        .map(o => [o.key, o.owner]),
+    ),
+    storyBeat: storyBeatIdxRef.current,
+    storyChoices: storyChoicesRef.current,
+    terraformProgress,
+    refugeeCampsDone: Array.from(refugeeCamps.values()).filter(c => c.completed).map(c => c.key),
+    victory: soloVictoryRef.current,
+    victoryResult: soloVictoryResult ?? null,
+    victorySeen: victorySeenRef.current,
+    explorationRewarded: explorationRewardedRef.current,
+    resourcesCollected: resourcesCollectedRef.current,
+  });
   // Debounced auto-save of the solo world state whenever it changes (solo only, post-hydration).
   React.useEffect(() => {
     if (autoMultiplayer || mobaMode || !soloHydratedRef.current || campaignResettingRef.current) return;
     const t = setTimeout(() => {
       if (campaignResettingRef.current) return;
-      saveProgress({ solo: {
-        outpostsOwned: Array.from(outposts.values()).filter(o => o.owner === 'player').map(o => o.key),
-        rivalOutposts: Object.fromEntries(
-          Array.from(outposts.values())
-            .filter(o => o.owner !== 'player' && o.owner !== 'neutral')
-            .map(o => [o.key, o.owner]),
-        ),
-        storyBeat: storyBeatIdxRef.current,
-        terraformProgress,
-        refugeeCampsDone: Array.from(refugeeCamps.values()).filter(c => c.completed).map(c => c.key),
-        victory: soloVictoryRef.current,
-        victoryResult: soloVictoryResult ?? null,
-        victorySeen: victorySeenRef.current,
-        explorationRewarded: explorationRewardedRef.current,
-      } } as any);
+      saveProgress({ solo: buildSoloSnapshotRef.current() } as any);
     }, 900);
     return () => clearTimeout(t);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [outpostControl.owned, terraformProgress, refugeeProgress.done, soloVictory, soloVictoryResult, soloResultDismissed, autoMultiplayer, mobaMode]);
+  }, [outpostControl.owned, terraformProgress, refugeeProgress.done, soloVictory, soloVictoryResult, soloResultDismissed, autoMultiplayer, mobaMode, soloHydrated, resourcesCollected]);
+  // Flush the solo snapshot immediately when the tab is hidden/closing — otherwise the
+  // 900ms debounce above (stacked with usePlayerProfile's own 1.5s write throttle) can
+  // silently drop the last few seconds of solo progress on a refresh or tab close.
+  React.useEffect(() => {
+    if (autoMultiplayer || mobaMode) return;
+    const flush = () => {
+      if (!soloHydratedRef.current || campaignResettingRef.current) return;
+      saveProgress({ solo: buildSoloSnapshotRef.current() } as any);
+    };
+    const onVisibility = () => { if (document.visibilityState === 'hidden') flush(); };
+    document.addEventListener('visibilitychange', onVisibility);
+    window.addEventListener('pagehide', flush);
+    return () => {
+      document.removeEventListener('visibilitychange', onVisibility);
+      window.removeEventListener('pagehide', flush);
+    };
+  }, [autoMultiplayer, mobaMode, saveProgress]);
 
   // Capture the adjacent outpost via a chosen approach; also submits the MOBA capture intent.
   // Infiltrate/negotiate are skill-gated (Stealth/Diplomacy cores) — locked picks just warn.
@@ -3565,6 +3643,41 @@ export default function SoloMissionMap3D({
     const rw = axialToWorld(bestPos, hexSize);
     spawnCombatText(rw.x, rw.z, `-${dmg}`, '#ffd24a');
   };
+
+  // Pet actively attacks (GDD: pets "assist in combat … attack") once bonded enough to
+  // fight alongside the hero ("Guard", lvl5/Familiar) — on top of the passive combat
+  // bonus above, the Dog periodically lands its own strike on the nearest enemy in
+  // range. Once "Bark Stun" unlocks (lvl12/Bonded) each strike also briefly stuns.
+  React.useEffect(() => {
+    if (!isDog || !hasPetAbility('dog_guard')) return;
+    const iv = setInterval(() => {
+      if (duelActive || mobaActiveRef.current) return; // don't interfere with 1v1s
+      const power = Math.max(1, Math.round(petStats.attack * 0.6));
+      const res = strikeNearbyEnemyRef.current(power);
+      if (res.hit) {
+        const pw = axialToWorld(pet.pos, hexSize);
+        spawnCombatText(pw.x, pw.z, `🐕 -${power}`, '#ffb454');
+        if (hasPetAbility('dog_barkstun')) applyEnemyEffectRef.current('stun', 1200, 2);
+      }
+    }, 3000);
+    return () => clearInterval(iv);
+  }, [isDog, petUnlockedAbilities, petStats.attack, duelActive, pet.pos, hexSize, spawnCombatText]);
+
+  // Cat's "Hack Scratch" (lvl12/Bonded) — a periodic ranged shred on the nearest enemy,
+  // distinct from the Dog's melee assist (GDD: cat "gathers intel", assists more subtly).
+  React.useEffect(() => {
+    if (isDog || !hasPetAbility('cat_hack')) return;
+    const iv = setInterval(() => {
+      if (duelActive || mobaActiveRef.current) return;
+      const power = Math.max(1, Math.round(petStats.attack * 0.5));
+      const res = strikeNearbyEnemyRef.current(power);
+      if (res.hit) {
+        const pw = axialToWorld(pet.pos, hexSize);
+        spawnCombatText(pw.x, pw.z, `🐈 -${power}`, '#c084fc');
+      }
+    }, 4000);
+    return () => clearInterval(iv);
+  }, [isDog, petUnlockedAbilities, petStats.attack, duelActive, pet.pos, hexSize, spawnCombatText]);
 
   // Pet fetch (GDD): the companion periodically carries a supply from base to the field.
   React.useEffect(() => {
@@ -5554,6 +5667,8 @@ export default function SoloMissionMap3D({
                     portraitUrl: petData?.portraitUrl,
                   };
                 })()}
+                petBond={petBondDisplay}
+                petAbilities={petAbilitiesDisplay}
                 abilities={abilitySlots}
                 defensiveAbilities={defenseSlots}
                 abilityMode={abilityMode}
@@ -5573,9 +5688,10 @@ export default function SoloMissionMap3D({
                 onMenu={onExit}
                 onSave={autoMultiplayer ? undefined : () => {
                   // Explicit "Save Game" (solo only): flush a full live snapshot so the
-                  // player can quit and resume exactly where they left off. Mirrors the
-                  // auto-save fields but bundles them into one write on demand. Disabled
-                  // in multiplayer duels where the arena position isn't meaningful to save.
+                  // player can quit and resume exactly where they left off. Reuses the
+                  // same buildSoloSnapshotRef as the auto-save/tab-close flush, so the
+                  // fields never drift out of sync. Disabled in multiplayer duels where
+                  // the arena position isn't meaningful to save.
                   try {
                     const s = useSkillStore.getState();
                     const lvl = Math.max(1, getLevelFromXp(Math.floor(heroXpLive)), s.level);
@@ -5586,12 +5702,9 @@ export default function SoloMissionMap3D({
                       heroInventory: localHeroInventory as any,
                       petInventory: localPetInventory as any,
                       explored: Array.from(exploredRef.current),
-                      // Solo world state — captured territory, terraforming, resolved camps.
-                      solo: {
-                        outpostsOwned: Array.from(outposts.values()).filter(o => o.owner === 'player').map(o => o.key),
-                        terraformProgress,
-                        refugeeCampsDone: Array.from(refugeeCamps.values()).filter(c => c.completed).map(c => c.key),
-                      },
+                      // Solo world state — captured territory, terraforming, resolved camps,
+                      // rival outposts, story progress, victory tracks, resource counter.
+                      solo: buildSoloSnapshotRef.current(),
                     } as any);
                   } catch {}
                 }}

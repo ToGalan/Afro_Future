@@ -126,7 +126,8 @@ export const VICTORY_POINTS = {
   kill: 1,                 // a solo dominant act (enemy defeated, assault capture) → Domination
   campResolve: 1,          // resolving a refugee camp (help/negotiate/loot) → Prosperity or Exploitation
   terraform: 2,            // completing a region terraform → Prosperity
-  resource: 0.5,           // gathering a resource node → Exploitation
+  resource: 0.5,           // gathering a resource node → Exploitation (multiplayer MOBA scoring)
+  resourceMilestone: 1,    // solo only: every 100 resources collected/used → Exploitation
   exploration: 5,          // one-time full-map exploration feat → Exploitation
   raid: 1,                 // raiding/flipping a rival outpost → Domination
   holdTickPerOutpost: 0.05, // per owned outpost per scoring tick (passive hold income) → Control

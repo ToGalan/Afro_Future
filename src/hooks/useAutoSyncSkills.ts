@@ -8,10 +8,24 @@ export function useAutoSyncSkills(enabled: boolean = true) {
   const { saveProgress, profile } = usePlayerProfile();
   const lastSerialized = useRef<string>('');
   const timeoutRef = useRef<number | null>(null);
+  const hydratedRef = useRef(false);
 
-  // Hydrate store if profile already has hero + skillTokens data (future extension)
+  // Hydrate the (client-only, in-memory) skill store from the persisted profile the
+  // first time it loads — without this, `useSkillStore`'s level/unlocked/unlockOrder
+  // (and therefore primaryBranch/primaryType/traitTags derived from them) always start
+  // at their fresh-session defaults on every reload, so anything reading them directly
+  // from the store (e.g. the Dashboard's Hero XP/Primary Path/Primary Type cards) shows
+  // stale/empty values even though real progress is saved in Firestore.
   useEffect(() => {
-    // For now we only push from client to profile; hydration step can be added here.
+    if (hydratedRef.current || !profile) return;
+    hydratedRef.current = true;
+    const hero = profile.progress?.hero;
+    if (!hero) return;
+    useSkillStore.getState().hydrate({
+      level: hero.level,
+      unlocked: hero.unlockedSkillIds,
+      unlockOrder: hero.unlockOrder,
+    });
   }, [profile]);
 
   useEffect(() => {
