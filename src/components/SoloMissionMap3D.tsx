@@ -2560,7 +2560,9 @@ export default function SoloMissionMap3D({
     onCombat: ({ campQ, campR, toCreep, toHero, killed }) => {
       if (toCreep > 0) { const cw = axialToWorld({ q: campQ, r: campR }, hexSize); spawnCombatText(cw.x, cw.z, `-${toCreep}`, '#ffd24a'); }
       if (toHero > 0) { const hw = axialToWorld({ q: hero.pos.q, r: hero.pos.r }, hexSize); spawnCombatText(hw.x, hw.z, `-${toHero}`, '#ff5555'); }
-      if (killed > 0) recordPlaystyleRef.current('dominate'); }, // combat kills → Conqueror path
+      // Creep kills shape Conqueror reputation but do NOT feed the Domination victory
+      // track — Domination is earned against rival FACTIONS, not neutral camps.
+      if (killed > 0) recordPlaystyleRef.current('dominate', { victory: false }); },
   });
   // Stable ref so the keydown 'F' handler always calls the current attack action.
   const attackNearbyRef = React.useRef(attackNearbyCamp);
@@ -3082,7 +3084,7 @@ export default function SoloMissionMap3D({
   }, [soloEnabled, playerFactionKey]);
   const bumpSoloVictoryRef = React.useRef(bumpSoloVictory); bumpSoloVictoryRef.current = bumpSoloVictory;
 
-  const recordPlaystyle = React.useCallback((p: Playstyle) => {
+  const recordPlaystyle = React.useCallback((p: Playstyle, opts?: { victory?: boolean }) => {
     setReputation(prev => {
       const next = { ...prev, [p]: prev[p] + 1 };
       saveProgress({ reputation: next } as any); // persist to the profile
@@ -3091,6 +3093,9 @@ export default function SoloMissionMap3D({
     // Playstyle actions also advance your victory track (help/negotiate→Prosperity,
     // scavenge/loot→Exploitation, dominate→Domination). One camp/outpost/defeat ≈ 1 pt
     // against the 100-point threshold; a resource scavenge is a half-point minor act.
+    // Pass { victory: false } for acts that shape reputation but should NOT advance a
+    // victory track (e.g. neutral-creep kills — Domination is about rival factions).
+    if (opts?.victory === false) return;
     const pv = ({
       help: ['prosperity', VICTORY_POINTS.campResolve],
       negotiate: ['prosperity', VICTORY_POINTS.campResolve],
