@@ -35,6 +35,9 @@ export interface RemoteHero {
   hp: number; maxHp: number;
   faction?: string; gender?: string; name?: string;
   moving?: boolean; facing?: number;
+  /** Walk-cycle playback-rate multiplier (SPD stat + haste, clamped ~0.55-2.2) so the
+   *  remote avatar's animation speed matches how fast they actually cross ground. */
+  spd?: number;
   pet?: RemotePet | null;
   lastSeen: number;
 }
@@ -43,6 +46,7 @@ export interface LocalHeroSnapshot {
   hp: number; maxHp: number;
   faction?: string; gender?: string; name?: string;
   moving?: boolean; facing?: number;
+  spd?: number;
   pet?: RemotePet | null;
 }
 
@@ -108,7 +112,7 @@ export function useDuel(opts: DuelOpts = {}) {
       if (m.t === 'state') {
         const snap: RemoteHero = {
           pos: m.pos, hp: m.hp, maxHp: m.maxHp, faction: m.faction, gender: m.gender,
-          name: m.name, moving: m.moving, facing: m.facing, pet: m.pet ?? null, lastSeen: Date.now(),
+          name: m.name, moving: m.moving, facing: m.facing, spd: m.spd, pet: m.pet ?? null, lastSeen: Date.now(),
         };
         remoteBufRef.current = snap; // smooth-interp source (no re-render)
         // Re-render the UI bits only when HP / identity / pet change (not every tick).

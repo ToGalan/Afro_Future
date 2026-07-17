@@ -27,6 +27,9 @@ interface IsometricCharacterProps {
   /** Y-axis rotation (radians) toward movement direction. */
   facingAngle?: number;
   animated?:    boolean;
+  /** Walk-cycle playback-rate multiplier — driven by the SPD stat so faster heroes
+   *  visibly move their legs/arms quicker (1 = baseline cadence). */
+  speedMult?:   number;
 }
 
 function darken(hex: string, amount: number): string {
@@ -398,6 +401,7 @@ export function IsometricCharacter({
   isMoving    = false,
   facingAngle,
   animated    = true,
+  speedMult   = 1,
 }: IsometricCharacterProps) {
   const groupRef    = useRef<THREE.Group>(null);
   const leftLegRef  = useRef<THREE.Group>(null);
@@ -464,8 +468,8 @@ export function IsometricCharacter({
     }
 
     if (isMoving && animated) {
-      // Fluid walk cycle — arms and legs swing naturally
-      const freq  = 9.0;
+      // Fluid walk cycle — arms and legs swing naturally; cadence scales with SPD.
+      const freq  = 9.0 * speedMult;
       const phase = t * freq;
       const leg   =  Math.sin(phase) * 0.55;
       const arm   = -Math.sin(phase) * 0.42;

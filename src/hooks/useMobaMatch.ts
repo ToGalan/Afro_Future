@@ -52,6 +52,9 @@ export interface MobaHero {
   pos: { q: number; r: number };
   hp: number; maxHp: number;
   name?: string; gender?: string; moving?: boolean; facing?: number;
+  /** Walk-cycle playback-rate multiplier (SPD stat + haste) so remote avatars animate
+   *  at the speed they actually move; AI bots leave this undefined (normal 1x pace). */
+  spd?: number;
   isAI?: boolean;
   pet?: MobaPet | null;
   lastSeen: number;
@@ -60,6 +63,7 @@ export interface MobaLocalSnapshot {
   pos: { q: number; r: number };
   hp: number; maxHp: number;
   gender?: string; name?: string; moving?: boolean; facing?: number;
+  spd?: number;
   pet?: MobaPet | null;
 }
 /** An outpost with per-faction ownership, keyed `${q},${r}` like useOutposts. */
@@ -211,7 +215,7 @@ export function useMobaMatch(opts: MobaOpts = {}) {
         const ms = matchRef.current;
         // Seat the host's own hero into the sim.
         if (snap && myUid && myFac) {
-          heroesRef.current.set(myUid, { uid: myUid, faction: myFac, pos: snap.pos, hp: snap.hp, maxHp: snap.maxHp, name: snap.name, gender: snap.gender, moving: snap.moving, facing: snap.facing, pet: snap.pet ?? null, lastSeen: Date.now() });
+          heroesRef.current.set(myUid, { uid: myUid, faction: myFac, pos: snap.pos, hp: snap.hp, maxHp: snap.maxHp, name: snap.name, gender: snap.gender, moving: snap.moving, facing: snap.facing, spd: snap.spd, pet: snap.pet ?? null, lastSeen: Date.now() });
         }
         // Drop stale (disconnected) human heroes.
         const now = Date.now();
@@ -305,7 +309,7 @@ export function useMobaMatch(opts: MobaOpts = {}) {
     if (m.t === 'snap') {
       heroesRef.current.set(from, {
         uid: from, faction: m.faction, pos: m.pos, hp: m.hp, maxHp: m.maxHp,
-        name: m.name, gender: m.gender, moving: m.moving, facing: m.facing, pet: m.pet ?? null, lastSeen: Date.now(),
+        name: m.name, gender: m.gender, moving: m.moving, facing: m.facing, spd: m.spd, pet: m.pet ?? null, lastSeen: Date.now(),
       });
     } else if (m.t === 'cap' && ms) {
       const h = heroesRef.current.get(from);

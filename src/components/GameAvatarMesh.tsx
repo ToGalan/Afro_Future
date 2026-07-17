@@ -159,7 +159,7 @@ function GameAvatarFitAnchor({
  * the GLB and the procedural fallback turn to face the movement direction.
  */
 export function GameAvatar({
-  heroModelUrl, heroParts, heroColors, hexSize, gender, isMoving = false, facingAngle,
+  heroModelUrl, heroParts, heroColors, hexSize, gender, isMoving = false, facingAngle, speedMult = 1,
 }: {
   heroModelUrl?: string;
   heroParts: Record<string, string | undefined>;
@@ -168,6 +168,8 @@ export function GameAvatar({
   gender?: CharacterGender;
   isMoving?: boolean;
   facingAngle?: number;
+  /** Walk-cycle playback-rate multiplier, driven by the hero's SPD stat. */
+  speedMult?: number;
 }) {
   const avatarGroupRef = React.useRef<THREE.Group>(null);
 
@@ -184,9 +186,9 @@ export function GameAvatar({
     <group frustumCulled={false}>
       <group ref={avatarGroupRef} name={heroModelUrl ? 'glb-avatar' : 'assembled-avatar'} position={[0, 0, 0]} frustumCulled={false}>
         {heroModelUrl ? (
-          <GLBAvatarMesh url={heroModelUrl} parts={heroParts} colors={heroColors} gender={gender} hexSize={hexSize} isMoving={isMoving} />
+          <GLBAvatarMesh url={heroModelUrl} parts={heroParts} colors={heroColors} gender={gender} hexSize={hexSize} isMoving={isMoving} speedMult={speedMult} />
         ) : (
-          <AssembledAvatarMesh parts={heroParts} colors={heroColors} gender={gender} hexSize={hexSize} isMoving={isMoving} />
+          <AssembledAvatarMesh parts={heroParts} colors={heroColors} gender={gender} hexSize={hexSize} isMoving={isMoving} speedMult={speedMult} />
         )}
       </group>
       <GameAvatarFitAnchor groupRef={avatarGroupRef} hexSize={hexSize} colors={heroColors} />
@@ -209,13 +211,14 @@ export function GameAvatar({
  * the Canvas, killing the entire avatar subtree. Static bind-pose is correct for game mode.
  */
 function AssembledAvatarMesh({
-  parts, colors, gender, hexSize, isMoving,
+  parts, colors, gender, hexSize, isMoving, speedMult = 1,
 }: {
   parts: Record<string, string | undefined>;
   colors: AvatarColors;
   gender?: CharacterGender;
   hexSize?: number;
   isMoving?: boolean;
+  speedMult?: number;
 }) {
   const rootRef = React.useRef<THREE.Group>(null);
   const hasCustomParts = Object.values(parts).some(p => p);
@@ -233,7 +236,7 @@ function AssembledAvatarMesh({
   // Procedural fallback gets isMoving for the walk cycle; facing is handled by the
   // parent GameAvatar group so it isn't applied twice.
   const procFallback = (
-    <IsometricCharacter gender={gender ?? 'FEMALE'} colors={colors} hexSize={hexSize ?? 3} isMoving={isMoving} />
+    <IsometricCharacter gender={gender ?? 'FEMALE'} colors={colors} hexSize={hexSize ?? 3} isMoving={isMoving} speedMult={speedMult} />
   );
 
   if (!hasCustomParts) return procFallback;
@@ -249,8 +252,9 @@ function AssembledAvatarMesh({
         <group ref={rootRef} position={[0, 0, 0]}>
           {/* Real skeletal animation: idle pose (arms down) when still, walk clip when
               moving. Uses the same rig/clips as the character creator, so it poses
-              reliably instead of the procedural bone-swing that couldn't lower arms. */}
-          <AvatarAnimator moving={!!isMoving}>
+              reliably instead of the procedural bone-swing that couldn't lower arms.
+              speed only applies while moving — the SPD stat shouldn't speed up idle breathing. */}
+          <AvatarAnimator moving={!!isMoving} speed={isMoving ? speedMult : 1}>
             <BaseBody />
             <AvatarPartsLoader parts={parts} />
           </AvatarAnimator>
@@ -281,7 +285,7 @@ class GLBErrorBoundary extends React.Component<
  * Suspense boundary never receives it and the model never loads.
  * GLBErrorBoundary above handles actual JS errors (bad URL, decode failure).
  */
-function GLBAvatarInner({ url, colors, isMoving }: { url: string; colors: AvatarColors; isMoving?: boolean }) {
+function GLBAvatarInner({ url, colors, isMoving, speedMult = 1 }: { url: string; colors: AvatarColors; isMoving?: boolean; speedMult?: number }) {
   const { scene, animations } = useGLTF(url) as any; // unconditional — do NOT wrap in try/catch
   const groupRef = useRef<THREE.Group>(null);
   const inst = useMemo(() => {
@@ -312,8 +316,10 @@ function GLBAvatarInner({ url, colors, isMoving }: { url: string; colors: Avatar
     const target = isMoving ? moveName : idleName;
     Object.entries(actions).forEach(([n, a]) => { if (a && n !== target) a.fadeOut(0.25); });
     const act = actions[target];
-    if (act) act.reset().setEffectiveTimeScale(1).fadeIn(0.25).play();
-  }, [actions, names, isMoving]);
+    // Scale playback rate with the SPD stat while moving so faster heroes visibly
+    // move quicker; idle always plays at normal speed.
+    if (act) act.reset().setEffectiveTimeScale(isMoving ? speedMult : 1).fadeIn(0.25).play();
+  }, [actions, names, isMoving, speedMult]);
 
   useEffect(() => {
     if (inst) applyGameTint(inst, colors);
@@ -333,11 +339,11 @@ function GLBAvatarInner({ url, colors, isMoving }: { url: string; colors: Avatar
  * MUST be module-level for the same hook-stability reason as AssembledAvatarMesh.
  * Falls back to the assembled/procedural avatar if the GLB fails to load.
  */
-function GLBAvatarMesh({ url, parts, colors, gender, hexSize, isMoving }: { url: string; parts: Record<string, string | undefined>; colors: AvatarColors; gender?: CharacterGender; hexSize?: number; isMoving?: boolean }) {
+function GLBAvatarMesh({ url, parts, colors, gender, hexSize, isMoving, speedMult = 1 }: { url: string; parts: Record<string, string | undefined>; colors: AvatarColors; gender?: CharacterGender; hexSize?: number; isMoving?: boolean; speedMult?: number }) {
   return (
-    <GLBErrorBoundary resetKey={url} fallback={<AssembledAvatarMesh parts={parts} colors={colors} gender={gender} hexSize={hexSize} isMoving={isMoving} />}>
+    <GLBErrorBoundary resetKey={url} fallback={<AssembledAvatarMesh parts={parts} colors={colors} gender={gender} hexSize={hexSize} isMoving={isMoving} speedMult={speedMult} />}>
       <React.Suspense fallback={null}>
-        <GLBAvatarInner url={url} colors={colors} isMoving={isMoving} />
+        <GLBAvatarInner url={url} colors={colors} isMoving={isMoving} speedMult={speedMult} />
       </React.Suspense>
     </GLBErrorBoundary>
   );

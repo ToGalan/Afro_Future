@@ -493,6 +493,9 @@ function EnemyUnitMesh({ enemy, size, target }: { enemy: FactionEnemy; size: num
 
   const gender = enemyHash(enemy.id) % 2 === 0 ? 'MALE' : 'FEMALE';
   const auraColor = hunting ? '#ff3b3b' : doc.color;
+  // Animation cadence follows the doctrine's AI move-tick rate (moveEvery: lower = moves
+  // more often) so relentless Raiders visibly stride faster than leashed Peacekeepers.
+  const speedMult = Math.max(0.6, Math.min(1.4, 1 / doc.moveEvery));
 
   return (
     <group ref={ref} frustumCulled={false}>
@@ -505,6 +508,7 @@ function EnemyUnitMesh({ enemy, size, target }: { enemy: FactionEnemy; size: num
           hexSize={size}
           faction={enemy.faction}
           isMoving={moving}
+          speedMult={speedMult}
         />
       </group>
 
@@ -795,10 +799,13 @@ function RemoteDuelist({ bufRef, remote, hexSize, colors }: {
   });
   const hpPct = remote ? Math.max(0, Math.min(1, remote.hp / Math.max(1, remote.maxHp))) : 1;
   const isDogPet = (remote?.pet?.type ?? bufRef.current?.pet?.type) === 'CYBER_DOG';
+  // Walk-cycle rate synced from the opponent's own SPD+haste snapshot (falls back to a
+  // normal 1x pace for stale/pre-sync frames) so their animation matches how fast they move.
+  const speedMult = Math.max(0.55, Math.min(2.2, remote?.spd ?? 1));
   return (
     <>
       <group ref={groupRef} frustumCulled={false}>
-        <IsometricCharacter gender={(remote?.gender as any) ?? 'MALE'} colors={rivalColors} hexSize={hexSize} faction={remote?.faction as any} isMoving={!!remote?.moving} facingAngle={0} />
+        <IsometricCharacter gender={(remote?.gender as any) ?? 'MALE'} colors={rivalColors} hexSize={hexSize} faction={remote?.faction as any} isMoving={!!remote?.moving} facingAngle={0} speedMult={speedMult} />
         <Text position={[0, hexSize * 2.4, 0]} fontSize={hexSize * 0.42} color="#ff9a9a" anchorX="center" anchorY="middle" outlineWidth={hexSize * 0.03} outlineColor="#000">{`⚔️ ${remote?.name ?? 'Rival'}`}</Text>
         <group position={[0, hexSize * 2.0, 0]}>
           <mesh><planeGeometry args={[hexSize * 1.4, hexSize * 0.16]} /><meshBasicMaterial color="#2a0a0a" /></mesh>
@@ -958,10 +965,12 @@ function RemoteMobaHero({ uid, bufRef, hero, hexSize }: {
   const hpPct = Math.max(0, Math.min(1, hero.hp / Math.max(1, hero.maxHp)));
   const isDogPet = hero.pet?.type === 'CYBER_DOG';
   const tag = hero.isAI ? `🤖 ${hero.faction} Bot` : `${hero.faction} · ${hero.name ?? 'Rival'}`;
+  // Human rivals sync their own SPD+haste-derived pace; AI bots just walk at a normal rate.
+  const speedMult = Math.max(0.55, Math.min(2.2, hero.spd ?? 1));
   return (
     <>
       <group ref={groupRef} frustumCulled={false}>
-        <IsometricCharacter gender={(hero.gender as any) ?? 'MALE'} colors={colors} hexSize={hexSize} faction={hero.faction as any} isMoving={!!hero.moving} facingAngle={0} />
+        <IsometricCharacter gender={(hero.gender as any) ?? 'MALE'} colors={colors} hexSize={hexSize} faction={hero.faction as any} isMoving={!!hero.moving} facingAngle={0} speedMult={speedMult} />
         <Text position={[0, hexSize * 2.4, 0]} fontSize={hexSize * 0.4} color={fc.label} anchorX="center" anchorY="middle" outlineWidth={hexSize * 0.03} outlineColor="#000">{tag}</Text>
         <group position={[0, hexSize * 2.0, 0]}>
           <mesh><planeGeometry args={[hexSize * 1.4, hexSize * 0.16]} /><meshBasicMaterial color="#20242c" /></mesh>
@@ -4002,6 +4011,23 @@ export default function SoloMissionMap3D({
   const heroColors   = avatarData.colors;
   const heroFaction  = avatarData.faction;
 
+  // ── Movement speed: SPD stat (skill tree: utility→spd, Ghost/Skirmisher traits) + an
+  // active 'haste' buff drive the step cadence, so faster heroes cross ground faster. ──
+  const MOVE_BASE_MS = 155, MOVE_REF_SPD = 8;
+  const moveSpdRef = React.useRef(6);
+  moveSpdRef.current = combatStats?.spd ?? 6;
+  const moveStepMs = () => {
+    const eff = moveSpdRef.current + heroHasteRef.current;      // base SPD + haste boost
+    return Math.max(70, Math.min(300, MOVE_BASE_MS * (MOVE_REF_SPD / Math.max(1, eff))));
+  };
+  // Walk-cycle playback-rate multiplier so the avatar's legs/arms visibly speed up or
+  // slow down with the SPD stat (previously the animation ran at a fixed cadence no
+  // matter how fast the hero actually crossed tiles, so SPD investment "felt" inert).
+  // Same eff (SPD + haste) that drives step cadence, normalised against the reference
+  // SPD and clamped to a sane playback-rate range. Declared here (above the duel/MOBA
+  // snapshot-push effects below) so it can be broadcast as `spd` for remote heroes too.
+  const heroAnimSpeedMult = Math.max(0.55, Math.min(2.2, (moveSpdRef.current + heroHasteRef.current) / MOVE_REF_SPD));
+
   // Push our latest snapshot (hero + pet) to the duel hook while connected; the hook
   // broadcasts it at a fixed 15 Hz tick. Runs on any relevant change (cheap ref write).
   React.useEffect(() => {
@@ -4011,10 +4037,10 @@ export default function SoloMissionMap3D({
       hp: heroVitals?.hp.current ?? 100,
       maxHp: heroVitals?.hp.max ?? 100,
       faction: heroFaction, gender: heroGender, name: heroVitals?.name,
-      moving: isHeroMoving, facing: heroFacingAngle,
+      moving: isHeroMoving, facing: heroFacingAngle, spd: heroAnimSpeedMult,
       pet: { q: pet.pos.q, r: pet.pos.r, type: petType, moving: isPetMoving },
     });
-  }, [duelActive, hero.pos, heroVitals?.hp.current, heroVitals?.hp.max, heroVitals?.name, isHeroMoving, heroFacingAngle, heroFaction, heroGender, pet.pos, petType, isPetMoving]);
+  }, [duelActive, hero.pos, heroVitals?.hp.current, heroVitals?.hp.max, heroVitals?.name, isHeroMoving, heroFacingAngle, heroFaction, heroGender, heroAnimSpeedMult, pet.pos, petType, isPetMoving]);
 
   // Same, for the MOBA: push our hero snapshot up to the host (guest) / into the sim (host).
   React.useEffect(() => {
@@ -4024,10 +4050,10 @@ export default function SoloMissionMap3D({
       hp: heroVitals?.hp.current ?? 100,
       maxHp: heroVitals?.hp.max ?? 100,
       gender: heroGender, name: heroVitals?.name,
-      moving: isHeroMoving, facing: heroFacingAngle,
+      moving: isHeroMoving, facing: heroFacingAngle, spd: heroAnimSpeedMult,
       pet: { q: pet.pos.q, r: pet.pos.r, type: petType, moving: isPetMoving },
     });
-  }, [mobaActive, hero.pos, heroVitals?.hp.current, heroVitals?.hp.max, heroVitals?.name, isHeroMoving, heroFacingAngle, heroGender, pet.pos, petType, isPetMoving]);
+  }, [mobaActive, hero.pos, heroVitals?.hp.current, heroVitals?.hp.max, heroVitals?.name, isHeroMoving, heroFacingAngle, heroGender, heroAnimSpeedMult, pet.pos, petType, isPetMoving]);
 
   // Report our own death once → the killer faction scores an elimination (GDD).
   React.useEffect(() => {
@@ -4297,15 +4323,6 @@ export default function SoloMissionMap3D({
   const inputPausedRef = React.useRef(inputPaused);
   inputPausedRef.current = inputPaused;
 
-  // ── Movement speed: SPD stat (skill tree: utility→spd, Ghost/Skirmisher traits) + an
-  // active 'haste' buff drive the step cadence, so faster heroes cross ground faster. ──
-  const MOVE_BASE_MS = 155, MOVE_REF_SPD = 8;
-  const moveSpdRef = React.useRef(6);
-  moveSpdRef.current = combatStats?.spd ?? 6;
-  const moveStepMs = () => {
-    const eff = moveSpdRef.current + heroHasteRef.current;      // base SPD + haste boost
-    return Math.max(70, Math.min(300, MOVE_BASE_MS * (MOVE_REF_SPD / Math.max(1, eff))));
-  };
   // One hex step with collision + persistence + move-XP (shared by keydown & the held-key loop).
   const stepHeroRef = React.useRef<(d: Axial) => void>(() => {});
   stepHeroRef.current = (delta: Axial) => {
@@ -4653,13 +4670,13 @@ export default function SoloMissionMap3D({
                   {(heroModelUrl || Object.values(heroParts).some(Boolean)) ? (
                     avatarReady && (
                       <Suspense fallback={
-                        <IsometricCharacter gender={heroGender ?? 'FEMALE'} colors={heroColors} hexSize={hexSize} faction={heroFaction} isMoving={isHeroMoving} facingAngle={heroFacingAngle} />
+                        <IsometricCharacter gender={heroGender ?? 'FEMALE'} colors={heroColors} hexSize={hexSize} faction={heroFaction} isMoving={isHeroMoving} facingAngle={heroFacingAngle} speedMult={heroAnimSpeedMult} />
                       }>
-                        <GameAvatar heroModelUrl={heroModelUrl} heroParts={heroParts} heroColors={heroColors} hexSize={hexSize} gender={heroGender} isMoving={isHeroMoving} facingAngle={heroFacingAngle} />
+                        <GameAvatar heroModelUrl={heroModelUrl} heroParts={heroParts} heroColors={heroColors} hexSize={hexSize} gender={heroGender} isMoving={isHeroMoving} facingAngle={heroFacingAngle} speedMult={heroAnimSpeedMult} />
                       </Suspense>
                     )
                   ) : (
-                    <IsometricCharacter gender={heroGender ?? 'FEMALE'} colors={heroColors} hexSize={hexSize} faction={heroFaction} isMoving={isHeroMoving} facingAngle={heroFacingAngle} />
+                    <IsometricCharacter gender={heroGender ?? 'FEMALE'} colors={heroColors} hexSize={hexSize} faction={heroFaction} isMoving={isHeroMoving} facingAngle={heroFacingAngle} speedMult={heroAnimSpeedMult} />
                   )}
                 </group>
                 {(() => { const world = axialToWorld(pet.pos, hexSize); const ps = hexSize * 0.32; return (
