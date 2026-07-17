@@ -392,11 +392,14 @@ export const GameHUD: React.FC<GameHUDProps> = ({
           [MINIMAP]  [scan/glyph]  [HERO + ABILITIES — player]  │  [PET + INVENTORY — pet]
       */}
       <div className={`fixed bottom-0 left-0 right-0 z-30 ${panelCls} border-t border-white/5 shadow-2xl pointer-events-auto`}>
-        <div className="hud-bar flex items-stretch overflow-visible"> {/* portraits + abilities/inventory rows — extra height gives room for XP labels above portraits */}
+        <div className="hud-bar flex flex-col sm:flex-row items-stretch overflow-visible gap-1 sm:gap-0 pb-1 sm:pb-0"> {/* mobile: stacked rows (minimap+buttons / hero / pet) so nothing overflows off-screen; desktop: single Dota-style row */}
 
+          {/* Mobile: minimap + mode buttons share a compact top row. sm:contents removes this
+              wrapper from the flex layout on desktop, restoring the original single-row order. */}
+          <div className="flex h-14 sm:contents">
           {/* ── MINIMAP (replaces DatabaseTestPanel area — bottom-left) ─── */}
           <div
-            className="w-1/5 h-full shrink-0 cursor-crosshair relative overflow-hidden border-r border-white/5"
+            className="w-28 sm:w-1/5 h-full shrink-0 cursor-crosshair relative overflow-hidden border-r border-white/5"
             style={{ background: 'radial-gradient(ellipse at center, #1a5c33 0%, #0e3a20 55%, #081f11 100%)' }}
             onClick={e => {
               const rect = e.currentTarget.getBoundingClientRect();
@@ -422,7 +425,7 @@ export const GameHUD: React.FC<GameHUDProps> = ({
           </div>
 
           {/* ── Action buttons ──────────────────────────────────────────── */}
-          <div className="flex flex-col items-center justify-center gap-1 px-1 border-r border-white/5 shrink-0">
+          <div className="flex flex-row sm:flex-col items-center justify-center gap-1 px-1 border-r border-white/5 shrink-0">
             <button
               onClick={() => setAbilityMode('offense')}
               className={`hud-action-btn rounded-lg ring-2 flex items-center justify-center transition active:scale-90 text-base sm:text-xl ${
@@ -453,9 +456,10 @@ export const GameHUD: React.FC<GameHUDProps> = ({
               >🗺️</button>
             )}
           </div>
+          </div>
 
           {/* ── HERO + ABILITIES (player section — flex-[1]) ───────────── */}
-          <div className="flex flex-col justify-center px-2 flex-[1] min-w-0 border-r border-white/5 h-full">
+          <div className="flex flex-col justify-center px-2 w-full sm:w-auto sm:flex-[1] sm:min-w-0 border-b sm:border-b-0 sm:border-r border-white/5 h-auto sm:h-full py-2 sm:py-0">
             {/* Hero row: XP-ring portrait + hp/ep bars */}
             <div className="flex gap-2 items-center h-full pt-5 pb-2">
               {/* Portrait with XP progressive frame (conic-gradient ring) */}
@@ -505,7 +509,7 @@ export const GameHUD: React.FC<GameHUDProps> = ({
           </div>
 
           {/* ── PET + INVENTORY (pet section — flex-[1]) ──────────────────── */}
-          <div className="flex flex-col justify-center px-1.5 sm:px-2 flex-[1] min-w-0 h-full">
+          <div className="flex flex-col justify-center px-1.5 sm:px-2 w-full sm:w-auto sm:flex-[1] sm:min-w-0 h-auto sm:h-full py-2 sm:py-0">
             {/* Pet row — same layout as hero */}
             {pet && (
               <div className="flex gap-2 items-center min-w-0 h-full pt-5 pb-2">
@@ -536,8 +540,8 @@ export const GameHUD: React.FC<GameHUDProps> = ({
                   <span className="hud-name font-bold truncate leading-none mb-0.5">{pet.name}</span>
                   <Bar value={pet.hp.current} max={pet.hp.max} color="bg-lime-400" h="hud-bar-row" label={`${pet.hp.current}/${pet.hp.max} HP`} />
                   <Bar value={pet.ep.current} max={pet.ep.max} color="bg-cyan-400" h="hud-bar-row" label={`${pet.ep.current}/${pet.ep.max} EP`} />
-                  {/* Inventory — centered below bars */}
-                  <div className="flex flex-row flex-nowrap justify-center items-center gap-0.5 sm:gap-1 mt-0.5">
+                  {/* Inventory — centered below bars (4x2 grid on mobile so 8 slots don't overflow; single row on desktop) */}
+                  <div className="grid grid-cols-4 sm:flex sm:flex-row sm:flex-nowrap justify-items-center sm:justify-center items-center gap-0.5 sm:gap-1 mt-0.5">
                     {Array.from({ length: 8 }, (_, i) => {
                       const it = itemSlots[i];
                       return it && it.icon

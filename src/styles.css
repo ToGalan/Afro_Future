@@ -58,11 +58,18 @@ body { @apply bg-white text-gray-100 antialiased select-none; }
   height: clamp(1.5rem, 4.4vmin, 3rem);
 }
 
-/* ── Compact HUD on small / phone screens ─────────────────────────────────── */
+/* ── Compact HUD on small / phone screens ─────────────────────────────────────
+   The bottom bar switches from a single Dota-style row (desktop) to 3 stacked
+   rows (mobile — see gameHUD.tsx): [minimap + mode buttons] / [hero] / [pet].
+   Height goes auto so it grows to fit the stacked content instead of forcing a
+   fixed row height that made portraits/slots overflow off the right edge of
+   the screen. Portrait size is fixed (not %-of-parent) since the auto-height
+   row has no definite height to derive a percentage from. ────────────────────*/
 @media (max-width: 640px) {
-  .hud-bar { height: clamp(5.5rem, 30vw, 9rem); }
-  .hud-slot { width: clamp(1.5rem, 8.5vw, 2.4rem); height: clamp(1.5rem, 8.5vw, 2.4rem); }
-  .hud-action-btn { width: clamp(1.4rem, 7vw, 2rem); height: clamp(1.4rem, 7vw, 2rem); }
+  .hud-bar { height: auto; }
+  .hud-slot { width: clamp(1.4rem, 7.5vw, 2rem); height: clamp(1.4rem, 7.5vw, 2rem); }
+  .hud-action-btn { width: clamp(1.3rem, 6vw, 1.8rem); height: clamp(1.3rem, 6vw, 1.8rem); }
+  .hud-portrait { height: 2.75rem; }
 }
 
 /* On-screen touch controls (mobile). Hidden by default; shown for coarse pointers. */

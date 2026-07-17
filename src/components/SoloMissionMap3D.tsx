@@ -2863,7 +2863,14 @@ export default function SoloMissionMap3D({
   const storyBeatIdxRef = React.useRef(0);
   const [activeStoryBeat, setActiveStoryBeat] = useState<StoryBeat | null>(null);
   const [storyOutcome, setStoryOutcome] = useState<string | null>(null);
+  const [storyLineIdx, setStoryLineIdx] = useState(0); // which dialogue line is showing (paginated via "Next")
   const storyChoicesRef = React.useRef<Record<string, string>>({});
+  // Dismiss the dialog entirely (the 'x' close) — resets pagination so the next beat starts clean.
+  const closeStoryBeat = React.useCallback(() => {
+    setActiveStoryBeat(null);
+    setStoryOutcome(null);
+    setStoryLineIdx(0);
+  }, []);
 
   // Outpost ownership snapshot the rival-faction AI reads to contest the player's territory
   // (solo only — MOBA/duel run their own authoritative outpost systems).
@@ -3368,7 +3375,7 @@ export default function SoloMissionMap3D({
       bestTrackValue: Math.max(pv.domination, pv.control, pv.prosperity, pv.exploitation),
     };
     if (!beatReady(beat, world)) return;
-    const t = setTimeout(() => setActiveStoryBeat(beat), 900); // small beat — never mid-click
+    const t = setTimeout(() => { setStoryLineIdx(0); setActiveStoryBeat(beat); }, 900); // small beat — never mid-click
     return () => clearTimeout(t);
   }, [soloEnabled, soloHydrated, activeStoryBeat, storyArc, storyBeatIdx, outpostControl.owned, rivalPressureSeen, soloVictory, playerFactionKey]);
 
@@ -3384,6 +3391,7 @@ export default function SoloMissionMap3D({
     setStoryBeatIdx(beat.index);
     storyChoicesRef.current = { ...storyChoicesRef.current, [beat.id]: choice.id };
     setStoryOutcome(choice.outcome); // raw — {player}/{npc} tokens resolve at render
+    setStoryLineIdx(0);
     saveProgress({ solo: { storyBeat: beat.index, storyChoices: storyChoicesRef.current } } as any);
   }, [awardFactionPoints, awardHeroXp, saveProgress]);
 
@@ -5176,31 +5184,44 @@ export default function SoloMissionMap3D({
                 </div>
               )}
 
-              {/* ── Story beat dialog — two lines, one meaningful choice, then the outcome. */}
+              {/* ── Story beat dialog — bottom-center, one line at a time via "Next", 'x' to close anytime. */}
               {soloEnabled && activeStoryBeat && (
-                <div className="fixed inset-0 z-50 flex items-end justify-center pb-20 bg-black/45 backdrop-blur-[2px] pointer-events-auto">
-                  <div className="w-[min(34rem,94vw)] p-5 rounded-2xl bg-[#0c1219]/97 ring-1 ring-white/15 shadow-2xl text-gray-100">
-                    <div className="flex items-center gap-2 mb-1">
-                      <span className="w-2.5 h-2.5 rounded-full" style={{ background: FACTION_COLORS[playerFactionKey]?.primary ?? '#8a8f96' }} />
+                <div className="fixed inset-0 z-50 flex items-end justify-center pb-64 sm:pb-24 bg-black/45 backdrop-blur-[2px] pointer-events-auto">
+                  <div className="relative w-[min(34rem,94vw)] p-5 rounded-2xl bg-[#0c1219]/97 ring-1 ring-white/15 shadow-2xl text-gray-100">
+                    <button
+                      onClick={closeStoryBeat}
+                      aria-label="Close"
+                      title="Close"
+                      className="absolute top-3 right-3 w-7 h-7 rounded-lg bg-white/5 hover:bg-white/15 flex items-center justify-center text-sm font-bold transition"
+                    >✕</button>
+                    <div className="flex items-center gap-2 mb-1 pr-8">
+                      <span className="w-2.5 h-2.5 rounded-full shrink-0" style={{ background: FACTION_COLORS[playerFactionKey]?.primary ?? '#8a8f96' }} />
                       <span className="text-[11px] uppercase tracking-wider opacity-60">
                         Chapter {activeStoryBeat.index} · {activeStoryBeat.title}
                       </span>
                     </div>
-                    <div className="font-bold mb-2" style={{ color: FACTION_COLORS[playerFactionKey]?.label ?? '#e5e7eb' }}>
+                    <div className="font-bold mb-2 pr-8" style={{ color: FACTION_COLORS[playerFactionKey]?.label ?? '#e5e7eb' }}>
                       {storyNpc(playerFactionKey, heroGender ?? 'FEMALE')}
                     </div>
                     {storyOutcome ? (
                       <>
                         <div className="text-sm leading-relaxed opacity-90 italic mb-4">{storyText(storyOutcome, playerFactionKey, heroGender ?? 'FEMALE')}</div>
                         <button
-                          onClick={() => { setActiveStoryBeat(null); setStoryOutcome(null); }}
+                          onClick={closeStoryBeat}
                           className="w-full py-2 rounded-lg bg-emerald-700 hover:bg-emerald-600 font-bold"
                         >Continue</button>
                       </>
+                    ) : storyLineIdx < activeStoryBeat.lines.length - 1 ? (
+                      <>
+                        <div className="text-sm leading-relaxed opacity-90 mb-4">“{storyText(activeStoryBeat.lines[storyLineIdx], playerFactionKey, heroGender ?? 'FEMALE')}”</div>
+                        <button
+                          onClick={() => setStoryLineIdx(i => i + 1)}
+                          className="w-full py-2 rounded-lg bg-emerald-700 hover:bg-emerald-600 font-bold"
+                        >Next</button>
+                      </>
                     ) : (
                       <>
-                        <div className="text-sm leading-relaxed opacity-90 mb-1">“{storyText(activeStoryBeat.lines[0], playerFactionKey, heroGender ?? 'FEMALE')}”</div>
-                        <div className="text-sm leading-relaxed opacity-90 mb-4">“{storyText(activeStoryBeat.lines[1], playerFactionKey, heroGender ?? 'FEMALE')}”</div>
+                        <div className="text-sm leading-relaxed opacity-90 mb-4">“{storyText(activeStoryBeat.lines[storyLineIdx], playerFactionKey, heroGender ?? 'FEMALE')}”</div>
                         <div className="grid gap-2">
                           {activeStoryBeat.choices.map(c => (
                             <button
