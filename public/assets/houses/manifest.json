@@ -1,5 +1,6 @@
 {
-  "_readme": "House variations for the base's growing city (one building appears per player growth stage). These are the Fab house models, optimized from ~90MB raw exports to <1.2MB each (mesh simplify error 1%, 512px WebP textures, quantized attributes) via @gltf-transform/cli. To add more: drop a .glb/.gltf/.fbx here and append its path. Only list files that actually exist. Source folders 08 and 11 were FBX-only and are not included.",
+  "_readme": "House variations for the base's growing city (one building appears per player growth stage). These are the Fab house models, optimized from ~90MB raw exports to <1.2MB each (mesh simplify error 1%, 512px WebP textures, quantized attributes) via @gltf-transform/cli. To add more: drop a .glb/.gltf/.fbx here and append its path. Only list files that actually exist. Source folders 08 and 11 were FBX-only and are not included. `base` is a dedicated model for the Command Center's tier-1 (\"Base Camp\") appearance, used before any growth-stage buildings/districts are added — NOT part of the sprawl-building `houses` pool.",
+  "base": "/assets/houses/house_base.glb",
   "houses": [
     "/assets/houses/house_01.glb",
     "/assets/houses/house_02.glb",

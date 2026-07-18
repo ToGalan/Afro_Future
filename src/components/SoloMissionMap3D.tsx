@@ -4913,14 +4913,20 @@ export default function SoloMissionMap3D({
   // House model variations for the sprawl, from the user-editable manifest (empty →
   // procedural buildings). Fetched once; bad/missing manifest silently keeps fallback.
   const [houseVariants, setHouseVariants] = useState<string[]>([]);
+  // Dedicated model for the Command Center's tier-1 ("Base Camp") appearance — the
+  // base BEFORE any growth-stage buildings/districts are added. Separate from the
+  // sprawl `houses` pool so it never gets picked as a regular building.
+  const [baseHqUrl, setBaseHqUrl] = useState<string | null>(null);
   React.useEffect(() => {
     let alive = true;
     fetch(HOUSE_MANIFEST_URL)
       .then(r => (r.ok ? r.json() : null))
       .then(j => {
-        if (alive && j && Array.isArray(j.houses)) {
+        if (!alive || !j) return;
+        if (Array.isArray(j.houses)) {
           setHouseVariants(j.houses.filter((h: unknown): h is string => typeof h === 'string' && h.length > 0));
         }
+        if (typeof j.base === 'string' && j.base.length > 0) setBaseHqUrl(j.base);
       })
       .catch(() => {});
     return () => { alive = false; };
@@ -5835,7 +5841,7 @@ export default function SoloMissionMap3D({
                     district pad every 5th, all inside a stroked home-zone border */}
                 {(() => { const bw = axialToWorld(baseAxial, hexSize); return (
                   <group key="base" position={[bw.x, tileTopAt(baseAxial.q, baseAxial.r), bw.z]} frustumCulled={false}>
-                    <CommandCenter size={hexSize} color={heroColors.primary} tier={baseTier} stage={baseCityStage} playstyle={dominantStyle} hqUrl={hqHouseForTier(houseVariants, baseTier, BASE_TIER_NAMES.length)} />
+                    <CommandCenter size={hexSize} color={heroColors.primary} tier={baseTier} stage={baseCityStage} playstyle={dominantStyle} hqUrl={baseTier <= 1 && baseHqUrl ? baseHqUrl : hqHouseForTier(houseVariants, baseTier, BASE_TIER_NAMES.length)} />
                   </group>
                 ); })()}
                 <CityBuildingsMesh spots={cityBuildingSpots} size={hexSize} tier={baseTier} color={heroColors.primary} houses={houseVariants} />

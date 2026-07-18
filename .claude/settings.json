@@ -111,7 +111,9 @@
       "PowerShell($conn = Get-NetTCPConnection -State Listen -LocalPort 5199 -ErrorAction SilentlyContinue; if \\($conn\\) { Stop-Process -Id $conn[0].OwningProcess -Force -Confirm:$false; 'vite stopped' } else { 'not running' })",
       "PowerShell($scratch = \"C:\\\\Users\\\\brian\\\\AppData\\\\Local\\\\Temp\\\\claude\\\\d--Afro-Future--Dev-Backup-New-Dev-2025-v3\\\\84b4b9d8-d8bf-418e-8078-1420d2408561\\\\scratchpad\"; npx esbuild \"$scratch\\\\points-test.ts\" --bundle --platform=node --format=cjs --outfile=\"$scratch\\\\points-test.cjs\" --log-level=error; if \\($?\\) { node \"$scratch\\\\points-test.cjs\" })",
       "PowerShell(git stash)",
-      "PowerShell(git stash pop)"
+      "PowerShell(git stash pop)",
+      "Bash(npx @gltf-transform/cli optimize \"assets/houses/base/source/ed4011c51c31ca6a1992f3ef84c03814.glb\" \"public/assets/houses/house_base.glb\" --compress quantize --texture-compress webp --texture-size 512 --simplify-error 0.01)",
+      "PowerShell(Start-Process -FilePath \"cmd.exe\" -ArgumentList \"/c npx vite --port 5199 --strictPort > `\"$env:TEMP\\\\vite-5199.log`\" 2>&1\" -WindowStyle Hidden; Start-Sleep -Seconds 6; \\(Invoke-WebRequest -Uri \"http://localhost:5199\" -UseBasicParsing -TimeoutSec 10\\).StatusCode; \\(Invoke-WebRequest -Uri \"http://localhost:5199/assets/houses/manifest.json\" -UseBasicParsing -TimeoutSec 10\\).Content; \\(Invoke-WebRequest -Uri \"http://localhost:5199/assets/houses/house_base.glb\" -UseBasicParsing -TimeoutSec 10\\).StatusCode)"
     ]
   }
 }
