@@ -1584,7 +1584,7 @@ function MainMenu({ playerName, accountLevel, loadout, onCustomize, heroLocked, 
             <LeftPlayerPanel className="h-full" playerName={playerName} accountLevel={accountLevel} loadout={loadout} heroLocked={heroLocked} />
           </div>
           <div className={showCls('center')}>
-            <CenterHub className="h-full overflow-y-auto no-scrollbar" loadout={loadout} view={view === 'skills' ? 'dashboard' : view} />
+            <CenterHub className="h-full overflow-y-auto no-scrollbar" loadout={loadout} view={view === 'skills' ? 'dashboard' : view} onOpenHelp={() => onChangeView('help')} />
           </div>
           <div className={showCls('right')}>
             <RightPlayerPanel className="h-full overflow-y-auto no-scrollbar" loadout={loadout} onCustomize={onCustomize} onPlay={(mode)=> onLaunch ? onLaunch(mode) : onChangeView('mission')} />
@@ -1651,12 +1651,7 @@ function TopNav({ view, onChangeView, profile, onSignOut }: { view: 'dashboard' 
       </div>
       <div className="ml-auto flex items-center justify-end gap-2 sm:gap-4 shrink-0">
         <div className="hidden sm:flex"><Chip>{(gameProfile?.progress?.shards ?? 0).toLocaleString()} <span className="opacity-70">shards</span></Chip></div>
-  <div className="hidden sm:inline-flex"><IconButton label="Notifications">
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-              <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/>
-              <path d="M13.73 21a2 2 0 0 1-3.46 0"/>
-            </svg>
-          </IconButton></div>
+        {/* (Dead notifications bell removed — there is no notifications center yet.) */}
         <IconButton label={isFs ? 'Exit Fullscreen' : 'Enter Fullscreen'} onClick={toggleFullscreen}>
           {/* Expand arrows icon */}
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
@@ -2109,18 +2104,10 @@ function RightPlayerPanel({ className = '', loadout, onCustomize, onPlay }: { cl
   );
 }
 
-function CenterHub({ className = '', loadout, view }: { className?: string; loadout: CharacterLoadout; view: 'dashboard' | 'skills' | 'store' | 'help' | 'settings' | 'mission' }) {
-  if (view === 'skills') {
-    return (
-      <main className={`col-start-2 px-6 py-5 min-h-0 flex flex-col ${className}`}>
-        <div className="flex-1 rounded-3xl border border-white/10 bg-[#12171f] overflow-hidden">
-          <Suspense fallback={<div className="w-full h-full flex items-center justify-center text-gray-400">Loading skills...</div>}>
-            <SnowflakeSkillTree initialLevel={loadout.level} />
-          </Suspense>
-        </div>
-      </main>
-    );
-  }
+function CenterHub({ className = '', loadout, view, onOpenHelp }: { className?: string; loadout: CharacterLoadout; view: 'dashboard' | 'skills' | 'store' | 'help' | 'settings' | 'mission'; onOpenHelp?: () => void }) {
+  // (The 'skills' view never reaches CenterHub — MainMenu remaps it to 'dashboard'
+  // and renders the full-screen SkillsModal instead; the old duplicate branch that
+  // rendered a second skill tree here was removed.)
   if (view === 'store') {
     return <StoreView className={className} />;
   }
@@ -2146,9 +2133,9 @@ function CenterHub({ className = '', loadout, view }: { className?: string; load
         <HeroBanner loadout={loadout} />
       </div>
       <div className="flex-1 grid grid-cols-1 sm:grid-cols-3 gap-3 sm:gap-5 min-h-0">
-        <NewsCard title="Season 1: Terraformers" />
-        <NewsCard title="Patch 0.2.3 Notes" />
-        <NewsCard title="Community Spotlight" />
+        <NewsCard title="Campaign: Race the Victory Tracks" blurb="Domination, Control, Prosperity or Exploitation — first faction to fill one wins." onView={onOpenHelp} />
+        <NewsCard title="Your Base Grows With You" blurb="Every level adds a building; borders expand and districts unlock as you climb." onView={onOpenHelp} />
+        <NewsCard title="Multiplayer: Duels & 1v1v1 MOBA" blurb="Quick-match a 1v1 duel or a three-faction MOBA; AI fills empty factions." onView={onOpenHelp} />
       </div>
     </main>
   );
@@ -2325,12 +2312,16 @@ function SettingsView({ className='' }: { className?: string }) {
 // --- Help View ---
 function HelpView({ className='' }: { className?: string }) {
   const items = [
-    { title: 'Choose Your Faction', desc: 'Pick PAA, ASF, or WC, each with unique strengths and lore.', icon: '🏳️' },
-    { title: 'Select Archetype', desc: 'Male or Female hero. Your archetype sets your starting presence.', icon: '🧍' },
-    { title: 'Customize Avatar', desc: 'Tweak parts and colors. Save to lock in your hero.', icon: '🎨' },
-    { title: 'Unlock Skills', desc: 'Spend points along branches to unlock combat and utility perks.', icon: '🌿' },
-    { title: 'Enter Missions', desc: 'Single-player for now. Multiplayer coming soon.', icon: '🎯' },
-    { title: 'Earn & Progress', desc: 'Level up and expand your build over time.', icon: '⬆️' },
+    { title: 'Choose Your Faction', desc: 'PAA, ASF or WC. Your faction tilts one victory track (Prosperity, Domination or Exploitation) but never locks you in: any faction can win any way.', icon: '🏳️' },
+    { title: 'Create Your Hero', desc: 'Pick an archetype, then customize parts and colors in the creator. Your hero, skills, pet and shards persist across campaigns.', icon: '🎨' },
+    { title: 'The Skill Snowflake', desc: 'Twelve branches around a core. Branch cores are castable abilities (Q/E/R/T offense, Z/X/C/V defense, Tab swaps); deep investment earns trait bonuses to your real stats.', icon: '❄️' },
+    { title: 'Win the Campaign', desc: 'Race two rival empires on four victory tracks: Domination, Control, Prosperity, Exploitation. First faction to fill any track wins. Watch the meters in the top bar.', icon: '🏆' },
+    { title: 'Capture & Choose', desc: 'Take outposts with G, by assault, or infiltrate 🥷 / negotiate 🕊️ when skilled. Aid or loot refugee camps with H. Your choices build your reputation: Healer to Conqueror.', icon: '🚩' },
+    { title: 'Grow Your Base', desc: 'Every level adds a building to your city, the border stroke pushes outward, and districts unlock. Terraform (T at the terraformer) to green the wasteland.', icon: '🏘️' },
+    { title: 'Your Pet Companion', desc: 'Cyber-Dog fights beside you; Cyber-Cat scouts. It levels, bonds and unlocks abilities, and fetches supplies from base. Use pack items with 1-8.', icon: '🐾' },
+    { title: 'Multiplayer', desc: 'From Game Modes: a 1v1 duel (first to 3 takedowns) or the 1v1v1 MOBA where three factions race the same victory tracks; AI fills empty seats.', icon: '⚔️' },
+    { title: 'Controls Recap', desc: 'WASD move · F attack · G capture · H aid · T/Y terraform · C collect · Tab swap ability sets · 1-8 items · ❓ in-mission opens the guided tutorial.', icon: '🕹️' },
+    { title: 'Performance', desc: 'The ✨ button toggles high graphics (bloom + sharp shadows), and 🎞 caps the framerate at 30 / 60 / 120. Both live in the mission top bar.', icon: '⚡' },
   ];
   // Two-card pager
   const [page, setPage] = React.useState(0);
@@ -2377,7 +2368,6 @@ function HelpView({ className='' }: { className?: string }) {
                         <div className="text-2xl select-none">{s.icon}</div>
                         <div className="text-sm font-semibold tracking-wide">{s.title}</div>
                         <div className="text-xs opacity-75 leading-relaxed">{s.desc}</div>
-                        <div className="mt-2 h-24 rounded-lg bg-gradient-to-br from-black/10 to-white/5 border border-white/10 flex items-center justify-center text-[10px] opacity-60">Illustration</div>
                       </div>
                     ))}
                   </div>
@@ -2397,52 +2387,8 @@ function HelpView({ className='' }: { className?: string }) {
   );
 }
 
-function RightStartPanel({ className = '' }: { className?: string }) {
-  const [mode, setMode] = useState<'single' | 'multi'>('single');
-  const [queue, setQueue] = useState<string | null>(null);
-  function startMatch() {
-    if (mode !== 'single') return; // only single-player active right now
-    setQueue('~ Est. 0:25');
-    setTimeout(()=> setQueue('Searching…'), 1200);
-  }
-  const modes: { key: 'single' | 'multi'; label: string; enabled: boolean }[] = [
-    { key: 'single', label: 'Single Player', enabled: true },
-    { key: 'multi', label: 'Multiplayer (Coming Soon)', enabled: false },
-  ];
-  return (
-    <aside className={`col-start-3 h-full ${className} bg-[#0f1218] border-l border-black/40 shadow-inner flex flex-col`}>
-      <div className="px-4 py-4 border-b border-white/10">
-        <div className="text-lg font-semibold">Game Modes</div>
-        <div className="mt-4 grid gap-3">
-          {modes.map(m => (
-            <button
-              key={m.key}
-              disabled={!m.enabled}
-              onClick={() => m.enabled && setMode(m.key)}
-              className={`rounded-2xl px-4 py-4 text-left relative overflow-hidden border transition group
-                h-24 flex items-start
-                ${mode === m.key ? 'bg-emerald-600/30 border-emerald-500/60 shadow-inner' : 'bg-white/5 border-white/10 hover:bg-white/10'}
-                ${!m.enabled ? 'opacity-40 cursor-not-allowed' : ''}`}
-            >
-              <div className="flex flex-col">
-                <span className="font-medium text-sm tracking-wide mb-1">{m.label}</span>
-                <span className="text-[11px] opacity-60">{m.enabled ? (m.key === 'single' ? 'Solo mission queue' : 'Feature in development') : 'Unavailable'}</span>
-              </div>
-              {mode === m.key && <div className="absolute top-2 right-2 text-[10px] px-2 py-0.5 rounded bg-emerald-500/20 border border-emerald-400/40 text-emerald-200">Active</div>}
-            </button>
-          ))}
-        </div>
-        {/* Region & Map selectors removed per request */}
-      </div>
-      <div className="mt-auto p-4">
-        <Button className="w-full h-14 text-xl" onClick={startMatch} disabled={mode !== 'single'}>Play</Button>
-        <div className="mt-2 text-xs text-gray-300 h-4">{queue ?? (mode === 'single' ? 'Ready' : 'Disabled')}</div>
-      </div>
-    </aside>
-  );
-}
-
-// RightStartPanel removed – functionality merged into LeftPlayerPanel
+// (The old RightStartPanel duplicate was fully removed — RightPlayerPanel owns the
+// Game Modes + Play flow.)
 
 function CharacterCreator({ onSave, onBack, initial, locked }: { onSave: (payload: CharacterLoadout) => void; onBack: () => void; initial?: CharacterLoadout; locked?: boolean; }) {
   const { saveProgress } = usePlayerProfile();
@@ -2747,16 +2693,19 @@ function HeroBanner({ loadout }: { loadout: CharacterLoadout }) {
   );
 }
 
-function NewsCard({ title }: { title: string }) {
+function NewsCard({ title, blurb, onView }: { title: string; blurb?: string; onView?: () => void }) {
   return (
     <div className="rounded-2xl p-4 bg-[#12171f] border border-white/10 min-h-[42px] grid">
       <div>
         <div className="text-[11px] uppercase tracking-wide opacity-60">News</div>
         <div className="text-lg font-semibold mt-1">{title}</div>
+        {blurb && <div className="text-xs opacity-70 mt-1 leading-relaxed">{blurb}</div>}
       </div>
-      <div className="self-end">
-        <button className="h-8 px-3 rounded bg-white/10 hover:bg-white/15 text-sm">View</button>
-      </div>
+      {onView && (
+        <div className="self-end">
+          <button onClick={onView} className="h-8 px-3 rounded bg-white/10 hover:bg-white/15 text-sm">Learn more</button>
+        </div>
+      )}
     </div>
   );
 }
