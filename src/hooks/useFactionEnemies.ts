@@ -130,6 +130,9 @@ interface UseFactionEnemiesOptions {
   onEvent?: (e: EnemyEvent) => void;
   /** Live getter — true while the hero has an active Stealth buff (shrinks enemy detection). */
   getHeroStealthed?: () => boolean;
+  /** Live getter — multiplier on enemy detection range (1 = normal). Softer than the
+   *  Stealth buff; used by the Cyber-Cat's Sneak / Ghost Protocol passive. */
+  getDetectionScale?: () => number;
   /**
    * Objective awareness (GDD "outposts constantly change hands"): the outposts on the map
    * with current ownership. Rival roamers/champions march on the player's captured outposts
@@ -149,10 +152,11 @@ const STRATEGIC_RANGE = 10;     // how far a unit will march from its position t
 export function useFactionEnemies({
   tiles, heroQ, heroR, centerQ, centerR, faction, guardPosts,
   heroAttack = 8, heroHpFrac = 1, incomingDamageScale = 1, enabled = true, paused = false,
-  onHeroDamage, awardXp, awardFactionPoints, onEvent, getHeroStealthed,
+  onHeroDamage, awardXp, awardFactionPoints, onEvent, getHeroStealthed, getDetectionScale,
   strategicTargets, onRaidOutpost,
 }: UseFactionEnemiesOptions) {
   const getStealthRef = useRef(getHeroStealthed); getStealthRef.current = getHeroStealthed;
+  const getDetectRef = useRef(getDetectionScale); getDetectRef.current = getDetectionScale;
   const strategicRef = useRef(strategicTargets); strategicRef.current = strategicTargets;
   const onRaidRef = useRef(onRaidOutpost); onRaidRef.current = onRaidOutpost;
   const raidReadyRef = useRef<Map<string, number>>(new Map()); // outpost key → next-raid time
@@ -330,6 +334,12 @@ export function useFactionEnemies({
         // Stealth (skill-tree Stealth branch / cloak ability): shrink detection so an
         // un-provoked hero can slip past patrols. An already-alerted (provoked) unit still hunts.
         if (!provoked && getStealthRef.current?.()) aggro = Math.max(1, Math.floor(aggro * 0.35));
+        // Softer detection scale (Cyber-Cat Sneak / Ghost Protocol) — same rules: only
+        // dampens units that haven't been provoked yet.
+        if (!provoked) {
+          const ds = getDetectRef.current?.() ?? 1;
+          if (ds < 1) aggro = Math.max(1, Math.floor(aggro * ds));
+        }
 
         const wantsRetreat = doc.retreat > 0 && en.hp / en.maxHp < doc.retreat;
         const withinLeash = doc.leash >= 99 || provoked || dHome <= doc.leash;
@@ -339,9 +349,15 @@ export function useFactionEnemies({
         const hostile = (!doc.passive || provoked) && !heroSafe;
 
         // ── Retreat: fall back toward home and self-heal a little ──────────────
+        // IDENTITY MATTERS below: a unit whose q/r/hp/state didn't actually change this
+        // tick must return `en` itself, not a spread copy. The `changed` check at the
+        // bottom compares by reference — allocating fresh objects for units that are
+        // merely WAITING (attack on cooldown, move tick not due) forced a full map
+        // re-render every 300ms for the entire fight (the 4-6fps combat lag).
         if (wantsRetreat && dHero <= aggro + 2) {
           const pos = canMove ? stepToward(en, en.homeQ, en.homeR, false) : { q: en.q, r: en.r };
           const hp = Math.min(en.maxHp, en.hp + Math.round(en.maxHp * 0.03));
+          if (pos.q === en.q && pos.r === en.r && hp === en.hp && en.state === 'retreat') return en;
           return { ...en, ...pos, hp, state: 'retreat' as EnemyState };
         }
 
@@ -355,9 +371,10 @@ export function useFactionEnemies({
               events.push({ kind: 'attack', q: en.q, r: en.r, faction: en.faction, dmg });
               return { ...en, state: 'attack' as EnemyState, attackReadyAt: now + ATTACK_INTERVAL_MS };
             }
-            return { ...en, state: 'attack' as EnemyState };
+            return en.state === 'attack' ? en : { ...en, state: 'attack' as EnemyState };
           }
           const pos = canMove ? stepToward(en, h.q, h.r, true) : { q: en.q, r: en.r };
+          if (pos.q === en.q && pos.r === en.r && en.state === 'pursue') return en;
           return { ...en, ...pos, state: 'pursue' as EnemyState };
         }
 
@@ -382,13 +399,14 @@ export function useFactionEnemies({
                   raidReadyRef.current.set(tgt.key, now + RAID_COOLDOWN_MS);
                   raids.push({ key: tgt.key, faction: en.faction });
                 }
-                return { ...en, state: 'attack' as EnemyState };
+                return en.state === 'attack' ? en : { ...en, state: 'attack' as EnemyState };
               }
               if (canMove) {
                 const pos = stepToward(en, tgt.q, tgt.r, false);
+                if (pos.q === en.q && pos.r === en.r && en.state === 'pursue') return en;
                 return { ...en, ...pos, state: 'pursue' as EnemyState };
               }
-              return { ...en, state: 'pursue' as EnemyState };
+              return en.state === 'pursue' ? en : { ...en, state: 'pursue' as EnemyState };
             }
           }
         }
@@ -397,7 +415,9 @@ export function useFactionEnemies({
         if (canMove) {
           if (dHome > 2) {
             const pos = stepToward(en, en.homeQ, en.homeR, false);
-            return { ...en, ...pos, state: en.role === 'roamer' ? 'patrol' as EnemyState : 'guard' as EnemyState };
+            const idleState = en.role === 'roamer' ? 'patrol' as EnemyState : 'guard' as EnemyState;
+            if (pos.q === en.q && pos.r === en.r && en.state === idleState) return en;
+            return { ...en, ...pos, state: idleState };
           }
           // Gentle wander around home every few ticks.
           if (tick % (doc.moveEvery * 3) === 0) {

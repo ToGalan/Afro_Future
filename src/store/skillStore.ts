@@ -76,9 +76,19 @@ export const useSkillStore = create<SkillState>((set) => ({
     return { abilityLoadout: { ...state.abilityLoadout, [category]: next } };
   }),
   hydrate: (data) => set((state) => {
-    const nextUnlocked = Array.isArray(data.unlocked) && data.unlocked.length ? data.unlocked : state.unlocked;
-    const nextOrder = Array.isArray(data.unlockOrder) ? data.unlockOrder : state.unlockOrder;
-    const nextLevel = typeof data.level === 'number' ? Math.max(1, Math.min(PLAYER_LEVEL_CAP, data.level)) : state.level;
+    // NEVER DOWNGRADE. Multiple hydration sources race on boot (Firestore profile,
+    // legacy /profile REST mirror, Chrome Sync) and a stale mirror landing last used
+    // to clobber real progress back to level 1 / root-only. Hydration only restores
+    // saved progress, so per field the richer side wins.
+    const incomingUnlocked = Array.isArray(data.unlocked) && data.unlocked.length ? data.unlocked : null;
+    const acceptUnlocked = !!incomingUnlocked
+      && sumSkillCost(incomingUnlocked, TREE) >= sumSkillCost(state.unlocked, TREE);
+    const nextUnlocked = acceptUnlocked ? incomingUnlocked! : state.unlocked;
+    // unlockOrder must describe the unlocked set we kept, so it follows the same pick.
+    const nextOrder = acceptUnlocked && Array.isArray(data.unlockOrder) ? data.unlockOrder : state.unlockOrder;
+    const nextLevel = typeof data.level === 'number'
+      ? Math.max(state.level, Math.max(1, Math.min(PLAYER_LEVEL_CAP, data.level)))
+      : state.level;
     const stats = deriveStats(nextUnlocked);
     const traits = deriveTraits(nextUnlocked, TREE);
     const traitBonus = deriveTraitBonus(nextUnlocked, TREE);
@@ -134,10 +144,9 @@ export const useSkillStore = create<SkillState>((set) => ({
   reset: () => set({ level: 1, unlocked: ['root'], unlockOrder: [], spent: 0, attack: 0, defense: 0, utility: 0, traitTags: [], traitBonus: {}, primaryBranch: undefined, primaryType: undefined, abilityLoadout: { offensive: [null, null, null, null], defensive: [null, null, null, null] } }),
 }));
 
-// Scaling economy: income comes from balance.ts's level-scaled curve (2/level early,
-// rising to 5/level late, + a milestone bonus every 5th level) so skill points keep
-// pace with the steepening XP curve. `spent` is the total skill-POINT cost of unlocked
-// nodes, so rising per-node tier costs pace how deep a player can go at a given level.
+// Economy: income comes from balance.ts's curve (flat 1 point/level since 2026-07-18).
+// `spent` is the total skill-POINT cost of unlocked nodes, so rising per-node tier
+// costs (1→5) pace how deep a player can go at a given level.
 export function availablePoints(state: SkillState) {
   return totalSkillPointsForLevel(Math.max(1, state.level)) - state.spent;
 }

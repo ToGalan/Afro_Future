@@ -41,6 +41,7 @@ export const MILITARY_ASSETS = {
   boxes: ['/assets/military/Box_003.fbx', '/assets/military/Box_022.fbx'],
   generator: '/assets/military/Generator_004.fbx',
   radio: '/assets/military/Radiostation_001.fbx',
+  machineGuns: ['/assets/military/Machine_gun_004.fbx', '/assets/military/Machine_gun_005.fbx'],
   tires: '/assets/military/Tires_001.fbx',
   cacti: ['/assets/military/Cactus_001.fbx', '/assets/military/Cactus_002.fbx'],
 } as const;

@@ -214,6 +214,10 @@ export function useSkillsProgress({
   // persist from any screen on which this hook is mounted.
   useEffect(() => {
     if (!idToken) return;
+    // Same pristine guard as App.tsx's persist effect: never upload the default store
+    // (level 1, root only). Before hydration lands, doing so poisoned the /profile +
+    // Chrome Sync mirrors, which then hydrated back as "no skills, level 1" on resume.
+    if (skillState.level <= 1 && skillState.unlocked.length <= 1 && skillState.unlockOrder.length === 0) return;
     const handle = setTimeout(() => {
       try {
         const payload = {

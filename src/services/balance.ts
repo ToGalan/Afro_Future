@@ -52,23 +52,21 @@ export function tierFromDistance(dist: number): number {
 // ── Skill-point economy (single source of truth for the skill tree's income) ────
 /** Points every hero starts with at L1. */
 export const SKILL_POINTS_BASE = 3;
-/** Every Nth level pays a milestone bonus on top of the per-level grant. */
+/** Every Nth level paid a milestone bonus on top of the per-level grant.
+ *  Retired 2026-07-18 (bonus 0): the economy is a flat 1 point/level per design —
+ *  constants kept because skillStore surfaces them in its state shape. */
 export const SKILL_POINT_MILESTONE_EVERY = 5;
-export const SKILL_POINT_MILESTONE_BONUS = 2;
+export const SKILL_POINT_MILESTONE_BONUS = 0;
 /**
  * Marginal skill points granted on REACHING `level` (0 for L1 — L1 is the base grant).
- * The grant scales with level for the same reason contentScale/missionScale exist:
- * the XP-to-next curve steepens, so a level earned late must pay more than an early one
- * or points-per-hour collapses. 2/level early → 3 from L25 → 4 from L50 → 5 from L75,
- * plus the every-5th milestone bonus.
- * Lifetime total ≈ 394 by L100 vs a ~912-point full tree (12 branches × 76): a capped
- * player affords ~43% — deep mastery of ~5 branches — so specialization stays a choice.
+ * Flat 1 point per level (per design, 2026-07-18): node costs still scale with tier
+ * (1→5 points), so tree depth stays expensive without the income curve gating too.
+ * Lifetime total = 3 + 99 = 102 by L100 vs a ~912-point full tree (12 branches × 76):
+ * a capped player affords ~11% — mastering roughly one branch plus a dip into a
+ * second — so every unlock is a real choice.
  */
 export function skillPointsAtLevel(level: number): number {
-  if (level <= 1) return 0;
-  const perLevel = level >= 75 ? 5 : level >= 50 ? 4 : level >= 25 ? 3 : 2;
-  const milestone = level % SKILL_POINT_MILESTONE_EVERY === 0 ? SKILL_POINT_MILESTONE_BONUS : 0;
-  return perLevel + milestone;
+  return level <= 1 ? 0 : 1;
 }
 /** Cumulative skill points a player of `level` has earned lifetime (spending not deducted). */
 export function totalSkillPointsForLevel(level: number): number {

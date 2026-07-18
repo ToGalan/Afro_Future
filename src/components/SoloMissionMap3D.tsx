@@ -589,7 +589,7 @@ function CreepCampMesh({ camp, size, terrain }: { camp: CreepCamp; size: number;
             </group>
             {/* HP bar (outside the breathing group so it stays steady) */}
             <mesh position={[0, cs * 1.95, 0]}><boxGeometry args={[cs * 1.2, cs * 0.16, cs * 0.05]} /><meshBasicMaterial color="#300000" /></mesh>
-            <mesh position={[-(cs * 1.2) * (1 - hpPct) / 2, cs * 1.95, cs * 0.04]}><boxGeometry args={[Math.max(0.001, cs * 1.2 * hpPct), cs * 0.12, cs * 0.05]} /><meshBasicMaterial color="#ff4d4d" /></mesh>
+            <mesh position={[-(cs * 1.2) * (1 - hpPct) / 2, cs * 1.95, cs * 0.04]} scale={[Math.max(0.002, hpPct), 1, 1]}><boxGeometry args={[cs * 1.2, cs * 0.12, cs * 0.05]} /><meshBasicMaterial color="#ff4d4d" /></mesh>
           </group>
         );
       })}
@@ -603,6 +603,30 @@ function CreepCampMesh({ camp, size, terrain }: { camp: CreepCamp; size: number;
         </Suspense>
       ))}
       <Text position={[0, cs * 2.7, 0]} fontSize={size * 0.3} color="#ff9a9a" anchorX="center" anchorY="middle" outlineWidth={size * 0.02} outlineColor="#000">{isFortify ? '🏰' : '🔥'} Lv {camp.level}  ⚔️{camp.dmgPerCreep}</Text>
+    </group>
+  );
+}
+
+/** What a FORTIFY camp leaves behind once the player clears ("fortifies") it — a
+ *  machine-gun emplacement (military pack) on a packed-earth pad marking the ground as
+ *  secured, instead of vanishing like a raided camp. Purely visual, no gameplay effect. */
+function FortifiedCampRemnant({ campKey, size }: { campKey: string; size: number }) {
+  const gunUrl = MILITARY_ASSETS.machineGuns[enemyHash(campKey) % MILITARY_ASSETS.machineGuns.length];
+  const facing = (enemyHash(`${campKey}:gun`) % 360) * (Math.PI / 180);
+  return (
+    <group>
+      {/* packed-earth pad */}
+      <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, 0.015, 0]}>
+        <circleGeometry args={[size * 0.85, 12]} /><meshStandardMaterial color="#3a352c" roughness={1} transparent opacity={0.8} />
+      </mesh>
+      <Suspense fallback={null}>
+        <group rotation={[0, facing, 0]}><FbxProp url={gunUrl} tex={MILITARY_TEX} size={size * 0.62} /></group>
+        {/* sandbag barrier covering the gun's firing arc */}
+        <group position={[Math.cos(facing) * size * 0.55, 0, Math.sin(facing) * size * 0.55]} rotation={[0, -facing + Math.PI / 2, 0]}>
+          <FbxProp url={MILITARY_ASSETS.barriers[0]} tex={MILITARY_TEX} size={size * 0.5} />
+        </group>
+      </Suspense>
+      <Text position={[0, size * 1.1, 0]} fontSize={size * 0.26} color="#9fe3a8" anchorX="center" anchorY="middle" outlineWidth={size * 0.018} outlineColor="#000">🏰 Fortified</Text>
     </group>
   );
 }
@@ -635,7 +659,7 @@ function enemyHash(id: string): number {
  * characters rather than faceless mechs. The enemy-only overlays — boss crown, HP bar,
  * name label, and a ground threat aura (red while hunting) — live on top.
  */
-function EnemyUnitMesh({ enemy, size, target }: { enemy: FactionEnemy; size: number; target: [number, number, number] }) {
+const EnemyUnitMesh = React.memo(function EnemyUnitMesh({ enemy, size, target }: { enemy: FactionEnemy; size: number; target: [number, number, number] }) {
   const ref = React.useRef<THREE.Group>(null);
   const snapped = React.useRef(false);
   // Last derived heading — kept across frames so the unit still faces its most recent
@@ -726,16 +750,21 @@ function EnemyUnitMesh({ enemy, size, target }: { enemy: FactionEnemy; size: num
         </mesh>
       )}
 
-      {/* HP bar */}
+      {/* HP bar — fill shrinks via scale.x, NOT geometry args: args that change per hit
+          make R3F dispose + rebuild (and re-upload) a BoxGeometry for every damaged unit. */}
       <mesh position={[0, topY + size * 0.3, 0]}><boxGeometry args={[size * 0.66, size * 0.08, size * 0.025]} /><meshBasicMaterial color="#300000" /></mesh>
-      <mesh position={[-(size * 0.66) * (1 - hpPct) / 2, topY + size * 0.3, size * 0.02]}><boxGeometry args={[Math.max(0.001, size * 0.66 * hpPct), size * 0.06, size * 0.025]} /><meshBasicMaterial color={hunting ? '#ff4d4d' : '#ffa24d'} /></mesh>
+      <mesh position={[-(size * 0.66) * (1 - hpPct) / 2, topY + size * 0.3, size * 0.02]} scale={[Math.max(0.002, hpPct), 1, 1]}><boxGeometry args={[size * 0.66, size * 0.06, size * 0.025]} /><meshBasicMaterial color={hunting ? '#ff4d4d' : '#ffa24d'} /></mesh>
 
       <Text position={[0, topY + size * 0.5, 0]} fontSize={size * (boss ? 0.32 : 0.26)} color={boss ? '#ffd24a' : doc.color} anchorX="center" anchorY="middle" outlineWidth={size * 0.02} outlineColor="#000">
         {boss ? `👑 ${enemy.faction} Commander Lv${enemy.level}` : `${hunting ? '⚔️ ' : ''}${enemy.faction} ${doc.label} Lv${enemy.level}`}
       </Text>
     </group>
   );
-}
+}, (a, b) =>
+  // The AI tick preserves object identity for unchanged units, so this bails out of
+  // re-rendering the heavy chibi rig for every unit that didn't move/fight this tick.
+  a.enemy === b.enemy && a.size === b.size &&
+  a.target[0] === b.target[0] && a.target[1] === b.target[1] && a.target[2] === b.target[2]);
 
 /** Floating combat number that rises and is removed after ~1s (damage counter). */
 function FloatingCombatText({ text, color, onDone }: { text: string; color: string; onDone: () => void }) {
@@ -755,6 +784,34 @@ function FloatingCombatText({ text, color, onDone }: { text: string; color: stri
     </group>
   );
 }
+
+/** Self-contained combat-text layer. Owns the floating-number list so spawning or
+ *  expiring a damage number re-renders ONLY this component — combat used to route each
+ *  number through SoloMissionMap3D state, re-rendering the whole map per hit. The
+ *  parent spawns through `spawnRef` (stable identity across map renders). */
+type CombatTextItem = { id: number; x: number; z: number; text: string; color: string };
+const CombatTextField = React.memo(function CombatTextField({ spawnRef }: {
+  spawnRef: React.MutableRefObject<((x: number, z: number, text: string, color: string) => void) | null>;
+}) {
+  const [items, setItems] = React.useState<CombatTextItem[]>([]);
+  const nextId = React.useRef(0);
+  React.useEffect(() => {
+    spawnRef.current = (x, z, text, color) => {
+      const id = nextId.current++;
+      setItems(prev => [...prev.slice(-14), { id, x, z, text, color }]);
+    };
+    return () => { spawnRef.current = null; };
+  }, [spawnRef]);
+  return (
+    <>
+      {items.map(ct => (
+        <group key={ct.id} position={[ct.x, 0, ct.z]}>
+          <FloatingCombatText text={ct.text} color={ct.color} onDone={() => setItems(prev => prev.filter(p => p.id !== ct.id))} />
+        </group>
+      ))}
+    </>
+  );
+});
 
 // ── Frame-rate management: 120fps ceiling + 30fps adaptive floor ────────────
 /** Caps rendering at `maxFps` (demand-mode Canvas + our own rAF invalidator).
@@ -811,18 +868,21 @@ function DevFpsMeter({ counter }: { counter: React.MutableRefObject<number> }) {
 // The command center is not static: player level drives a build-out TIER that
 // grows the hub (walls → watchtowers → annexes → citadel shield) and adds
 // district pads on the neighbouring tiles — purely visual meta-progression.
-const BASE_TIER_LEVELS = [5, 10, 20, 35]; // level that unlocks tier 2..5
-const BASE_TIER_NAMES = ['Base Camp', 'Outpost HQ', 'Settlement', 'Stronghold', 'Citadel'];
+// A new build-out "state" (tier) unlocks every 10 levels (user directive 2026-07-18) —
+// 11 named states spanning L1 (Base Camp) to L100 (Megacity).
+const BASE_TIER_NAMES = [
+  'Base Camp', 'Outpost HQ', 'Settlement', 'Garrison', 'Stronghold',
+  'Bastion', 'Citadel', 'Fortress City', 'Provincial Capital', 'Metropolis', 'Megacity',
+];
 function baseTierFor(level: number) {
-  let t = 1;
-  for (const l of BASE_TIER_LEVELS) if (level >= l) t++;
-  return t; // 1..5
+  return 1 + Math.floor(Math.min(100, Math.max(1, level)) / 10); // 1..11
 }
-/** City growth stage: +1 per level to 10, then +1 per 5 levels to 100 (max 28).
- *  Each stage adds one sprawl building and creeps the territory stroke outward. */
+/** City growth stage = player level, 1:1 (user directive 2026-07-18: "1 new building
+ *  every level"). Each stage adds one sprawl building — or, every 5th stage, a
+ *  district pad instead (see cityBuildingSpots) — and creeps the territory stroke
+ *  outward. */
 function baseGrowthStage(level: number) {
-  const l = Math.max(1, Math.min(100, level));
-  return l <= 10 ? l : 10 + Math.floor((l - 10) / 5);
+  return Math.max(1, Math.min(100, Math.floor(level)));
 }
 /** Home-zone ring radius (in tiles) steps up at level milestones; between steps the
  *  border stroke creeps outward per growth stage (Civ culture-border feel). */
@@ -854,7 +914,7 @@ function CommandCenter({ size, tier = 1, stage = 0, playstyle = null, hqUrl = nu
           <HouseVariantModel url={hqUrl} size={S * (1.35 + tier * 0.16)} rotation={Math.PI / 4} />
         </Suspense>
       )}
-      <Text position={[0, S * (1.65 + tier * 0.18), 0]} fontSize={S * 0.4} color="#cfe8ff" anchorX="center" anchorY="middle" outlineWidth={S * 0.03} outlineColor="#000">{BASE_TIER_NAMES[Math.min(tier, 5) - 1]}{playstyle ? ` ${PLAYSTYLES[playstyle].icon}` : ''}</Text>
+      <Text position={[0, S * (1.65 + tier * 0.18), 0]} fontSize={S * 0.4} color="#cfe8ff" anchorX="center" anchorY="middle" outlineWidth={S * 0.03} outlineColor="#000">{BASE_TIER_NAMES[Math.min(tier, BASE_TIER_NAMES.length) - 1]}{playstyle ? ` ${PLAYSTYLES[playstyle].icon}` : ''}</Text>
     </group>
   );
 }
@@ -862,6 +922,10 @@ function CommandCenter({ size, tier = 1, stage = 0, playstyle = null, hqUrl = nu
 /** District pad on a tile adjacent to the base — unlocked one per tier (Civ districts). */
 type BaseDistrictKind = 'habitat' | 'agro' | 'industry' | 'energy';
 const DISTRICT_ICON: Record<BaseDistrictKind, string> = { habitat: '🏠', agro: '🌾', industry: '⚙️', energy: '🔋' };
+// Cycle order districts unlock in — every 5th sprawl stage (user directive: "1 new
+// district every 5 levels") becomes a district pad instead of a house, cycling
+// through these 4 kinds; a 5th district (stage 25) repeats 'habitat' at a bigger size.
+const DISTRICT_KIND_CYCLE: BaseDistrictKind[] = ['habitat', 'agro', 'industry', 'energy'];
 /** Model-only district pads — no procedural three.js geometry (per design direction,
  *  the base builds out of real asset-pack models only): habitat = army tent, agro =
  *  bushes + flowers, industry = crate + barrel, energy = generator. Icon label on top. */
@@ -905,26 +969,60 @@ function BaseDistrictMesh({ size, kind, color }: { size: number; kind: BaseDistr
 /** One sprawl building per city growth stage (per level to 10, per 5 levels to 100).
  *  Spots are precomputed by the parent (deterministic spiral inside the home zone);
  *  kind 0 = hut, 1 = house with faction roof, 2 = lit tower block. */
-interface CitySpot { x: number; y: number; z: number; kind: number; rot: number; h: number; v: number }
+interface CitySpot {
+  x: number; y: number; z: number; kind: number; rot: number; h: number; v: number;
+  /** Set when this spot is a district pad (every 5th stage) instead of a house. */
+  districtKind?: BaseDistrictKind;
+  /** How many times this district kind has repeated (0 = first) — grows its footprint. */
+  districtRepeat?: number;
+}
 /** A single house model variant, routed by file extension (.fbx vs .glb/.gltf). */
 function HouseVariantModel({ url, size, rotation }: { url: string; size: number; rotation: number }) {
   return url.toLowerCase().endsWith('.fbx')
     ? <FbxRawProp url={url} size={size} rotation={rotation} />
     : <GltfRawProp url={url} size={size} rotation={rotation} />;
 }
-/** MODEL-ONLY sprawl: every building is a house model from the manifest pool — no
- *  procedural three.js fallback geometry, at any level (per design direction). While
- *  a model streams (or if the manifest is empty) the slot simply stays empty. */
-function CityBuildingsMesh({ spots, size, tier, houses }: { spots: CitySpot[]; size: number; tier: number; color?: string; houses?: string[] }) {
+/** Picks a house URL from the manifest, segmented into 3 growth buckets (hut / house /
+ *  tower — CitySpot.kind, itself derived from the stage the spot unlocked at). Which
+ *  PART of the pool a building draws from tracks the city's growth instead of picking
+ *  purely at random, so early sprawl reads as humble and late sprawl reads as grand
+ *  (the "appropriate assets based on city growth" per user ask). */
+function houseForSpot(houses: string[], kind: number, v: number): string {
+  const n = houses.length;
+  const bucket = Math.max(1, Math.round(n / 3));
+  const start = Math.min(n - 1, kind * bucket);
+  const end = kind >= 2 ? n : Math.min(n, start + bucket);
+  const len = Math.max(1, end - start);
+  return houses[start + Math.floor(v * len) % len];
+}
+
+/** Picks the HQ's own house model to track its build-out TIER (1..maxTier) — the
+ *  command center upgrades to a grander model as the base advances through its named
+ *  states, not just scale. */
+function hqHouseForTier(houses: string[], tier: number, maxTier: number): string | null {
+  if (!houses.length) return null;
+  const idx = Math.min(houses.length - 1, Math.round(((tier - 1) / Math.max(1, maxTier - 1)) * (houses.length - 1)));
+  return houses[idx];
+}
+
+/** MODEL-ONLY sprawl: every building is a house model from the manifest pool, or a
+ *  district pad on its every-5th stage — no procedural three.js fallback geometry, at
+ *  any level (per design direction). While a model streams (or if the manifest is
+ *  empty) the slot simply stays empty. */
+function CityBuildingsMesh({ spots, size, tier, color, houses }: { spots: CitySpot[]; size: number; tier: number; color?: string; houses?: string[] }) {
   const S = size * (0.92 + tier * 0.04); // the whole city's scale creeps up with tier
   if (!houses || houses.length === 0) return null;
   return (
     <group>
       {spots.map((s, i) => (
         <group key={i} position={[s.x, s.y, s.z]} rotation={[0, s.rot, 0]}>
-          <Suspense fallback={null}>
-            <HouseVariantModel url={houses[Math.min(houses.length - 1, Math.floor(s.v * houses.length))]} size={S * (0.5 + 0.24 * s.h)} rotation={0} />
-          </Suspense>
+          {s.districtKind ? (
+            <BaseDistrictMesh size={size * (0.85 + 0.08 * Math.min(3, s.districtRepeat ?? 0))} kind={s.districtKind} color={color ?? '#e5e7eb'} />
+          ) : (
+            <Suspense fallback={null}>
+              <HouseVariantModel url={houseForSpot(houses, s.kind, s.v)} size={S * (0.5 + 0.24 * s.h)} rotation={0} />
+            </Suspense>
+          )}
         </group>
       ))}
     </group>
@@ -1225,7 +1323,7 @@ function RemoteDuelist({ bufRef, remote, hexSize, colors }: {
         <Text position={[0, hexSize * 2.4, 0]} fontSize={hexSize * 0.42} color="#ff9a9a" anchorX="center" anchorY="middle" outlineWidth={hexSize * 0.03} outlineColor="#000">{`⚔️ ${remote?.name ?? 'Rival'}`}</Text>
         <group position={[0, hexSize * 2.0, 0]}>
           <mesh><planeGeometry args={[hexSize * 1.4, hexSize * 0.16]} /><meshBasicMaterial color="#2a0a0a" /></mesh>
-          <mesh position={[-(hexSize * 1.4 * (1 - hpPct)) / 2, 0, 0.01]}><planeGeometry args={[hexSize * 1.4 * hpPct, hexSize * 0.16]} /><meshBasicMaterial color="#e0453f" /></mesh>
+          <mesh position={[-(hexSize * 1.4 * (1 - hpPct)) / 2, 0, 0.01]} scale={[Math.max(0.002, hpPct), 1, 1]}><planeGeometry args={[hexSize * 1.4, hexSize * 0.16]} /><meshBasicMaterial color="#e0453f" /></mesh>
         </group>
       </group>
       <group ref={petRef} frustumCulled={false}>
@@ -1390,7 +1488,7 @@ function RemoteMobaHero({ uid, bufRef, hero, hexSize }: {
         <Text position={[0, hexSize * 2.4, 0]} fontSize={hexSize * 0.4} color={fc.label} anchorX="center" anchorY="middle" outlineWidth={hexSize * 0.03} outlineColor="#000">{tag}</Text>
         <group position={[0, hexSize * 2.0, 0]}>
           <mesh><planeGeometry args={[hexSize * 1.4, hexSize * 0.16]} /><meshBasicMaterial color="#20242c" /></mesh>
-          <mesh position={[-(hexSize * 1.4 * (1 - hpPct)) / 2, 0, 0.01]}><planeGeometry args={[hexSize * 1.4 * hpPct, hexSize * 0.16]} /><meshBasicMaterial color={fc.primary} /></mesh>
+          <mesh position={[-(hexSize * 1.4 * (1 - hpPct)) / 2, 0, 0.01]} scale={[Math.max(0.002, hpPct), 1, 1]}><planeGeometry args={[hexSize * 1.4, hexSize * 0.16]} /><meshBasicMaterial color={fc.primary} /></mesh>
         </group>
       </group>
       <group ref={petRef} frustumCulled={false}>
@@ -1409,15 +1507,21 @@ function ResourceIcon({ t, size }: { t: Tile; size: number }) {
   );
 }
 
-/** Low-poly 3D resource node placed on a tile (ore/energy/bio). Isometric, faceted,
- *  with a soft glow for energy/bio so gatherables read at a glance. */
+// Energy-crystal variants — the mining pack's gemstone models, varied per node so the
+// map shows a mix of crystal types/colours instead of one repeated blue prop.
+const GEM_VARIANTS = [
+  { key: 'gemBlue' as const, tint: '#4aa8e0' },
+  { key: 'gemGreen' as const, tint: '#4ade80' },
+  { key: 'gemRed' as const, tint: '#e06060' },
+  { key: 'gemGold' as const, tint: '#e8c04a' },
+  { key: 'gemCopper' as const, tint: '#c8845a' },
+  { key: 'crystalRed' as const, tint: '#d84a6a' },
+];
+
+/** Low-poly 3D resource node placed on a tile (ore/energy/bio). Isometric, faceted;
+ *  no glow halos/emissives — gatherables read from their shape + colour (per design,
+ *  the old pulsing-blue energy glow was removed 2026-07-18). */
 function ResourceProp({ type, size, seed = 1 }: { type: ResourceType; size: number; seed?: number }) {
-  const glowRef = React.useRef<THREE.Mesh>(null);
-  useFrame(({ clock }) => {
-    if (!glowRef.current) return;
-    const s = 0.85 + 0.15 * Math.sin(clock.getElapsedTime() * 2 + seed);
-    glowRef.current.scale.setScalar(s);
-  });
   if (!type) return null;
   const S = size * 0.42;
   // Offset toward a tile corner so the node doesn't fully overlap terrain decor.
@@ -1450,20 +1554,23 @@ function ResourceProp({ type, size, seed = 1 }: { type: ResourceType; size: numb
     );
   }
   if (type === 'energy') {
+    // Crystal node = the mining pack's modeled gemstones, main + companion picked per
+    // node so types vary across the map. Plain materials, no glow/emissive.
+    const main = GEM_VARIANTS[Math.floor(Math.abs(seed * 7.31)) % GEM_VARIANTS.length];
+    const side = GEM_VARIANTS[(Math.floor(Math.abs(seed * 7.31)) + 2) % GEM_VARIANTS.length];
     return (
       <group position={[ox, 0, oz]} rotation={[0, seed, 0]}>
-        <mesh ref={glowRef} position={[0, S * 0.9, 0]}>
-          <sphereGeometry args={[S * 0.7, 10, 10]} />
-          <meshBasicMaterial color="#38e1ff" transparent opacity={0.16} depthWrite={false} />
-        </mesh>
-        <mesh castShadow position={[0, S * 0.95, 0]} rotation={[0, 0, 0.05]}>
-          <coneGeometry args={[S * 0.34, S * 1.5, 6]} />
-          <meshStandardMaterial color="#22c3e6" emissive="#0ea5c4" emissiveIntensity={0.9} roughness={0.25} metalness={0.4} flatShading />
-        </mesh>
-        <mesh castShadow position={[S * 0.32, S * 0.55, 0]} rotation={[0, 0, -0.5]}>
-          <coneGeometry args={[S * 0.18, S * 0.85, 6]} />
-          <meshStandardMaterial color="#5fe6ff" emissive="#22c3e6" emissiveIntensity={0.8} roughness={0.25} metalness={0.4} flatShading />
-        </mesh>
+        <Suspense fallback={
+          <mesh castShadow position={[0, S * 0.55, 0]}>
+            <coneGeometry args={[S * 0.3, S * 1.1, 6]} />
+            <meshStandardMaterial color={main.tint} roughness={0.3} metalness={0.3} flatShading />
+          </mesh>
+        }>
+          <FbxRawProp url={MINING_ASSETS[main.key]} tint={main.tint} size={S * 1.15} rotation={seed} />
+          <group position={[S * 0.5, 0, S * 0.34]}>
+            <FbxRawProp url={MINING_ASSETS[side.key]} tint={side.tint} size={S * 0.55} rotation={seed * 2.3} />
+          </group>
+        </Suspense>
       </group>
     );
   }
@@ -3018,12 +3125,12 @@ export default function SoloMissionMap3D({
   const heroPosRef = React.useRef(hero.pos);
   heroPosRef.current = hero.pos;
 
-  // Floating combat/feedback numbers (damage, heal, +XP).
-  const [combatTexts, setCombatTexts] = React.useState<Array<{ id: number; x: number; z: number; text: string; color: string }>>([]);
-  const nextTextId = React.useRef(0);
+  // Floating combat/feedback numbers (damage, heal, +XP). The list lives inside
+  // CombatTextField (own state) — spawning here goes through a ref so a damage number
+  // never re-renders this whole component (that render storm was the combat lag).
+  const combatTextSpawnRef = React.useRef<((x: number, z: number, text: string, color: string) => void) | null>(null);
   const spawnCombatText = React.useCallback((x: number, z: number, text: string, color: string) => {
-    const id = nextTextId.current++;
-    setCombatTexts(prev => [...prev.slice(-14), { id, x, z, text, color }]);
+    combatTextSpawnRef.current?.(x, z, text, color);
   }, []);
 
   // Monotonic live XP mirror — the single value the HUD reads. Bumped OPTIMISTICALLY on
@@ -3118,8 +3225,13 @@ export default function SoloMissionMap3D({
   // Cat scouts (+vision); "Sneak" is unlocked from lvl1 so this is always at least 1, and
   // widens further once "Distract" (lvl5 / Familiar bond) is unlocked.
   const petVisionBonus = isDog ? 0 : (hasPetAbility('cat_distract') ? 2 : 1);
-  // "Guard" also has the dog physically soak some incoming damage for the hero.
+  // "Guard" also has the dog physically soak some incoming damage for the hero
+  // (applied to faction-enemy AND creep-camp damage alike).
   const petIncomingDamageMult = isDog && hasPetAbility('dog_guard') ? 0.9 : 1;
+  // Cat "Sneak" / Ghost Protocol passive — enemies detect the hero at only 80% of their
+  // normal range while the cat scouts alongside (read live by useFactionEnemies).
+  const petDetectionScale = !isDog && hasPetAbility('cat_sneak') ? 0.8 : 1;
+  const petDetectionScaleRef = React.useRef(petDetectionScale); petDetectionScaleRef.current = petDetectionScale;
   // HUD display data (Bonding & Skills panel) — surfaces bond tier + locked/unlocked
   // abilities to the player, which were previously computed but never shown anywhere.
   const petBondDisplay = useMemo(() => ({
@@ -3152,7 +3264,7 @@ export default function SoloMissionMap3D({
     centerQ: centerAxial.q,
     centerR: centerAxial.r,
     heroAttack: Math.round((heroAttack + petCombatBonus) * combatAtkMult),
-    incomingDamageScale: combatIncomingScale,
+    incomingDamageScale: combatIncomingScale * petIncomingDamageMult,
     onHeroDamage: (amt) => applyIncomingDamageRef.current(amt),
     awardXp: awardHeroXp,
     awardShards: awardFactionPoints, // camp clears grant Faction Points
@@ -3417,6 +3529,7 @@ export default function SoloMissionMap3D({
     enabled: !autoMultiplayer, // solo PvE only — duels are handled by useDuel
     paused: !!inputPaused || !!activeStoryBeat, // freeze combat during skill tree AND story dialogs
     getHeroStealthed: () => heroStealthRef.current, // Stealth branch shrinks enemy detection
+    getDetectionScale: () => petDetectionScaleRef.current, // Cyber-Cat Sneak / Ghost Protocol
     // Objective awareness: rival factions march on & raid the player's outposts (solo only).
     strategicTargets: (!autoMultiplayer && !mobaMode) ? outpostStrategicTargets : undefined,
     onRaidOutpost: (key: string, fk: string) => {
@@ -3597,7 +3710,9 @@ export default function SoloMissionMap3D({
       set.add(`${q},${r}`);
       for (const n of axialNeighbors({ q, r })) set.add(`${n.q},${n.r}`);
     };
-    for (const c of creepCamps.values()) if (!c.cleared) block(c.q, c.r);
+    // Fortify camps stay blocked after clearing — the machine-gun emplacement remnant
+    // needs its tile clear of trees/rocks just like the live camp did.
+    for (const c of creepCamps.values()) if (!c.cleared || c.kind === 'fortify') block(c.q, c.r);
     for (const o of outposts.values()) block(o.q, o.r);
     for (const c of refugeeCamps.values()) block(c.q, c.r);
     block(terraformAxial.q, terraformAxial.r);
@@ -4157,6 +4272,58 @@ export default function SoloMissionMap3D({
     }, 4000);
     return () => clearInterval(iv);
   }, [isDog, petUnlockedAbilities, petStats.attack, duelActive, pet.pos, hexSize, spawnCombatText]);
+
+  // Cat's "Distract" (lvl5/Familiar) — periodically baits the nearest enemy within
+  // reach into chasing the cat: pacified units drop their target for a moment, pulling
+  // aggro off the hero (GDD: "bait an enemy into chasing the cat").
+  React.useEffect(() => {
+    if (isDog || !hasPetAbility('cat_distract')) return;
+    const iv = setInterval(() => {
+      if (duelActive || mobaActiveRef.current) return;
+      if (applyEnemyEffectRef.current('pacify', 2600, 5)) {
+        const pw = axialToWorld(pet.pos, hexSize);
+        spawnCombatText(pw.x, pw.z, '🐈 ✨ distracted', '#c084fc');
+      }
+    }, 10000);
+    return () => clearInterval(iv);
+  }, [isDog, petUnlockedAbilities, duelActive, pet.pos, hexSize, spawnCombatText]);
+
+  // Dog's "Track" (lvl1 recon) — the sensor suite periodically sniffs out the nearest
+  // uncollected cache (resource node / healing flower / mushroom) and marks it: a paw
+  // ping at the cache plus a distance + direction hint over the hero (GDD: "sniff out
+  // the nearest objective or hidden cache and mark it").
+  const trackTargetsRef = React.useRef({ resources: collectibleResources, flowers: collectibleFlowers, mushrooms: collectibleMushrooms });
+  trackTargetsRef.current = { resources: collectibleResources, flowers: collectibleFlowers, mushrooms: collectibleMushrooms };
+  React.useEffect(() => {
+    if (!isDog || !hasPetAbility('dog_track')) return;
+    const ARROWS = ['→', '↘', '↓', '↙', '←', '↖', '↑', '↗'];
+    const iv = setInterval(() => {
+      if (duelActive || mobaActiveRef.current) return;
+      const { resources, flowers, mushrooms } = trackTargetsRef.current;
+      const h = heroPosRef.current;
+      let best: { q: number; r: number; icon: string } | null = null;
+      let bestD = Infinity;
+      const consider = (key: string, icon: string) => {
+        const [q, r] = key.split(',').map(Number);
+        if (!Number.isFinite(q) || !Number.isFinite(r)) return;
+        const d = axialDistance({ q, r }, h);
+        if (d >= 2 && d <= 14 && d < bestD) { bestD = d; best = { q, r, icon }; }
+      };
+      resources.forEach((_v, k) => consider(k, '💎'));
+      flowers.forEach(k => consider(k, '🌸'));
+      mushrooms.forEach(k => consider(k, '🍄'));
+      if (!best) return;
+      const found: { q: number; r: number; icon: string } = best;
+      const hw = axialToWorld(h, hexSize);
+      const tw = axialToWorld(found, hexSize);
+      spawnCombatText(tw.x, tw.z, '🐾', '#ffb454');
+      // 8-way arrow from the hero toward the cache (world-space heading).
+      const ang = Math.atan2(tw.z - hw.z, tw.x - hw.x);
+      const arrow = ARROWS[((Math.round(ang / (Math.PI / 4)) % 8) + 8) % 8];
+      spawnCombatText(hw.x, hw.z, `🐾 ${found.icon} ${bestD} ${arrow}`, '#ffb454');
+    }, 18000);
+    return () => clearInterval(iv);
+  }, [isDog, petUnlockedAbilities, duelActive, hexSize, spawnCombatText]);
 
   // Pet fetch (GDD): the companion periodically carries a supply from base to the field.
   React.useEffect(() => {
@@ -4769,33 +4936,19 @@ export default function SoloMissionMap3D({
     const progress = Math.min(1, (heroLevelLive - start) / (next - start));
     return progress * 0.4;
   })();
-  // The 4 neighbour tiles reserved for district pads — fixed regardless of current
-  // tier so sprawl buildings never squat on a pad that unlocks later.
-  const baseDistrictTiles = useMemo(() => {
-    const picks: Array<{ q: number; r: number }> = [];
-    for (const n of axialNeighbors(baseAxial)) {
-      if (picks.length >= 4) break;
-      const t = tilesByKey.get(`${n.q},${n.r}`);
-      if (!t || t.type === 'water' || t.type === 'mountain') continue; // pads need buildable ground
-      picks.push({ q: n.q, r: n.r });
-    }
-    return picks;
-  }, [baseAxial, tilesByKey]);
-  const baseDistricts = useMemo(() => {
-    const kinds: BaseDistrictKind[] = ['habitat', 'agro', 'industry', 'energy'];
-    return baseDistrictTiles.slice(0, Math.min(baseTier - 1, kinds.length))
-      .map((t, i) => ({ ...t, kind: kinds[i] }));
-  }, [baseDistrictTiles, baseTier]);
-  // City sprawl: one building per growth stage. Each stage builds inside the ring the
-  // TERRITORY STROKE had when that stage unlocked (ring 1 until L10, 2 until L25, 3
-  // until L50, then 4) — so every border expansion opens fresh tiles and the houses
-  // that follow visibly settle them. Placement is append-only stable: a spot's ring
-  // is a function of its stage number (never the current level), the PRNG is consumed
-  // per-attempt, and world landmarks (outposts/camps/terraformer) are excluded by
-  // fixed tile key, so old buildings never move as the city grows.
+  // City sprawl: one building per growth stage (= player level, 1:1). Every 5th stage
+  // is a DISTRICT pad instead (see DISTRICT_KIND_CYCLE) — so districts unlock inline
+  // with the sprawl at the same every-5-levels cadence, sharing its placement/collision
+  // logic instead of needing a separate fixed-tile pool. Each stage builds inside the
+  // ring the TERRITORY STROKE had when that stage unlocked (ring 1 until L10, 2 until
+  // L25, 3 until L50, then 4) — so every border expansion opens fresh tiles and the
+  // buildings that follow visibly settle them. Placement is append-only stable: a
+  // spot's ring/kind/district-ness is a function of its stage number (never the
+  // current level), the PRNG is consumed per-attempt, and world landmarks
+  // (outposts/camps/terraformer) are excluded by fixed tile key, so old buildings
+  // never move as the city grows.
   const cityBuildingSpots = useMemo(() => {
     const bw = axialToWorld(baseAxial, hexSize);
-    const reserved = baseDistrictTiles.map(t => axialToWorld(t, hexSize));
     const blocked = new Set<string>([`${baseAxial.q},${baseAxial.r}`, `${terraformAxial.q},${terraformAxial.r}`]);
     for (const k of outposts.keys()) blocked.add(k);
     for (const k of creepCamps.keys()) blocked.add(k);
@@ -4807,12 +4960,19 @@ export default function SoloMissionMap3D({
     const GA = Math.PI * (3 - Math.sqrt(5)); // golden angle
     const spots: CitySpot[] = [];
     for (let k = 0; k < baseCityStage; k++) {
-      const stage = k + 1;
-      const unlockLevel = stage <= 10 ? stage : 10 + (stage - 10) * 5;
-      const ring = baseZoneRadiusFor(unlockLevel);
+      const stage = k + 1; // stage IS the level it unlocked at (baseGrowthStage is 1:1)
+      const isDistrict = stage % 5 === 0;
+      const districtIdx = isDistrict ? stage / 5 - 1 : -1;
+      const districtKind = isDistrict ? DISTRICT_KIND_CYCLE[districtIdx % DISTRICT_KIND_CYCLE.length] : undefined;
+      const districtRepeat = isDistrict ? Math.floor(districtIdx / DISTRICT_KIND_CYCLE.length) : 0;
+      // Building "kind" (hut/house/tower, non-district spots only) tracks the city's
+      // overall growth at the stage it unlocked — early sprawl reads as humble huts,
+      // late sprawl (Metropolis-tier) as towers.
+      const kind = stage < 34 ? 0 : stage < 67 ? 1 : 2;
+      const ring = baseZoneRadiusFor(stage);
       const [rMin, rMax] = BANDS[ring - 1];
       for (let a = 0; a < 24; a++) {
-        const jr = rand(), ja = rand(), jk = rand(), jrot = rand(), jh = rand(), jv = rand();
+        const jr = rand(), ja = rand(), jrot = rand(), jh = rand(), jv = rand();
         const ang = k * GA + a * 0.73 + ja * 0.4;
         const rad = hexSize * (rMin + (rMax - rMin) * jr);
         const x = bw.x + Math.cos(ang) * rad, z = bw.z + Math.sin(ang) * rad;
@@ -4822,16 +4982,20 @@ export default function SoloMissionMap3D({
         if (!tile || tile.type === 'water' || tile.type === 'mountain') continue;
         if (axialDistance(t, baseAxial) > ring) continue; // inside the stroke as of unlock
         if (blocked.has(key)) continue;                    // never on outposts/camps/objectives
-        if (reserved.some(n => (x - n.x) ** 2 + (z - n.z) ** 2 < (hexSize * 0.85) ** 2)) continue;
-        if (spots.some(s => (x - s.x) ** 2 + (z - s.z) ** 2 < (hexSize * 0.55) ** 2)) continue;
+        // Districts are bigger footprints, so keep extra clearance around them (in
+        // EITHER direction — a plain house shouldn't crowd a neighboring district either).
+        if (spots.some(s => {
+          const minD = hexSize * ((isDistrict || s.districtKind) ? 0.75 : 0.55);
+          return (x - s.x) ** 2 + (z - s.z) ** 2 < minD ** 2;
+        })) continue;
         // `v` picks a RANDOM house variant per building (seeded, so the pick is
         // stable across reloads but doesn't cycle the pool in order).
-        spots.push({ x, y: tileTopAt(t.q, t.r), z, kind: Math.floor(jk * 3), rot: jrot * Math.PI * 2, h: 0.8 + jh * 0.5, v: jv });
+        spots.push({ x, y: tileTopAt(t.q, t.r), z, kind, rot: jrot * Math.PI * 2, h: 0.8 + jh * 0.5, v: jv, districtKind, districtRepeat });
         break;
       }
     }
     return spots;
-  }, [baseAxial, baseCityStage, baseDistrictTiles, tilesByKey, tileTopAt, hexSize, terraformAxial, outposts, creepCamps, refugeeCamps]);
+  }, [baseAxial, baseCityStage, tilesByKey, tileTopAt, hexSize, terraformAxial, outposts, creepCamps, refugeeCamps]);
   // Ribbon triangles along every hex edge of the home zone whose far side is
   // outside it, scaled outward from the base by the per-level creep. Each vertex
   // re-anchors to the tile it lands on, so the stroke hugs terrain even mid-creep.
@@ -5414,6 +5578,129 @@ export default function SoloMissionMap3D({
       outpostTerritory, zoneBoundary, showOutpostZones, outposts,
       heroColors.primary, hexSize, exploredCount, tilesByKey]);
 
+  // ── Memoized entity fields (same rationale as the tile fields above) ─────────
+  // Combat re-renders this component many times a second (vitals per hit, XP awards,
+  // status effects…). Each of these maps walks hundreds-to-thousands of entities and
+  // every visible one is a multi-mesh subtree with a troika Text label — memoizing
+  // lets those renders skip the lot unless the entities themselves changed.
+  const creepField = React.useMemo(() => (
+    <>
+      {Array.from(creepCamps.values()).map(camp => {
+        // Cleared FORTIFY camps leave a machine-gun emplacement behind (the ground the
+        // player secured); cleared raid camps still vanish outright.
+        if (camp.cleared && camp.kind !== 'fortify') return null;
+        const ckey = `${camp.q},${camp.r}`;
+        if (!exploredRef.current.has(ckey) && !heroVisible.has(ckey)) return null; // fog of war
+        if (axialDistance({ q: camp.q, r: camp.r }, hero.pos) > RENDER_RADIUS) return null;
+        const cw = axialToWorld({ q: camp.q, r: camp.r }, hexSize);
+        return (
+          <group key={`camp-${camp.key}`} position={[cw.x, tileTopAt(camp.q, camp.r), cw.z]} frustumCulled={false}>
+            {camp.cleared
+              ? <FortifiedCampRemnant campKey={camp.key} size={hexSize} />
+              : <CreepCampMesh camp={camp} size={hexSize} terrain={tilesByKey.get(ckey)?.type} />}
+          </group>
+        );
+      })}
+    </>
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  ), [creepCamps, heroVisible, hero.pos.q, hero.pos.r, hexSize, tileTopAt, tilesByKey, exploredCount]);
+
+  const enemyField = React.useMemo(() => (
+    <>
+      {factionEnemies.map(en => {
+        if (en.hp <= 0) return null;
+        const ekey = `${en.q},${en.r}`;
+        if (!exploredRef.current.has(ekey) && !heroVisible.has(ekey)) return null; // fog of war
+        if (axialDistance({ q: en.q, r: en.r }, hero.pos) > RENDER_RADIUS) return null;
+        const ew = axialToWorld({ q: en.q, r: en.r }, hexSize);
+        const y = tileTopAt(en.q, en.r);
+        // Far-LOD: distant units render as a cheap faction-coloured marker instead
+        // of the full animated chibi rig (bosses keep the rig — they're landmarks).
+        if (en.role !== 'boss' && axialDistance({ q: en.q, r: en.r }, hero.pos) > FAR_ENEMY_DIST) {
+          return (
+            <mesh key={en.id} position={[ew.x, y + hexSize * 0.35, ew.z]}
+              geometry={sharedFarConeGeo(hexSize)} material={sharedTileMat(DOCTRINE[en.faction].color)} />
+          );
+        }
+        return <EnemyUnitMesh key={en.id} enemy={en} size={hexSize} target={[ew.x, y, ew.z]} />;
+      })}
+    </>
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  ), [factionEnemies, heroVisible, hero.pos.q, hero.pos.r, hexSize, tileTopAt, exploredCount]);
+
+  const outpostField = React.useMemo(() => (
+    <>
+      {Array.from(outposts.values()).map(o => {
+        const okey = `${o.q},${o.r}`;
+        if (!exploredRef.current.has(okey) && !heroVisible.has(okey)) return null;
+        if (axialDistance({ q: o.q, r: o.r }, hero.pos) > RENDER_RADIUS) return null;
+        const ow = axialToWorld({ q: o.q, r: o.r }, hexSize);
+        return (
+          <group key={`outpost-${o.key}`} position={[ow.x, tileTopAt(o.q, o.r), ow.z]} frustumCulled={false}>
+            {(() => {
+              // In a MOBA, colour the banner by the authoritative owning faction;
+              // otherwise fall back to the single-player owned/neutral flag.
+              const mobaOwner = mobaActive ? mobaOutpostOwner.get(o.key) : undefined;
+              if (mobaActive) {
+                const owned = !!mobaOwner && mobaOwner !== 'neutral';
+                const color = owned ? (FACTION_COLORS[mobaOwner as string]?.primary ?? heroColors.primary) : heroColors.primary;
+                return <OutpostMarker size={hexSize} owned={owned} color={color} />;
+              }
+              // Solo: a rival empire's outpost flies THEIR colours — visible threat.
+              const rivalOwner = o.owner !== 'player' && o.owner !== 'neutral' ? o.owner : null;
+              return <OutpostMarker size={hexSize} owned={o.owner === 'player' || !!rivalOwner}
+                color={rivalOwner ? (FACTION_COLORS[rivalOwner]?.primary ?? '#8a8f96') : heroColors.primary} />;
+            })()}
+          </group>
+        );
+      })}
+    </>
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  ), [outposts, mobaActive, mobaOutpostOwner, heroColors.primary, heroVisible, hero.pos.q, hero.pos.r, hexSize, tileTopAt, exploredCount]);
+
+  const regionLabelField = React.useMemo(() => (
+    <>
+      {showOutpostZones && outpostRegions.map(rg => {
+        const rkey = `${rg.centroid.q},${rg.centroid.r}`;
+        if (!exploredRef.current.has(rkey) && !minimapVisibleKeys.has(rkey)) return null;
+        const rw = axialToWorld({ q: rg.centroid.q, r: rg.centroid.r }, hexSize);
+        return (
+          <Text key={`region-${rg.id}`} position={[rw.x, hexSize * 2.4, rw.z]} fontSize={hexSize * 0.6}
+            color={rg.controlled ? heroColors.primary : '#e5e7eb'} anchorX="center" anchorY="middle"
+            outlineWidth={hexSize * 0.03} outlineColor="#000">
+            {`${rg.controlled ? '🚩 ' : ''}${rg.name}  ${rg.owned}/${rg.total}`}
+          </Text>
+        );
+      })}
+    </>
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  ), [showOutpostZones, outpostRegions, minimapVisibleKeys, heroColors.primary, hexSize, exploredCount]);
+
+  const refugeeField = React.useMemo(() => (
+    <>
+      {Array.from(refugeeCamps.values()).map(c => {
+        const rkey = `${c.q},${c.r}`;
+        if (!exploredRef.current.has(rkey) && !heroVisible.has(rkey)) return null;
+        if (axialDistance({ q: c.q, r: c.r }, hero.pos) > RENDER_RADIUS) return null;
+        const rw = axialToWorld({ q: c.q, r: c.r }, hexSize);
+        return (
+          <group key={`refugee-${c.key}`} position={[rw.x, tileTopAt(c.q, c.r), rw.z]} frustumCulled={false}>
+            <RefugeeCampMarker
+              size={hexSize}
+              done={c.completed}
+              label={c.mission.title}
+              icon={c.mission.icon}
+              mode={c.mode}
+              subtitle={c.mode === 'aid' ? `${c.delivered}/${c.required.amount} ${RESOURCE_DEFS[c.required.resource].label}` : undefined}
+              showWcNpc={playerFactionKey === 'WC'}
+            />
+          </group>
+        );
+      })}
+    </>
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  ), [refugeeCamps, heroVisible, hero.pos.q, hero.pos.r, hexSize, tileTopAt, playerFactionKey, exploredCount]);
+
   return (
   <div className="relative w-screen h-screen bg-[#111827] overflow-hidden">
       {/* Helper overlay removed for production */}
@@ -5538,50 +5825,19 @@ export default function SoloMissionMap3D({
                 ))}
                 {/* Creep camps — only on explored/visible tiles (hidden by fog of war),
                     near the hero, and hidden once cleared. */}
-                {Array.from(creepCamps.values()).map(camp => {
-                  if (camp.cleared) return null;
-                  const ckey = `${camp.q},${camp.r}`;
-                  if (!exploredRef.current.has(ckey) && !heroVisible.has(ckey)) return null; // fog of war
-                  if (axialDistance({ q: camp.q, r: camp.r }, hero.pos) > RENDER_RADIUS) return null;
-                  const cw = axialToWorld({ q: camp.q, r: camp.r }, hexSize);
-                  return (
-                    <group key={`camp-${camp.key}`} position={[cw.x, tileTopAt(camp.q, camp.r), cw.z]} frustumCulled={false}>
-                      <CreepCampMesh camp={camp} size={hexSize} terrain={tilesByKey.get(ckey)?.type} />
-                    </group>
-                  );
-                })}
+                {creepField}
                 {/* Faction enemies — mobile rival-faction AI units (active PvE). Rendered
                     at absolute world coords so they walk across tiles; fog-of-war + range
                     culled like camps. */}
-                {factionEnemies.map(en => {
-                  if (en.hp <= 0) return null;
-                  const ekey = `${en.q},${en.r}`;
-                  if (!exploredRef.current.has(ekey) && !heroVisible.has(ekey)) return null; // fog of war
-                  if (axialDistance({ q: en.q, r: en.r }, hero.pos) > RENDER_RADIUS) return null;
-                  const ew = axialToWorld({ q: en.q, r: en.r }, hexSize);
-                  const y = tileTopAt(en.q, en.r);
-                  // Far-LOD: distant units render as a cheap faction-coloured marker instead
-                  // of the full animated chibi rig (bosses keep the rig — they're landmarks).
-                  if (en.role !== 'boss' && axialDistance({ q: en.q, r: en.r }, hero.pos) > FAR_ENEMY_DIST) {
-                    return (
-                      <mesh key={en.id} position={[ew.x, y + hexSize * 0.35, ew.z]}
-                        geometry={sharedFarConeGeo(hexSize)} material={sharedTileMat(DOCTRINE[en.faction].color)} />
-                    );
-                  }
-                  return <EnemyUnitMesh key={en.id} enemy={en} size={hexSize} target={[ew.x, y, ew.z]} />;
-                })}
-                {/* Base / Command Center at spawn — build-out tier follows player level,
-                    with district pads on adjacent tiles + a stroked home-zone border */}
+                {enemyField}
+                {/* Base / Command Center at spawn — build-out STATE (tier) follows player
+                    level (1 every 10 levels), sprawl grows 1 building/level with a
+                    district pad every 5th, all inside a stroked home-zone border */}
                 {(() => { const bw = axialToWorld(baseAxial, hexSize); return (
                   <group key="base" position={[bw.x, tileTopAt(baseAxial.q, baseAxial.r), bw.z]} frustumCulled={false}>
-                    <CommandCenter size={hexSize} color={heroColors.primary} tier={baseTier} stage={baseCityStage} playstyle={dominantStyle} hqUrl={houseVariants[0] ?? null} />
+                    <CommandCenter size={hexSize} color={heroColors.primary} tier={baseTier} stage={baseCityStage} playstyle={dominantStyle} hqUrl={hqHouseForTier(houseVariants, baseTier, BASE_TIER_NAMES.length)} />
                   </group>
                 ); })()}
-                {baseDistricts.map(d => { const dw = axialToWorld(d, hexSize); return (
-                  <group key={`district-${d.q},${d.r}`} position={[dw.x, tileTopAt(d.q, d.r), dw.z]} frustumCulled={false}>
-                    <BaseDistrictMesh size={hexSize} kind={d.kind} color={heroColors.primary} />
-                  </group>
-                ); })}
                 <CityBuildingsMesh spots={cityBuildingSpots} size={hexSize} tier={baseTier} color={heroColors.primary} houses={houseVariants} />
                 <BaseZoneRing positions={baseZoneRingPositions} color={heroColors.primary} />
                 {/* Terraformer objective */}
@@ -5592,69 +5848,13 @@ export default function SoloMissionMap3D({
                   </group>
                 ); })()}
                 {/* Outposts (fog-gated) */}
-                {Array.from(outposts.values()).map(o => {
-                  const okey = `${o.q},${o.r}`;
-                  if (!exploredRef.current.has(okey) && !heroVisible.has(okey)) return null;
-                  if (axialDistance({ q: o.q, r: o.r }, hero.pos) > RENDER_RADIUS) return null;
-                  const ow = axialToWorld({ q: o.q, r: o.r }, hexSize);
-                  return (
-                    <group key={`outpost-${o.key}`} position={[ow.x, tileTopAt(o.q, o.r), ow.z]} frustumCulled={false}>
-                      {(() => {
-                        // In a MOBA, colour the banner by the authoritative owning faction;
-                        // otherwise fall back to the single-player owned/neutral flag.
-                        const mobaOwner = mobaActive ? mobaOutpostOwner.get(o.key) : undefined;
-                        if (mobaActive) {
-                          const owned = !!mobaOwner && mobaOwner !== 'neutral';
-                          const color = owned ? (FACTION_COLORS[mobaOwner as string]?.primary ?? heroColors.primary) : heroColors.primary;
-                          return <OutpostMarker size={hexSize} owned={owned} color={color} />;
-                        }
-                        // Solo: a rival empire's outpost flies THEIR colours — visible threat.
-                        const rivalOwner = o.owner !== 'player' && o.owner !== 'neutral' ? o.owner : null;
-                        return <OutpostMarker size={hexSize} owned={o.owner === 'player' || !!rivalOwner}
-                          color={rivalOwner ? (FACTION_COLORS[rivalOwner]?.primary ?? '#8a8f96') : heroColors.primary} />;
-                      })()}
-                    </group>
-                  );
-                })}
+                {outpostField}
                 {/* Region name + control labels (revealed with the 'O' territory overlay). */}
-                {showOutpostZones && outpostRegions.map(rg => {
-                  const rkey = `${rg.centroid.q},${rg.centroid.r}`;
-                  if (!exploredRef.current.has(rkey) && !minimapVisibleKeys.has(rkey)) return null;
-                  const rw = axialToWorld({ q: rg.centroid.q, r: rg.centroid.r }, hexSize);
-                  return (
-                    <Text key={`region-${rg.id}`} position={[rw.x, hexSize * 2.4, rw.z]} fontSize={hexSize * 0.6}
-                      color={rg.controlled ? heroColors.primary : '#e5e7eb'} anchorX="center" anchorY="middle"
-                      outlineWidth={hexSize * 0.03} outlineColor="#000">
-                      {`${rg.controlled ? '🚩 ' : ''}${rg.name}  ${rg.owned}/${rg.total}`}
-                    </Text>
-                  );
-                })}
+                {regionLabelField}
                 {/* Refugee camps (fog-gated) — faction side missions */}
-                {Array.from(refugeeCamps.values()).map(c => {
-                  const rkey = `${c.q},${c.r}`;
-                  if (!exploredRef.current.has(rkey) && !heroVisible.has(rkey)) return null;
-                  if (axialDistance({ q: c.q, r: c.r }, hero.pos) > RENDER_RADIUS) return null;
-                  const rw = axialToWorld({ q: c.q, r: c.r }, hexSize);
-                  return (
-                    <group key={`refugee-${c.key}`} position={[rw.x, tileTopAt(c.q, c.r), rw.z]} frustumCulled={false}>
-                      <RefugeeCampMarker
-                        size={hexSize}
-                        done={c.completed}
-                        label={c.mission.title}
-                        icon={c.mission.icon}
-                        mode={c.mode}
-                        subtitle={c.mode === 'aid' ? `${c.delivered}/${c.required.amount} ${RESOURCE_DEFS[c.required.resource].label}` : undefined}
-                        showWcNpc={playerFactionKey === 'WC'}
-                      />
-                    </group>
-                  );
-                })}
-                {/* Floating combat numbers (damage counters) */}
-                {combatTexts.map(ct => (
-                  <group key={ct.id} position={[ct.x, 0, ct.z]}>
-                    <FloatingCombatText text={ct.text} color={ct.color} onDone={() => setCombatTexts(prev => prev.filter(p => p.id !== ct.id))} />
-                  </group>
-                ))}
+                {refugeeField}
+                {/* Floating combat numbers (damage counters) — self-contained layer */}
+                <CombatTextField spawnRef={combatTextSpawnRef} />
                 {/* Boundary reference planes */}
                 <group>{boundaryPlanes}</group>
               </group>
@@ -6081,7 +6281,7 @@ export default function SoloMissionMap3D({
                     </div>
                     {storyOutcome ? (
                       <>
-                        <div className="text-sm leading-relaxed opacity-90 italic mb-4">{storyText(storyOutcome, playerFactionKey, heroGender ?? 'FEMALE')}</div>
+                        <div className="text-sm leading-relaxed opacity-90 italic mb-4 bg-black/30 rounded-lg px-3 py-2">{storyText(storyOutcome, playerFactionKey, heroGender ?? 'FEMALE')}</div>
                         <button
                           onClick={closeStoryBeat}
                           className="w-full py-2 rounded-lg bg-emerald-700 hover:bg-emerald-600 font-bold"
@@ -6089,7 +6289,7 @@ export default function SoloMissionMap3D({
                       </>
                     ) : storyLineIdx < activeStoryBeat.lines.length - 1 ? (
                       <>
-                        <div className="text-sm leading-relaxed opacity-90 mb-4">“{storyText(activeStoryBeat.lines[storyLineIdx], playerFactionKey, heroGender ?? 'FEMALE')}”</div>
+                        <div className="text-sm leading-relaxed opacity-90 mb-4 bg-black/30 rounded-lg px-3 py-2">“{storyText(activeStoryBeat.lines[storyLineIdx], playerFactionKey, heroGender ?? 'FEMALE')}”</div>
                         <button
                           onClick={() => setStoryLineIdx(i => i + 1)}
                           className="w-full py-2 rounded-lg bg-emerald-700 hover:bg-emerald-600 font-bold"
@@ -6097,7 +6297,7 @@ export default function SoloMissionMap3D({
                       </>
                     ) : (
                       <>
-                        <div className="text-sm leading-relaxed opacity-90 mb-4">“{storyText(activeStoryBeat.lines[storyLineIdx], playerFactionKey, heroGender ?? 'FEMALE')}”</div>
+                        <div className="text-sm leading-relaxed opacity-90 mb-4 bg-black/30 rounded-lg px-3 py-2">“{storyText(activeStoryBeat.lines[storyLineIdx], playerFactionKey, heroGender ?? 'FEMALE')}”</div>
                         <div className="grid gap-2">
                           {activeStoryBeat.choices.map(c => (
                             <button

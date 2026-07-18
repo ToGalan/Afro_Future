@@ -101,7 +101,17 @@
       "PowerShell(\\(Get-Content src\\\\components\\\\SnowflakeSkillTree.tsx | Measure-Object -Line\\).Lines)",
       "PowerShell(node .\\\\loadcheck.tmp.mjs B)",
       "PowerShell(Remove-Item -Recurse -Force \"$env:TEMP\\\\afro-persist-test\" -ErrorAction SilentlyContinue; node .\\\\loadcheck.tmp.mjs A; \"-----\"; node .\\\\loadcheck.tmp.mjs B)",
-      "PowerShell(Remove-Item .\\\\loadcheck.tmp.mjs -Confirm:$false -ErrorAction SilentlyContinue)"
+      "PowerShell(Remove-Item .\\\\loadcheck.tmp.mjs -Confirm:$false -ErrorAction SilentlyContinue)",
+      "PowerShell(npx tsc -b --dry 2>$null)",
+      "PowerShell(npx tsc --noEmit -p tsconfig.app.json)",
+      "PowerShell($scratch = \"C:\\\\Users\\\\brian\\\\AppData\\\\Local\\\\Temp\\\\claude\\\\d--Afro-Future--Dev-Backup-New-Dev-2025-v3\\\\84b4b9d8-d8bf-418e-8078-1420d2408561\\\\scratchpad\"; npx esbuild \"$scratch\\\\hydrate-race-test.ts\" --bundle --platform=node --format=cjs --outfile=\"$scratch\\\\hydrate-race-test.cjs\" --log-level=error; if \\($?\\) { node \"$scratch\\\\hydrate-race-test.cjs\" })",
+      "PowerShell(Get-NetTCPConnection -State Listen | Where-Object { $_.LocalPort -in 5173,5174,5199,1002,3000,8080 } | Select-Object LocalAddress,LocalPort,OwningProcess | Format-Table)",
+      "PowerShell(Start-Process -FilePath \"cmd.exe\" -ArgumentList \"/c npx vite --port 5199 --strictPort > `\"$env:TEMP\\\\vite-5199.log`\" 2>&1\" -WindowStyle Hidden; Start-Sleep -Seconds 6; \\(Invoke-WebRequest -Uri \"http://localhost:5199\" -UseBasicParsing -TimeoutSec 10\\).StatusCode)",
+      "PowerShell(node \"C:\\\\Users\\\\brian\\\\AppData\\\\Local\\\\Temp\\\\claude\\\\d--Afro-Future--Dev-Backup-New-Dev-2025-v3\\\\84b4b9d8-d8bf-418e-8078-1420d2408561\\\\scratchpad\\\\loadcheck.cjs\")",
+      "PowerShell($conn = Get-NetTCPConnection -State Listen -LocalPort 5199 -ErrorAction SilentlyContinue; if \\($conn\\) { Stop-Process -Id $conn[0].OwningProcess -Force -Confirm:$false; 'vite stopped' } else { 'not running' })",
+      "PowerShell($scratch = \"C:\\\\Users\\\\brian\\\\AppData\\\\Local\\\\Temp\\\\claude\\\\d--Afro-Future--Dev-Backup-New-Dev-2025-v3\\\\84b4b9d8-d8bf-418e-8078-1420d2408561\\\\scratchpad\"; npx esbuild \"$scratch\\\\points-test.ts\" --bundle --platform=node --format=cjs --outfile=\"$scratch\\\\points-test.cjs\" --log-level=error; if \\($?\\) { node \"$scratch\\\\points-test.cjs\" })",
+      "PowerShell(git stash)",
+      "PowerShell(git stash pop)"
     ]
   }
 }

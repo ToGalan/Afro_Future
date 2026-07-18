@@ -129,7 +129,7 @@ export function getLevelProgress(currentXp: number, currentLevel: number, config
  * Level-up reward distribution
  */
 export function getLevelReward(newLevel: number): LevelReward {
-  // Skill points come from the ONE balance.ts curve (level-scaled, milestone every 5th)
+  // Skill points come from the ONE balance.ts curve (flat 1 point per level)
   // so this always matches what the skill tree actually lets the player spend.
   const skillTokens = newLevel <= 1 ? SKILL_POINTS_BASE : skillPointsAtLevel(newLevel);
 
