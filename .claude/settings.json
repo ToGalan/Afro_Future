@@ -86,7 +86,18 @@
       "PowerShell(\"--- .env.local ---\")",
       "PowerShell(Remove-Item -Recurse -Force \"public\\\\assets\\\\hq\" -Confirm:$false)",
       "PowerShell(Remove-Item -Recurse -Force \"dist\\\\assets\\\\hq\" -Confirm:$false -ErrorAction SilentlyContinue)",
-      "PowerShell(\"hq removed\")"
+      "PowerShell(\"hq removed\")",
+      "PowerShell(Test-Path node_modules\\\\puppeteer; Test-Path node_modules\\\\playwright; Test-Path node_modules\\\\puppeteer-core; \\(Get-Content package.json -Raw | ConvertFrom-Json\\).devDependencies | Out-String)",
+      "Read(//c/Program Files \\\\\\(x86\\\\\\)/Microsoft/Edge/Application/**)",
+      "PowerShell(npx vite --port 5199 --strictPort)",
+      "PowerShell(node \"C:\\\\Users\\\\brian\\\\AppData\\\\Local\\\\Temp\\\\claude\\\\d--Afro-Future--Dev-Backup-New-Dev-2025-v3\\\\69b559b3-ebef-457b-95a6-ef73610c7eb7\\\\scratchpad\\\\loadcheck.mjs\")",
+      "PowerShell(Copy-Item \"C:\\\\Users\\\\brian\\\\AppData\\\\Local\\\\Temp\\\\claude\\\\d--Afro-Future--Dev-Backup-New-Dev-2025-v3\\\\69b559b3-ebef-457b-95a6-ef73610c7eb7\\\\scratchpad\\\\loadcheck.mjs\" \".\\\\loadcheck.tmp.mjs\")",
+      "PowerShell(node .\\\\loadcheck.tmp.mjs)",
+      "PowerShell(Remove-Item .\\\\loadcheck.tmp.mjs -Confirm:$false)",
+      "PowerShell(npx tsc --noEmit 2>$null; echo \"tsc exit: $LASTEXITCODE\"; node .\\\\loadcheck.tmp.mjs)",
+      "PowerShell(node .\\\\loadcheck.tmp.mjs 2>&1 | Select-String 'POST-PLAY|HP |Explore|Defeated|PAGEERROR' ; npx tsc --noEmit 2>$null; echo \"tsc exit: $LASTEXITCODE\")",
+      "PowerShell(node .\\\\loadcheck.tmp.mjs 2>&1 | Select-String 'POST-PLAY' -Context 0,2; npx tsc --noEmit 2>$null; echo \"tsc exit: $LASTEXITCODE\")",
+      "PowerShell(node .\\\\loadcheck2.tmp.mjs; npx tsc --noEmit 2>$null; echo \"tsc exit: $LASTEXITCODE\")"
     ]
   }
 }

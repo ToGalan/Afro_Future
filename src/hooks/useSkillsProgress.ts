@@ -89,11 +89,21 @@ export function useSkillsProgress({
   // ── Hero vitals state ─────────────────────────────────────────────────────
   const [heroVitals, setHeroVitals] = useState({ hp: HP_MAX, ep: EP_MAX });
 
-  // Clamp when max changes (level-up / skill change)
+  // Reconcile vitals when max changes. Two directions:
+  // - max SHRANK (respec): clamp current down.
+  // - max GREW (loadout/skills hydrating after first render, level-up, traits): scale
+  //   current by the same ratio. Without this, vitals initialized against the small
+  //   pre-hydration max stay stranded (the "spawn with 37/120 HP on load" bug) —
+  //   clamping alone never raises current when the ceiling rises.
+  const prevMaxRef = useRef({ hp: HP_MAX, ep: EP_MAX });
   useEffect(() => {
+    const prev = prevMaxRef.current;
+    prevMaxRef.current = { hp: HP_MAX, ep: EP_MAX };
     setHeroVitals(v => {
-      const hp = Math.min(HP_MAX, v.hp);
-      const ep = Math.min(EP_MAX, v.ep);
+      let hp = Math.min(HP_MAX, v.hp);
+      let ep = Math.min(EP_MAX, v.ep);
+      if (HP_MAX > prev.hp && prev.hp > 0) hp = Math.min(HP_MAX, Math.round(v.hp * (HP_MAX / prev.hp)));
+      if (EP_MAX > prev.ep && prev.ep > 0) ep = Math.min(EP_MAX, Math.round(v.ep * (EP_MAX / prev.ep)));
       return hp === v.hp && ep === v.ep ? v : { hp, ep };
     });
   }, [HP_MAX, EP_MAX]);

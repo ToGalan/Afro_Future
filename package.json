@@ -41,6 +41,7 @@
     "google-auth-library": "^9.14.1",
     "nodemailer": "^6.9.11",
     "postcss": "^8.4.38",
+    "puppeteer-core": "^24.43.1",
     "sharp": "^0.33.4",
     "tailwindcss": "^3.4.10",
     "terser": "^5.46.1",

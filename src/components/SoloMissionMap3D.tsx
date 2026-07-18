@@ -3480,6 +3480,12 @@ export default function SoloMissionMap3D({
 
   // Incoming damage passes through defence buffs + the shield pool before reaching HP.
   const applyIncomingDamage = React.useCallback((amt: number) => {
+    // Placement gate: for the first moments of a mission the hero sits at the raw
+    // useState position (map corner 0,0) until the spawn/restore effects place them.
+    // World AI is already live then, so corner units could land a deterministic
+    // opening hit (or a kill) on a hero the player never controlled. No damage
+    // counts until the hero is actually standing where the game put them.
+    if (!heroPlacedRef.current) return;
     let dmg = Math.max(0, amt);
     if (heroDefBonusRef.current > 0) dmg = Math.max(1, dmg - heroDefBonusRef.current);
     if (heroShieldRef.current > 0 && dmg > 0) {
@@ -4290,24 +4296,46 @@ export default function SoloMissionMap3D({
   }, []);
 
   const tilesMoveRef = React.useRef(0); // Track tiles moved for pet XP reward
-  // When profile loads, adopt stored hero position if present
+  // True once the hero stands at their real starting tile (restored save or base
+  // spawn) — gates incoming damage so pre-placement frames can't hurt the hero.
+  const heroPlacedRef = React.useRef(false);
+  // A saved hero position is only trustworthy if it's a real walkable tile AND not
+  // the {q:0,r:0} new-profile default. (0,0) used to be the map centre, but on the
+  // rescaled 240×240 map it's the far CORNER — fresh profiles restored there loaded
+  // ~175 tiles from base, outside the spawn safe-zone, straight into Lv 25+ units.
+  const savedHeroPosUsable = React.useCallback((p: { q: number; r: number } | undefined | null) => {
+    if (!p) return false;
+    if (p.q === 0 && p.r === 0) return false; // new-profile default sentinel, not a real save
+    const t = tiles.find(tt => tt.q === p.q && tt.r === p.r);
+    return !!t && t.type !== 'water' && t.type !== 'mountain';
+  }, [tiles]);
+  // When profile loads (and tiles exist to validate against), adopt the stored hero
+  // position if it's usable; otherwise the spawn effect below places us at base.
+  const heroRestoredRef = React.useRef(false);
   useEffect(() => {
-    if (profile && profile.progress?.heroPosition) {
-      setHero(h => ({ ...h, pos: profile.progress.heroPosition }));
-      console.log('[hero] restored position from profile', profile.progress.heroPosition);
-      // trigger camera recenter once after load
+    if (heroRestoredRef.current || tiles.length === 0 || !profile) return;
+    const saved = profile.progress?.heroPosition;
+    if (savedHeroPosUsable(saved)) {
+      heroRestoredRef.current = true;
+      heroPlacedRef.current = true;
+      setHero(h => ({ ...h, pos: saved! }));
+      setPet(p => ({ ...p, pos: saved! }));
+      console.log('[hero] restored position from profile', saved);
       setRecenterSignal(s => s + 1);
     }
-  }, [profile]);
+  }, [profile, tiles, savedHeroPosUsable]);
 
   // After tiles load, move hero to the real spawn position (center of map) if no
-  // saved profile position exists. This is needed because useState initializes
+  // usable saved position exists. This is needed because useState initializes
   // with spawnPos={q:0,r:0} before tiles are available from the worker.
   const heroMovedToSpawn = React.useRef(false);
   useEffect(() => {
-    if (tiles.length === 0 || heroMovedToSpawn.current) return;
-    if (profile && profile.progress?.heroPosition) return; // profile will handle it
+    if (tiles.length === 0 || heroMovedToSpawn.current || heroRestoredRef.current) return;
+    if (savedHeroPosUsable(profile?.progress?.heroPosition)) return; // restore effect handles it
+    // Place at base immediately (don't wait for the profile); if a usable saved
+    // position arrives later, the restore effect above overrides this.
     heroMovedToSpawn.current = true;
+    heroPlacedRef.current = true;
     setHero(h => ({ ...h, pos: spawnPos }));
     // Pet must also teleport to spawn — without this, pet stays at its useState
     // initial position ({q:4, r:-1} near the map origin) while the hero and camera
@@ -4315,7 +4343,7 @@ export default function SoloMissionMap3D({
     setPet(p => ({ ...p, pos: spawnPos }));
     setRecenterSignal(s => s + 1);
     console.log('[hero] moved to map spawn', spawnPos);
-  }, [tiles, spawnPos, profile]);
+  }, [tiles, spawnPos, profile, savedHeroPosUsable]);
 
   // FOV always on now; removed toggle state
 
@@ -4370,7 +4398,10 @@ export default function SoloMissionMap3D({
   // Explore accumulation (union of all heroVisible over time)
   const exploredRef = React.useRef<Set<string>>(new Set());
   const [exploredCount, setExploredCount] = useState(0);
-  const explorationGoal = 100; // exploration objective: discover 100 tiles
+  // Exploration objective: must require actually ROAMING. Hero vision is 8, so ~217
+  // tiles are revealed by simply standing at spawn (which used to instantly complete
+  // the old 100-tile goal on load, paying its reward before the player moved).
+  const explorationGoal = 400;
   const [explorationComplete, setExplorationComplete] = useState(false);
   // Seed from profile once when profile loads. Also re-derive the HUD count and the
   // completion flag, so a reloaded save doesn't show 0/100 (or lose its ✓) until you move.

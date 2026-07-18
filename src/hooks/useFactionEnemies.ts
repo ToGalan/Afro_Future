@@ -83,7 +83,11 @@ const BOSS = { hpMult: 4, atkMult: 1.5, levelBonus: 4 };
 const TICK_MS = 300;             // AI heartbeat
 const ATTACK_INTERVAL_MS = 1100; // min time between a unit's strikes
 const PROVOKE_MS = 12000;        // how long a provoked unit hunts before calming
-const SAFE_RADIUS = 6;           // enemies won't engage the hero this near the base/spawn hub
+// Enemies won't engage the hero this near the base/spawn hub. Must comfortably cover
+// spawnPos (nearest walkable to centre — can sit a few tiles off) PLUS the widest
+// aggro reach (opportunistic WC + provoked = up to ~8), or fresh heroes get chipped
+// at base before the opening story beat pauses combat.
+const SAFE_RADIUS = 10;
 
 function axialDist(aq: number, ar: number, bq: number, br: number): number {
   return (Math.abs(aq - bq) + Math.abs(ar - br) + Math.abs(aq + ar - bq - br)) / 2;
