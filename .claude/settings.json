@@ -69,7 +69,13 @@
       "PowerShell(npx firebase deploy --only firestore:rules --project afrofuture)",
       "PowerShell(npx firebase deploy --only database --project afrofuture)",
       "Bash(git commit -m 'Creep kills no longer feed the Domination victory track *)",
-      "PowerShell(npm install @react-three/postprocessing@^2.16.0)"
+      "PowerShell(npm install @react-three/postprocessing@^2.16.0)",
+      "PowerShell(npx tsc --noEmit 2>$null; echo \"tsc exit: $LASTEXITCODE\")",
+      "PowerShell(node \"C:\\\\Users\\\\brian\\\\AppData\\\\Local\\\\Temp\\\\claude\\\\d--Afro-Future--Dev-Backup-New-Dev-2025-v3\\\\69b559b3-ebef-457b-95a6-ef73610c7eb7\\\\scratchpad\\\\dedash.js\" \"d:\\\\Afro Future -Dev Backup\\\\New Dev 2025\\\\v3\\\\src\")",
+      "Bash(grep -vE '^\\\\S+:[0-9]+:\\\\s*\\(//|\\\\*|/\\\\*|\\\\{/\\\\*\\)' \"C:\\\\Users\\\\brian\\\\.claude\\\\projects\\\\d--Afro-Future--Dev-Backup-New-Dev-2025-v3\\\\69b559b3-ebef-457b-95a6-ef73610c7eb7\\\\tool-results\\\\toolu_01T2Q5Uw3kewYPgyy5H15FLn.txt\")",
+      "PowerShell(npx tsc --noEmit 2>$null; echo \"tsc exit: $LASTEXITCODE\"; npx vite build 2>&1 | Select-Object -Last 4)",
+      "PowerShell(npx tsc --noEmit 2>$null; echo \"tsc exit: $LASTEXITCODE\"; npx vite build 2>&1 | Select-Object -Last 2)",
+      "PowerShell(Get-ChildItem \"public\\\\assets\" | Format-Table Name, Length -AutoSize | Out-String -Width 200; Get-ChildItem \"public\\\\assets\" -Directory | ForEach-Object { \"{0}  {1:N0} bytes\" -f $_.Name, \\(\\(Get-ChildItem -Recurse $_.FullName | Measure-Object Length -Sum\\).Sum\\) })"
     ]
   }
 }

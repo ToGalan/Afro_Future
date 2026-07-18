@@ -64,7 +64,7 @@ export const PetPanel: React.FC = () => {
 
       {/* Bond bar */}
       <div style={{ marginTop: 6 }}>
-        <Meter label={`Bond — ${BOND_TIERS[tierIdx].name}`} pct={bondPct} color="#f472b6" />
+        <Meter label={`Bond, ${BOND_TIERS[tierIdx].name}`} pct={bondPct} color="#f472b6" />
       </div>
 
       {/* Passive */}

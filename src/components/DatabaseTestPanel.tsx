@@ -62,11 +62,11 @@ export const DatabaseTestPanel: React.FC = () => {
         <button onClick={testFirestore} style={btnStyle}>Firestore Ping</button>
         <button onClick={testRTDB} style={btnStyle}>RTDB Ping</button>
       </div>
-      <div>FS Latency: {fsLatency? fsLatency.toFixed(1)+'ms':'—'}</div>
-      <div>RT Latency: {rtLatency? rtLatency.toFixed(1)+'ms':'—'}</div>
+      <div>FS Latency: {fsLatency? fsLatency.toFixed(1)+'ms':', '}</div>
+      <div>RT Latency: {rtLatency? rtLatency.toFixed(1)+'ms':', '}</div>
       <div style={{ marginTop:6, maxHeight:90, overflow:'auto', background:'#000/20', padding:4, fontFamily:'monospace', fontSize:11 }}>
-        <div><strong>FS:</strong> {fsValue || '—'}</div>
-        <div><strong>RT:</strong> {rtValue || '—'}</div>
+        <div><strong>FS:</strong> {fsValue || ', '}</div>
+        <div><strong>RT:</strong> {rtValue || ', '}</div>
       </div>
     </div>
   );

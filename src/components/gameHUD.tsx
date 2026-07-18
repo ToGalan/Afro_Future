@@ -920,7 +920,7 @@ export const GameHUD: React.FC<GameHUDProps> = ({
                     {petBond && (
                       <div className="bg-black/30 rounded-lg p-3 mb-4">
                         <div className="flex justify-between text-xs mb-1">
-                          <span className="opacity-60">Bond — {petBond.tierName}</span>
+                          <span className="opacity-60">Bond: {petBond.tierName}</span>
                           <span className="font-bold text-pink-300">{petBond.pct}%</span>
                         </div>
                         <div className="w-full bg-black/50 rounded-full h-2">

@@ -37,7 +37,7 @@ export interface MobaModeConfig {
 export const MOBA_MODES: Record<MobaMode, MobaModeConfig> = {
   FFA_1v1v1: {
     mode: 'FFA_1v1v1',
-    label: '1v1v1 — Free-for-All',
+    label: '1v1v1, Free-for-All',
     sideCount: 3,
     teamSize: 1,
     players: 3,
@@ -45,7 +45,7 @@ export const MOBA_MODES: Record<MobaMode, MobaModeConfig> = {
   },
   TEAMS_2v2v2: {
     mode: 'TEAMS_2v2v2',
-    label: '2v2v2 — Team Battle',
+    label: '2v2v2, Team Battle',
     sideCount: 3,
     teamSize: 2,
     players: 6,

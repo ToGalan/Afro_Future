@@ -839,7 +839,7 @@ function SkillsModal({ loadout, onClose }: { loadout: CharacterLoadout; onClose:
             <div className="px-4 py-2.5 border-t border-emerald-500/20 bg-emerald-900/15 text-[11px] text-emerald-300 flex items-center gap-2 shrink-0">
               <span className="opacity-70">✦</span>
               <span className="flex-1 truncate">
-                {(() => { const sk = assignableSkills.find(s => s.id === selectedSkill); return sk ? `"${sk.label}" — click a slot` : 'Skill selected'; })()}
+                {(() => { const sk = assignableSkills.find(s => s.id === selectedSkill); return sk ? `"${sk.label}", click a slot` : 'Skill selected'; })()}
               </span>
               <button onClick={() => setSelectedSkill(null)} className="shrink-0 opacity-50 hover:opacity-90 text-xs">✕</button>
             </div>
@@ -1959,8 +1959,8 @@ function LeftPlayerPanel({ className = '', playerName, accountLevel, loadout, he
         })()}
         {/* Traits summary */}
         <div className="mt-4 w-full rounded-2xl border border-white/10 bg-gradient-to-br from-white/5 to-white/[0.02] p-3 text-[10px] flex flex-col gap-1">
-          <div className="flex justify-between"><span className="opacity-70">Primary Path</span><span className="font-semibold text-emerald-300">{primaryBranch || '—'}</span></div>
-          <div className="flex justify-between"><span className="opacity-70">Primary Type</span><span className="font-semibold text-sky-300">{primaryType || '—'}</span></div>
+          <div className="flex justify-between"><span className="opacity-70">Primary Path</span><span className="font-semibold text-emerald-300">{primaryBranch || ', '}</span></div>
+          <div className="flex justify-between"><span className="opacity-70">Primary Type</span><span className="font-semibold text-sky-300">{primaryType || ', '}</span></div>
           <div className="mt-1 flex flex-wrap gap-1">
             {traitTags.length ? traitTags.map(t => <TraitTag key={t} tag={t} />) : (
               <span className="opacity-50">Earn traits by investing tokens</span>
@@ -2010,7 +2010,7 @@ function LeftPlayerPanel({ className = '', playerName, accountLevel, loadout, he
                   {petAbilities.map(a => (
                     <span
                       key={a.id}
-                      title={a.unlocked ? `${a.name} — ${a.description}` : `${a.name} — Unlocks at Lv ${a.reqLevel}, ${BOND_TIERS[a.reqBondTier].name} bond`}
+                      title={a.unlocked ? `${a.name}, ${a.description}` : `${a.name}, Unlocks at Lv ${a.reqLevel}, ${BOND_TIERS[a.reqBondTier].name} bond`}
                       className={`text-sm ${a.unlocked ? '' : 'opacity-30 grayscale'}`}
                     >{a.unlocked ? a.icon : '🔒'}</span>
                   ))}
@@ -2037,8 +2037,8 @@ function RightPlayerPanel({ className = '', loadout, onCustomize, onPlay }: { cl
 
   const modes: { key: 'single' | 'multi' | 'moba'; label: string; enabled: boolean }[] = [
     { key: 'single', label: 'Single Player', enabled: true },
-    { key: 'multi', label: 'Multiplayer — 1v1 Duel', enabled: true },
-    { key: 'moba', label: 'Multiplayer — 1v1v1 MOBA', enabled: true },
+    { key: 'multi', label: 'Multiplayer, 1v1 Duel', enabled: true },
+    { key: 'moba', label: 'Multiplayer, 1v1v1 MOBA', enabled: true },
   ];
   
   return (
@@ -2090,8 +2090,8 @@ function RightPlayerPanel({ className = '', loadout, onCustomize, onPlay }: { cl
               <div className="flex flex-col items-center justify-center w-full text-center">
                 <span className="font-medium text-sm tracking-wide mb-0.5">{m.label}</span>
                 <span className="text-[11px] opacity-60">{m.enabled
-                  ? (m.key === 'single' ? 'Story campaign — race two rival empires'
-                    : m.key === 'multi' ? '1v1 duel — first to 3 takedowns'
+                  ? (m.key === 'single' ? 'Story campaign, race two rival empires'
+                    : m.key === 'multi' ? '1v1 duel, first to 3 takedowns'
                     : 'Fill a victory track before your rivals')
                   : 'Unavailable'}</span>
               </div>
@@ -2102,8 +2102,8 @@ function RightPlayerPanel({ className = '', loadout, onCustomize, onPlay }: { cl
         </div>
   {/* Play footer pinned to bottom */}
   <div className="p-4 mt-auto bg-[#0f1218]">
-          <Button className="w-full h-12 text-lg" onClick={startMatch}>{mode === 'multi' ? 'Play — Find Duel' : mode === 'moba' ? 'Play — 1v1v1 MOBA' : 'Play'}</Button>
-          <div className="mt-1 text-[11px] text-gray-300 h-4">{queue ?? (mode === 'multi' ? 'Opens the duel lobby on entry' : mode === 'moba' ? 'Opens the MOBA lobby — pick a faction, host or join' : 'Continue your campaign — defeat, capture or negotiate to victory')}</div>
+          <Button className="w-full h-12 text-lg" onClick={startMatch}>{mode === 'multi' ? 'Play, Find Duel' : mode === 'moba' ? 'Play, 1v1v1 MOBA' : 'Play'}</Button>
+          <div className="mt-1 text-[11px] text-gray-300 h-4">{queue ?? (mode === 'multi' ? 'Opens the duel lobby on entry' : mode === 'moba' ? 'Opens the MOBA lobby, pick a faction, host or join' : 'Continue your campaign, defeat, capture or negotiate to victory')}</div>
         </div>
     </aside>
   );
@@ -2271,7 +2271,7 @@ function ProductCard({ product }: { product: ShopifyProduct }) {
         {img ? <img src={img.url} alt={img.altText||product.title} className="absolute inset-0 w-full h-full object-cover group-hover:scale-105 transition"/> : (
           <div className="absolute inset-0 flex items-center justify-center text-[11px] opacity-40">No Image</div>
         )}
-        <div className="absolute top-2 left-2 text-[10px] px-2 py-0.5 rounded bg-black/50 backdrop-blur border border-white/10">{variant && variant.price ? `${variant.price.amount}${variant.price.currencyCode? ' '+variant.price.currencyCode : ''}` : '—'}</div>
+        <div className="absolute top-2 left-2 text-[10px] px-2 py-0.5 rounded bg-black/50 backdrop-blur border border-white/10">{variant && variant.price ? `${variant.price.amount}${variant.price.currencyCode? ' '+variant.price.currencyCode : ''}` : ', '}</div>
       </div>
       <div className="p-3 flex flex-col gap-1">
         <div className="text-xs font-semibold tracking-wide line-clamp-2 leading-snug min-h-[2rem]">{product.title}</div>
@@ -2325,7 +2325,7 @@ function SettingsView({ className='' }: { className?: string }) {
 // --- Help View ---
 function HelpView({ className='' }: { className?: string }) {
   const items = [
-    { title: 'Choose Your Faction', desc: 'Pick PAA, ASF, or WC — each with unique strengths and lore.', icon: '🏳️' },
+    { title: 'Choose Your Faction', desc: 'Pick PAA, ASF, or WC, each with unique strengths and lore.', icon: '🏳️' },
     { title: 'Select Archetype', desc: 'Male or Female hero. Your archetype sets your starting presence.', icon: '🧍' },
     { title: 'Customize Avatar', desc: 'Tweak parts and colors. Save to lock in your hero.', icon: '🎨' },
     { title: 'Unlock Skills', desc: 'Spend points along branches to unlock combat and utility perks.', icon: '🌿' },

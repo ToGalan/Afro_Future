@@ -263,8 +263,8 @@ export default function SnowflakeSkillTree({ initialLevel = 1 }: SnowflakeSkillT
         <div className="col-span-3 h-full min-h-0 overflow-y-auto">
           <div className="rounded-2xl p-4 bg-white/5 border border-white/10">
             <div className="text-lg font-semibold">Traits</div>
-            <div className="mt-2 text-sm">Primary Path: <span className="opacity-80">{traitsTopBranch ?? '—'}</span></div>
-            <div className="text-sm">Primary Type: <span className="opacity-80">{traitsTopType ?? '—'}</span></div>
+            <div className="mt-2 text-sm">Primary Path: <span className="opacity-80">{traitsTopBranch ?? ', '}</span></div>
+            <div className="text-sm">Primary Type: <span className="opacity-80">{traitsTopType ?? ', '}</span></div>
             <div className="mt-3 flex flex-col gap-1.5">
               {activeTraits(unlocked, nodes as any).length ? activeTraits(unlocked, nodes as any).map(t => (
                 <div key={t.id} className="flex items-center justify-between gap-2 px-2 py-1 rounded bg-emerald-500/10 border border-emerald-400/25 text-xs">

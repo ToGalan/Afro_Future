@@ -169,7 +169,7 @@ export function useOutposts({ tiles, heroQ, heroR, centerQ, centerR, onCapture }
     const regionCleared = Array.from(next.values()).filter(x => x.region === o.region).every(x => x.owner === 'player');
     setOutposts(next);
     onCaptureRef.current?.(o.region, regionCleared, o.owner);
-    console.log(`[outposts] Captured ${key} (region ${o.region})${regionCleared ? ' — REGION CONTROLLED' : ''}`);
+    console.log(`[outposts] Captured ${key} (region ${o.region})${regionCleared ? ', REGION CONTROLLED' : ''}`);
     return true;
   }, [engagedKey]);
 
@@ -183,7 +183,7 @@ export function useOutposts({ tiles, heroQ, heroR, centerQ, centerR, onCapture }
     const next = new Map(cur);
     next.set(key, { ...o, owner: byFaction ?? 'neutral' });
     setOutposts(next);
-    console.log(`[outposts] Raided ${key} (region ${o.region}) — lost to ${byFaction ?? 'a rival faction'}`);
+    console.log(`[outposts] Raided ${key} (region ${o.region}), lost to ${byFaction ?? 'a rival faction'}`);
     return true;
   }, []);
 

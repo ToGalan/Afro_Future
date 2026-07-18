@@ -32,27 +32,27 @@ export const PLAYSTYLES: Record<Playstyle, PlaystyleDef> = {
   help: {
     id: 'help', label: 'Help', icon: '✚', affinity: 'PAA', ethos: 'Heal and Unite',
     color: '#34d399', title: 'The Healer',
-    desc: 'Aid refugees and heal the wounded — build standing without bloodshed.',
+    desc: 'Aid refugees and heal the wounded, build standing without bloodshed.',
   },
   negotiate: {
     id: 'negotiate', label: 'Negotiate', icon: '🕊️', affinity: 'PAA', ethos: 'Heal and Unite',
     color: '#7dd3fc', title: 'The Diplomat',
-    desc: 'Resolve encounters with tactical diplomacy — win ground and calm camps peacefully.',
+    desc: 'Resolve encounters with tactical diplomacy, win ground and calm camps peacefully.',
   },
   scavenge: {
     id: 'scavenge', label: 'Scavenge', icon: '♻️', affinity: 'WC', ethos: 'Survival',
     color: '#fbbf24', title: 'The Scavenger',
-    desc: 'Gather unclaimed resources from the ruins — fuel your effort quietly.',
+    desc: 'Gather unclaimed resources from the ruins, fuel your effort quietly.',
   },
   loot: {
     id: 'loot', label: 'Loot', icon: '🔥', affinity: 'WC', ethos: 'Survival at Any Cost',
     color: '#fb923c', title: 'The Raider',
-    desc: 'Seize rival caches by force — rich rewards, but it enrages their defenders.',
+    desc: 'Seize rival caches by force, rich rewards, but it enrages their defenders.',
   },
   dominate: {
     id: 'dominate', label: 'Dominate', icon: '⚔️', affinity: 'ASF', ethos: 'Africa First',
     color: '#fb7185', title: 'The Conqueror',
-    desc: 'Crush opposition through combat and guerrilla strikes — take and hold by strength.',
+    desc: 'Crush opposition through combat and guerrilla strikes, take and hold by strength.',
   },
 };
 

@@ -108,7 +108,7 @@ export const PET_SPECIES: Record<PetType, PetSpecies> = {
     base: { health: 40, defense: 4, speed: 8, attack: 5 },
     passive: {
       name: 'Ghost Protocol',
-      description: 'Moves unseen — reduces the range at which enemies detect you while the cat is nearby.',
+      description: 'Moves unseen, reduces the range at which enemies detect you while the cat is nearby.',
       icon: '🌫️',
     },
     abilities: [

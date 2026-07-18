@@ -7,7 +7,9 @@ import { useCollectibles, RESOURCE_DEFS } from '../hooks/useCollectibles';
 import type { Mesh } from 'three';
 import * as THREE from 'three';
 import { Canvas, useThree, useFrame } from '@react-three/fiber';
-import { OrbitControls, Text, Sky, ContactShadows, Stats } from '@react-three/drei';
+import { OrbitControls, Text, Sky, ContactShadows } from '@react-three/drei';
+import { ImprovedNoise } from 'three/examples/jsm/math/ImprovedNoise.js';
+import { FbxProp, NATURE_ASSETS, NATURE_TEX, MILITARY_ASSETS, MILITARY_TEX } from './FbxProps';
 import { EffectComposer, Bloom, Vignette } from '@react-three/postprocessing';
 import { arcFor, beatReady, storyNpc, storyText, type StoryBeat, type StoryChoice, type StoryWorldState } from '../services/storyline';
 import { GameAvatar, type AvatarColors } from './GameAvatarMesh';
@@ -78,6 +80,18 @@ function axialToWorld(a: Axial, R_outer: number) {
     const z = R_outer * (Math.sqrt(3) * (a.r + a.q / 2));
     return { x, z };
   }
+}
+
+/** Inverse of axialToWorld (flat-top): world point → containing hex via cube rounding. */
+function worldToAxial(x: number, z: number, R_outer: number): Axial {
+  const q = x / (1.5 * R_outer);
+  const r = z / (Math.sqrt(3) * R_outer) - q / 2;
+  const s = -q - r;
+  let rq = Math.round(q), rr = Math.round(r);
+  const rs = Math.round(s);
+  const dq = Math.abs(rq - q), dr = Math.abs(rr - r), ds = Math.abs(rs - s);
+  if (dq > dr && dq > ds) rq = -rr - rs; else if (dr > ds) rr = -rq - rs;
+  return { q: rq, r: rr };
 }
 
 function axialNeighbors(a: Axial): Axial[] {
@@ -366,20 +380,75 @@ function adjacentMountains(tilesByKey: Map<string, Tile>, a: Axial) {
   return count;
 }
 
-/** Low-poly neutral creep camp: alive creeps in a ring, each with an HP bar + a level tag. */
+/** Neutral creep camp: a demon-beast pack guarding a war-totem fire pit, ringed by a
+ *  crooked palisade. Creeps idle-breathe, the fire flickers, and higher-level packs
+ *  are visibly bulkier. Each creep keeps its HP bar; the camp keeps its level tag. */
 function CreepCampMesh({ camp, size }: { camp: CreepCamp; size: number }) {
   const alive = camp.creeps.filter(c => c.hp > 0);
+  const breatheRefs = React.useRef<(THREE.Group | null)[]>([]);
+  const flameRef = React.useRef<THREE.Mesh>(null);
+  const emberRef = React.useRef<THREE.Mesh>(null);
+  useFrame(({ clock }) => {
+    const t = clock.getElapsedTime();
+    breatheRefs.current.forEach((g, i) => {
+      if (!g) return;
+      g.position.y = Math.sin(t * 2.1 + i * 1.7) * 0.02 * size;
+      g.rotation.z = Math.sin(t * 1.3 + i) * 0.03;
+    });
+    if (flameRef.current) { const s = 1 + Math.sin(t * 7) * 0.18; flameRef.current.scale.set(s, s + Math.sin(t * 9) * 0.12, s); }
+    if (emberRef.current) (emberRef.current.material as THREE.MeshBasicMaterial).opacity = 0.45 + Math.sin(t * 5) * 0.25;
+  });
   if (!alive.length) return null;
-  const cs = size * 0.3;
+  const cs = size * (0.3 + Math.min(0.072, camp.level * 0.012)); // higher-level packs are bulkier
+  const spikes = 8;
   return (
     <group>
+      {/* scorched ground */}
+      <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, 0.015, 0]}><circleGeometry args={[size * 0.72, 12]} /><meshStandardMaterial color="#241a16" roughness={1} transparent opacity={0.85} /></mesh>
+      {/* crooked palisade ring (gap left at the front) */}
+      {Array.from({ length: spikes }, (_, i) => {
+        const a = (i / spikes) * Math.PI * 2 + Math.PI / spikes;
+        const lean = 0.28 + (i % 3) * 0.08;
+        const h = size * (0.42 + (i % 2) * 0.16);
+        return (
+          <mesh key={`spk${i}`} position={[Math.cos(a) * size * 0.66, h * 0.4, Math.sin(a) * size * 0.66]}
+            rotation={[Math.sin(a) * lean, 0, -Math.cos(a) * lean]} castShadow>
+            <coneGeometry args={[size * 0.05, h, 4]} /><meshStandardMaterial color="#221410" roughness={0.95} flatShading />
+          </mesh>
+        );
+      })}
+      {/* central fire pit: stone ring + flickering flame + ember glow */}
+      {[0, 1, 2, 3, 4].map(i => { const a = (i / 5) * Math.PI * 2; return (
+        <mesh key={`st${i}`} position={[Math.cos(a) * size * 0.14, size * 0.035, Math.sin(a) * size * 0.14]}><dodecahedronGeometry args={[size * 0.05, 0]} /><meshStandardMaterial color="#453f38" roughness={1} flatShading /></mesh>
+      ); })}
+      <mesh ref={flameRef} position={[0, size * 0.16, 0]}><coneGeometry args={[size * 0.08, size * 0.26, 6]} /><meshBasicMaterial color="#ff6a2c" /></mesh>
+      <mesh ref={emberRef} rotation={[-Math.PI / 2, 0, 0]} position={[0, 0.03, 0]}><circleGeometry args={[size * 0.2, 10]} /><meshBasicMaterial color="#ff4a1c" transparent opacity={0.5} /></mesh>
+      {/* war totem behind the fire */}
+      <group position={[-size * 0.3, 0, -size * 0.28]}>
+        <mesh position={[0, size * 0.42, 0]} castShadow><cylinderGeometry args={[size * 0.045, size * 0.06, size * 0.84, 5]} /><meshStandardMaterial color="#2e1c14" roughness={0.95} flatShading /></mesh>
+        <mesh position={[0, size * 0.88, 0]} castShadow><icosahedronGeometry args={[size * 0.11, 0]} /><meshStandardMaterial color="#d8ccb0" roughness={0.8} flatShading /></mesh>
+        {[0.06, -0.06].map((ex, ei) => (
+          <mesh key={ei} position={[size * ex, size * 0.9, size * 0.09]}><sphereGeometry args={[size * 0.02, 5, 5]} /><meshBasicMaterial color="#ff3b3b" /></mesh>
+        ))}
+        {[[0.1, -0.5], [-0.1, 0.5]].map(([hx, rz], hi) => (
+          <mesh key={`th${hi}`} position={[size * hx, size * 1.0, 0]} rotation={[0, 0, rz]} castShadow><coneGeometry args={[size * 0.025, size * 0.16, 4]} /><meshStandardMaterial color="#2a0e16" roughness={0.85} flatShading /></mesh>
+        ))}
+        <mesh position={[0, size * 0.62, size * 0.02]}><boxGeometry args={[size * 0.14, size * 0.24, size * 0.015]} /><meshStandardMaterial color="#7a1420" emissive="#5a0a10" emissiveIntensity={0.4} roughness={0.8} side={THREE.DoubleSide} flatShading /></mesh>
+      </group>
+      {/* bone pile */}
+      <group position={[size * 0.34, 0, size * 0.3]}>
+        <mesh position={[0, size * 0.03, 0]} rotation={[Math.PI / 2, 0, 0.5]}><cylinderGeometry args={[size * 0.018, size * 0.018, size * 0.22, 4]} /><meshStandardMaterial color="#d8ccb0" roughness={0.9} flatShading /></mesh>
+        <mesh position={[size * 0.03, size * 0.045, 0]} rotation={[Math.PI / 2, 0, -0.6]}><cylinderGeometry args={[size * 0.015, size * 0.015, size * 0.18, 4]} /><meshStandardMaterial color="#cfc2a4" roughness={0.9} flatShading /></mesh>
+        <mesh position={[-size * 0.04, size * 0.04, size * 0.04]}><dodecahedronGeometry args={[size * 0.04, 0]} /><meshStandardMaterial color="#d8ccb0" roughness={0.9} flatShading /></mesh>
+      </group>
       {alive.map((c, i) => {
         const ang = (i / alive.length) * Math.PI * 2;
-        const rad = alive.length > 1 ? size * 0.42 : 0;
+        const rad = alive.length > 1 ? size * 0.46 : size * 0.2;
         const x = Math.cos(ang) * rad, z = Math.sin(ang) * rad;
         const hpPct = Math.max(0, c.hp / c.maxHp);
         return (
           <group key={c.id} position={[x, 0, z]} rotation={[0, ang, 0]}>
+            <group ref={el => { breatheRefs.current[i] = el; }}>
             {/* Lower body / haunches */}
             <mesh position={[0, cs * 0.6, -cs * 0.08]} castShadow><dodecahedronGeometry args={[cs * 0.5, 0]} /><meshStandardMaterial color="#47182a" roughness={0.8} flatShading /></mesh>
             {/* Chest / torso */}
@@ -427,7 +496,8 @@ function CreepCampMesh({ camp, size }: { camp: CreepCamp; size: number }) {
                 <mesh position={[0, cs * 0.04, cs * 0.08]} castShadow><boxGeometry args={[cs * 0.2, cs * 0.1, cs * 0.3]} /><meshStandardMaterial color="#2a0e16" flatShading /></mesh>
               </group>
             ))}
-            {/* HP bar */}
+            </group>
+            {/* HP bar (outside the breathing group so it stays steady) */}
             <mesh position={[0, cs * 1.95, 0]}><boxGeometry args={[cs * 1.2, cs * 0.16, cs * 0.05]} /><meshBasicMaterial color="#300000" /></mesh>
             <mesh position={[-(cs * 1.2) * (1 - hpPct) / 2, cs * 1.95, cs * 0.04]}><boxGeometry args={[Math.max(0.001, cs * 1.2 * hpPct), cs * 0.12, cs * 0.05]} /><meshBasicMaterial color="#ff4d4d" /></mesh>
           </group>
@@ -469,12 +539,15 @@ function enemyHash(id: string): number {
 function EnemyUnitMesh({ enemy, size, target }: { enemy: FactionEnemy; size: number; target: [number, number, number] }) {
   const ref = React.useRef<THREE.Group>(null);
   const snapped = React.useRef(false);
-  useFrame(() => {
+  useFrame((_, delta) => {
     const g = ref.current; if (!g) return;
     if (!snapped.current) { g.position.set(target[0], target[1], target[2]); snapped.current = true; return; }
-    g.position.x += (target[0] - g.position.x) * 0.2;
-    g.position.y += (target[1] - g.position.y) * 0.2;
-    g.position.z += (target[2] - g.position.z) * 0.2;
+    // Frame-rate-independent lerp (was a flat 0.2-per-frame step, which converged twice
+    // as fast in real time on a 120Hz display as on 60Hz — same decay curve either way now).
+    const k = 1 - Math.exp(-13.4 * Math.min(0.05, delta));
+    g.position.x += (target[0] - g.position.x) * k;
+    g.position.y += (target[1] - g.position.y) * k;
+    g.position.z += (target[2] - g.position.z) * k;
     // Face the direction of travel (the whole unit — character + overlays — rotates).
     const dx = target[0] - g.position.x, dz = target[2] - g.position.z;
     if (dx * dx + dz * dz > 1e-4) g.rotation.y = Math.atan2(dx, dz);
@@ -557,21 +630,312 @@ function FloatingCombatText({ text, color, onDone }: { text: string; color: stri
   );
 }
 
-/** Player base / command center — the hub the pet fetches from and terraforming ties to. */
-function CommandCenter({ size, color = '#3aa37a' }: { size: number; color?: string }) {
+// ── Frame-rate management: 120fps ceiling + 30fps adaptive floor ────────────
+/** Caps rendering at `maxFps` (demand-mode Canvas + our own rAF invalidator).
+ *  On 60Hz displays this is a no-op; on 144/240Hz monitors it stops the GPU from
+ *  rendering frames beyond 120. Uses an accumulator so the cadence stays smooth. */
+function FrameLimiter({ maxFps = 120 }: { maxFps?: number }) {
+  const invalidate = useThree(s => s.invalidate);
+  React.useEffect(() => {
+    let raf = 0; let last = 0;
+    const minMs = 1000 / maxFps;
+    const loop = (t: number) => {
+      raf = requestAnimationFrame(loop);
+      if (t - last >= minMs - 0.5) {
+        last = Math.max(last + minMs, t - minMs); // accumulator: ~120 on 144Hz, not 72
+        invalidate();
+      }
+    };
+    raf = requestAnimationFrame(loop);
+    return () => cancelAnimationFrame(raf);
+  }, [invalidate, maxFps]);
+  return null;
+}
+
+/** FPS cap options the player can cycle through (🎞 button next to ✨ Hi/Lo). */
+const FPS_CAP_OPTIONS = [30, 60, 120] as const;
+
+/** Counts frames the Canvas actually renders (demand mode renders ≤ the 🎞 cap,
+ *  so a plain rAF counter would over-report). Lives inside the Canvas. */
+function FpsProbe({ counter }: { counter: React.MutableRefObject<number> }) {
+  useFrame(() => { counter.current++; });
+  return null;
+}
+
+/** Dev-only FPS readout: ONE small chip. Replaces the drei <Stats/> panel, which
+ *  duplicated itself under React 18 StrictMode double-mounting (two meters on screen). */
+function DevFpsMeter({ counter }: { counter: React.MutableRefObject<number> }) {
+  const [fps, setFps] = React.useState(0);
+  React.useEffect(() => {
+    let prev = counter.current;
+    const id = setInterval(() => {
+      setFps((counter.current - prev) * 2);
+      prev = counter.current;
+    }, 500);
+    return () => clearInterval(id);
+  }, [counter]);
+  return (
+    <div className="fixed bottom-2 left-2 z-50 px-2 py-0.5 rounded bg-black/70 text-[11px] font-mono text-emerald-300 pointer-events-none select-none">
+      {fps} fps
+    </div>
+  );
+}
+
+// ── Base evolution (Civ-style "castle" growth) ──────────────────────────────
+// The command center is not static: player level drives a build-out TIER that
+// grows the hub (walls → watchtowers → annexes → citadel shield) and adds
+// district pads on the neighbouring tiles — purely visual meta-progression.
+const BASE_TIER_LEVELS = [5, 10, 20, 35]; // level that unlocks tier 2..5
+const BASE_TIER_NAMES = ['Base Camp', 'Outpost HQ', 'Settlement', 'Stronghold', 'Citadel'];
+function baseTierFor(level: number) {
+  let t = 1;
+  for (const l of BASE_TIER_LEVELS) if (level >= l) t++;
+  return t; // 1..5
+}
+/** City growth stage: +1 per level to 10, then +1 per 5 levels to 100 (max 28).
+ *  Each stage adds one sprawl building and creeps the territory stroke outward. */
+function baseGrowthStage(level: number) {
+  const l = Math.max(1, Math.min(100, level));
+  return l <= 10 ? l : 10 + Math.floor((l - 10) / 5);
+}
+/** Home-zone ring radius (in tiles) steps up at level milestones; between steps the
+ *  border stroke creeps outward per growth stage (Civ culture-border feel). */
+function baseZoneRadiusFor(level: number) {
+  return level >= 50 ? 4 : level >= 25 ? 3 : level >= 10 ? 2 : 1;
+}
+function baseZoneRingStartLevel(level: number) {
+  return level >= 50 ? 50 : level >= 25 ? 25 : level >= 10 ? 10 : 1;
+}
+
+/** Player base / command center — the hub the pet fetches from and terraforming ties
+ *  to. Grows with `tier` (player level): bigger platform + taller keep each tier,
+ *  perimeter walls at 2, watchtowers at 3, annex blocks + comms at 4, shield at 5.
+ *  The dominant playstyle recolours the energy core/lights and plants a signature
+ *  ornament (healer cross, diplomat banners, scavenger crane, raider braziers,
+ *  conqueror obelisk) so YOUR base reflects how you play. */
+function CommandCenter({ size, color = '#3aa37a', tier = 1, stage = 0, playstyle = null }: { size: number; color?: string; tier?: number; stage?: number; playstyle?: Playstyle | null }) {
   const glowRef = React.useRef<THREE.Mesh>(null);
-  useFrame(({ clock }) => { if (glowRef.current) glowRef.current.rotation.y = clock.getElapsedTime() * 0.5; });
+  const shieldRef = React.useRef<THREE.Mesh>(null);
+  useFrame(({ clock }) => {
+    const t = clock.getElapsedTime();
+    if (glowRef.current) glowRef.current.rotation.y = t * 0.5;
+    if (shieldRef.current) shieldRef.current.rotation.z = t * 0.25;
+  });
+  const S = size;
+  const plat = S * (1.05 + tier * 0.09);   // platform footprint grows with tier
+  const towerH = S * (0.7 + tier * 0.16);  // keep grows taller with tier
+  const keepBaseY = S * 0.34;
+  const roofY = keepBaseY + towerH + S * 0.26;
+  const accent = playstyle ? PLAYSTYLES[playstyle].color : color; // playstyle tints the tech
+  // Continuous growth: +1% overall scale per city growth stage (per level to 10,
+  // then per 5 levels), so the HQ visibly grows EVERY level between tier build-outs.
+  const grow = 1 + Math.min(0.26, stage * 0.01);
+  return (
+    <group scale={grow}>
+      {/* platform */}
+      <mesh position={[0, S * 0.17, 0]} rotation={[0, Math.PI / 6, 0]} castShadow receiveShadow><cylinderGeometry args={[plat * 0.88, plat, S * 0.34, 6]} /><meshStandardMaterial color="#2a3038" roughness={0.85} flatShading /></mesh>
+      {/* main keep */}
+      <mesh position={[0, keepBaseY + towerH / 2, 0]} castShadow><cylinderGeometry args={[S * 0.48, S * 0.66, towerH, 6]} /><meshStandardMaterial color="#454e57" roughness={0.6} metalness={0.2} flatShading /></mesh>
+      <mesh position={[0, roofY, 0]} castShadow><coneGeometry args={[S * 0.55, S * 0.52, 6]} /><meshStandardMaterial color={color} roughness={0.5} metalness={0.3} flatShading /></mesh>
+      {/* rotating energy core — takes the playstyle accent */}
+      <mesh ref={glowRef} position={[0, keepBaseY + towerH * 0.55, 0]}><icosahedronGeometry args={[S * 0.24, 0]} /><meshStandardMaterial color={accent} emissive={accent} emissiveIntensity={1.2} flatShading /></mesh>
+      {/* antenna + beacon */}
+      <mesh position={[0, roofY + S * 0.5, 0]}><cylinderGeometry args={[S * 0.03, S * 0.03, S * 0.5, 4]} /><meshStandardMaterial color="#888" metalness={0.5} /></mesh>
+      <mesh position={[0, roofY + S * 0.78, 0]}><sphereGeometry args={[S * (tier >= 5 ? 0.11 : 0.08), 6, 6]} /><meshBasicMaterial color={tier >= 5 ? accent : '#ff5555'} /></mesh>
+      {/* playstyle signature ornament on the platform apron */}
+      {playstyle === 'help' && (
+        <group position={[0, S * 0.34, plat * 0.68]}>
+          <mesh position={[0, S * 0.28, 0]}><cylinderGeometry args={[S * 0.03, S * 0.04, S * 0.56, 5]} /><meshStandardMaterial color="#78838d" metalness={0.4} /></mesh>
+          <mesh position={[0, S * 0.62, 0]}><boxGeometry args={[S * 0.3, S * 0.1, S * 0.06]} /><meshStandardMaterial color="#e8f4f0" emissive={accent} emissiveIntensity={0.8} flatShading /></mesh>
+          <mesh position={[0, S * 0.62, 0]}><boxGeometry args={[S * 0.1, S * 0.3, S * 0.06]} /><meshStandardMaterial color="#e8f4f0" emissive={accent} emissiveIntensity={0.8} flatShading /></mesh>
+        </group>
+      )}
+      {playstyle === 'negotiate' && (
+        <group position={[0, S * 0.34, plat * 0.68]}>
+          {[-1, 1].map(sx => (
+            <group key={sx} position={[sx * S * 0.22, 0, 0]}>
+              <mesh position={[0, S * 0.34, 0]}><cylinderGeometry args={[S * 0.025, S * 0.035, S * 0.68, 5]} /><meshStandardMaterial color="#78838d" metalness={0.4} /></mesh>
+              <mesh position={[sx * S * 0.12, S * 0.56, 0]}><boxGeometry args={[S * 0.24, S * 0.16, S * 0.02]} /><meshStandardMaterial color={sx < 0 ? '#f4f7f9' : accent} emissive={sx < 0 ? '#dfe8ee' : accent} emissiveIntensity={0.35} side={THREE.DoubleSide} flatShading /></mesh>
+            </group>
+          ))}
+        </group>
+      )}
+      {playstyle === 'scavenge' && (
+        <group position={[0, S * 0.34, plat * 0.66]}>
+          <mesh position={[-S * 0.14, S * 0.1, 0]} rotation={[0, 0.5, 0]}><dodecahedronGeometry args={[S * 0.14, 0]} /><meshStandardMaterial color="#6a5a3a" roughness={0.9} flatShading /></mesh>
+          <mesh position={[S * 0.08, S * 0.08, S * 0.1]} rotation={[0, 1.1, 0]}><dodecahedronGeometry args={[S * 0.1, 0]} /><meshStandardMaterial color="#7a6a4a" roughness={0.9} flatShading /></mesh>
+          <mesh position={[S * 0.2, S * 0.34, -S * 0.06]} rotation={[0, 0, -0.7]}><cylinderGeometry args={[S * 0.025, S * 0.03, S * 0.7, 5]} /><meshStandardMaterial color={accent} metalness={0.3} roughness={0.6} flatShading /></mesh>
+        </group>
+      )}
+      {playstyle === 'loot' && (
+        <group position={[0, S * 0.34, plat * 0.68]}>
+          {[-1, 1].map(sx => (
+            <group key={sx} position={[sx * S * 0.26, 0, 0]}>
+              <mesh position={[0, S * 0.12, 0]}><cylinderGeometry args={[S * 0.08, S * 0.06, S * 0.24, 6]} /><meshStandardMaterial color="#33261e" roughness={0.9} flatShading /></mesh>
+              <mesh position={[0, S * 0.3, 0]}><coneGeometry args={[S * 0.07, S * 0.18, 6]} /><meshBasicMaterial color={accent} /></mesh>
+            </group>
+          ))}
+          <mesh position={[0, S * 0.16, S * 0.14]} rotation={[0.3, 0, 0]}><coneGeometry args={[S * 0.04, S * 0.34, 4]} /><meshStandardMaterial color="#2a1a16" roughness={0.9} flatShading /></mesh>
+        </group>
+      )}
+      {playstyle === 'dominate' && (
+        <group position={[0, S * 0.34, plat * 0.68]}>
+          <mesh position={[0, S * 0.4, 0]} castShadow><boxGeometry args={[S * 0.14, S * 0.8, S * 0.14]} /><meshStandardMaterial color="#23282e" roughness={0.55} metalness={0.35} flatShading /></mesh>
+          <mesh position={[0, S * 0.86, 0]}><coneGeometry args={[S * 0.1, S * 0.16, 4]} /><meshStandardMaterial color={accent} emissive={accent} emissiveIntensity={0.9} flatShading /></mesh>
+        </group>
+      )}
+      {/* tier 2+: perimeter wall segments + corner pylons */}
+      {tier >= 2 && [0, 1, 2, 3, 4, 5].map(i => {
+        const a = (Math.PI / 3) * i + Math.PI / 6; // edge midpoints of the hex platform
+        return (
+          <mesh key={`wall${i}`} position={[Math.cos(a) * plat * 0.82, S * 0.34 + S * 0.14, Math.sin(a) * plat * 0.82]} rotation={[0, -a + Math.PI / 2, 0]} castShadow>
+            <boxGeometry args={[plat * 0.8, S * 0.28, S * 0.1]} /><meshStandardMaterial color="#3a424c" roughness={0.8} flatShading />
+          </mesh>
+        );
+      })}
+      {tier >= 2 && [0, 1, 2, 3, 4, 5].map(i => {
+        const a = (Math.PI / 3) * i; // hex corners
+        return (
+          <mesh key={`pylon${i}`} position={[Math.cos(a) * plat * 0.92, S * 0.34 + S * 0.2, Math.sin(a) * plat * 0.92]} castShadow>
+            <cylinderGeometry args={[S * 0.07, S * 0.09, S * 0.42, 5]} /><meshStandardMaterial color="#4a545e" roughness={0.7} metalness={0.2} flatShading />
+          </mesh>
+        );
+      })}
+      {/* tier 3+: watchtowers on alternating corners */}
+      {tier >= 3 && [0, 2, 4].map(i => {
+        const a = (Math.PI / 3) * i;
+        const x = Math.cos(a) * plat * 0.92, z = Math.sin(a) * plat * 0.92;
+        return (
+          <group key={`tower${i}`} position={[x, S * 0.34, z]}>
+            <mesh position={[0, S * 0.45, 0]} castShadow><cylinderGeometry args={[S * 0.13, S * 0.17, S * 0.9, 6]} /><meshStandardMaterial color="#4f5a64" roughness={0.65} metalness={0.2} flatShading /></mesh>
+            <mesh position={[0, S * 1.02, 0]} castShadow><coneGeometry args={[S * 0.18, S * 0.24, 6]} /><meshStandardMaterial color={color} roughness={0.5} flatShading /></mesh>
+            <mesh position={[0, S * 1.2, 0]}><sphereGeometry args={[S * 0.045, 5, 5]} /><meshBasicMaterial color={accent} /></mesh>
+          </group>
+        );
+      })}
+      {/* tier 4+: annex blocks (interior districts) + comms dish */}
+      {tier >= 4 && (
+        <>
+          <group position={[plat * 0.42, S * 0.34, -plat * 0.3]}>
+            <mesh position={[0, S * 0.19, 0]} rotation={[0, 0.4, 0]} castShadow><boxGeometry args={[S * 0.52, S * 0.38, S * 0.4]} /><meshStandardMaterial color="#3f4954" roughness={0.7} flatShading /></mesh>
+            <mesh position={[0, S * 0.19, 0]} rotation={[0, 0.4, 0]}><boxGeometry args={[S * 0.53, S * 0.08, S * 0.41]} /><meshStandardMaterial color={color} emissive={color} emissiveIntensity={0.5} flatShading /></mesh>
+          </group>
+          <group position={[-plat * 0.46, S * 0.34, plat * 0.24]}>
+            <mesh position={[0, S * 0.15, 0]} rotation={[0, -0.5, 0]} castShadow><boxGeometry args={[S * 0.44, S * 0.3, S * 0.34]} /><meshStandardMaterial color="#3f4954" roughness={0.7} flatShading /></mesh>
+            <mesh position={[0, S * 0.42, 0]} rotation={[-0.7, 0, 0]}><sphereGeometry args={[S * 0.14, 8, 6, 0, Math.PI * 2, 0, Math.PI / 2]} /><meshStandardMaterial color="#aab6c0" metalness={0.5} roughness={0.4} side={THREE.DoubleSide} /></mesh>
+          </group>
+        </>
+      )}
+      {/* tier 5: citadel energy-shield ring */}
+      {tier >= 5 && (
+        <mesh ref={shieldRef} position={[0, S * 0.95, 0]} rotation={[-Math.PI / 2, 0, 0]}>
+          <torusGeometry args={[plat * 1.12, S * 0.035, 6, 48]} /><meshBasicMaterial color={accent} transparent opacity={0.55} />
+        </mesh>
+      )}
+      <Text position={[0, roofY + S * 1.15, 0]} fontSize={S * 0.4} color="#cfe8ff" anchorX="center" anchorY="middle" outlineWidth={S * 0.03} outlineColor="#000">{BASE_TIER_NAMES[Math.min(tier, 5) - 1]}{playstyle ? ` ${PLAYSTYLES[playstyle].icon}` : ''}</Text>
+    </group>
+  );
+}
+
+/** District pad on a tile adjacent to the base — unlocked one per tier (Civ districts). */
+type BaseDistrictKind = 'habitat' | 'agro' | 'industry' | 'energy';
+const DISTRICT_ICON: Record<BaseDistrictKind, string> = { habitat: '🏠', agro: '🌾', industry: '⚙️', energy: '🔋' };
+function BaseDistrictMesh({ size, kind, color }: { size: number; kind: BaseDistrictKind; color: string }) {
   const S = size;
   return (
     <group>
-      <mesh position={[0, S * 0.15, 0]} rotation={[0, Math.PI / 6, 0]} castShadow receiveShadow><cylinderGeometry args={[S * 0.9, S * 1.05, S * 0.3, 6]} /><meshStandardMaterial color="#2a3038" roughness={0.85} flatShading /></mesh>
-      <mesh position={[0, S * 0.7, 0]} castShadow><cylinderGeometry args={[S * 0.45, S * 0.62, S * 0.8, 6]} /><meshStandardMaterial color="#454e57" roughness={0.6} metalness={0.2} flatShading /></mesh>
-      <mesh position={[0, S * 1.2, 0]} castShadow><coneGeometry args={[S * 0.52, S * 0.5, 6]} /><meshStandardMaterial color={color} roughness={0.5} metalness={0.3} flatShading /></mesh>
-      <mesh ref={glowRef} position={[0, S * 0.72, 0]}><icosahedronGeometry args={[S * 0.24, 0]} /><meshStandardMaterial color={color} emissive={color} emissiveIntensity={1.2} flatShading /></mesh>
-      <mesh position={[0, S * 1.72, 0]}><cylinderGeometry args={[S * 0.03, S * 0.03, S * 0.5, 4]} /><meshStandardMaterial color="#888" metalness={0.5} /></mesh>
-      <mesh position={[0, S * 1.98, 0]}><sphereGeometry args={[S * 0.08, 6, 6]} /><meshBasicMaterial color="#ff5555" /></mesh>
-      <Text position={[0, S * 2.35, 0]} fontSize={S * 0.42} color="#cfe8ff" anchorX="center" anchorY="middle" outlineWidth={S * 0.03} outlineColor="#000">BASE</Text>
+      {/* shared foundation pad */}
+      <mesh position={[0, S * 0.05, 0]} rotation={[0, Math.PI / 6, 0]} receiveShadow><cylinderGeometry args={[S * 0.66, S * 0.74, S * 0.1, 6]} /><meshStandardMaterial color="#2e343c" roughness={0.9} flatShading /></mesh>
+      {kind === 'habitat' && (
+        <>
+          <mesh position={[-S * 0.2, S * 0.28, S * 0.08]} scale={[1, 0.72, 1]} castShadow><sphereGeometry args={[S * 0.3, 8, 6]} /><meshStandardMaterial color="#b8895a" roughness={0.8} flatShading /></mesh>
+          <mesh position={[S * 0.28, S * 0.22, -S * 0.16]} scale={[1, 0.72, 1]} castShadow><sphereGeometry args={[S * 0.22, 8, 6]} /><meshStandardMaterial color="#a8734a" roughness={0.8} flatShading /></mesh>
+          <mesh position={[-S * 0.2, S * 0.2, S * 0.36]}><boxGeometry args={[S * 0.12, S * 0.18, S * 0.06]} /><meshStandardMaterial color="#1a120c" roughness={1} /></mesh>
+        </>
+      )}
+      {kind === 'agro' && (
+        <>
+          <mesh position={[-S * 0.24, S * 0.24, 0]} rotation={[0, 0.3, 0]} castShadow><boxGeometry args={[S * 0.44, S * 0.28, S * 0.3]} /><meshStandardMaterial color="#8fd66b" transparent opacity={0.75} emissive="#4caf50" emissiveIntensity={0.3} flatShading /></mesh>
+          {[0, 1, 2].map(i => (
+            <mesh key={i} position={[S * (0.28 + i * 0.12), S * 0.16, S * (0.28 - i * 0.22)]} castShadow><coneGeometry args={[S * 0.09, S * 0.22, 5]} /><meshStandardMaterial color="#4e8f4a" roughness={0.9} flatShading /></mesh>
+          ))}
+        </>
+      )}
+      {kind === 'industry' && (
+        <>
+          <Suspense fallback={<mesh position={[-S * 0.18, S * 0.22, S * 0.1]} rotation={[0, 0.5, 0]} castShadow><boxGeometry args={[S * 0.34, S * 0.3, S * 0.3]} /><meshStandardMaterial color="#8a6a3a" roughness={0.85} flatShading /></mesh>}>
+            <group position={[-S * 0.2, 0, S * 0.12]}><FbxProp url={MILITARY_ASSETS.boxes[1]} tex={MILITARY_TEX} size={S * 0.42} rotation={0.5} /></group>
+            <group position={[-S * 0.02, 0, -S * 0.28]}><FbxProp url={MILITARY_ASSETS.barrel} tex={MILITARY_TEX} size={S * 0.3} rotation={1.2} /></group>
+          </Suspense>
+          <mesh position={[S * 0.26, S * 0.34, -S * 0.14]} castShadow><cylinderGeometry args={[S * 0.09, S * 0.11, S * 0.6, 6]} /><meshStandardMaterial color="#4a4e57" roughness={0.7} metalness={0.3} flatShading /></mesh>
+          <mesh position={[S * 0.26, S * 0.66, -S * 0.14]}><sphereGeometry args={[S * 0.07, 5, 5]} /><meshStandardMaterial color="#666" transparent opacity={0.7} /></mesh>
+        </>
+      )}
+      {kind === 'energy' && (
+        <>
+          <mesh position={[0, S * 0.34, 0]} rotation={[-0.6, 0.4, 0]} castShadow><boxGeometry args={[S * 0.5, S * 0.03, S * 0.36]} /><meshStandardMaterial color="#4fc3f7" emissive="#2196f3" emissiveIntensity={0.6} metalness={0.4} roughness={0.3} flatShading /></mesh>
+          <mesh position={[0, S * 0.16, 0]}><cylinderGeometry args={[S * 0.04, S * 0.05, S * 0.3, 5]} /><meshStandardMaterial color="#555" metalness={0.4} /></mesh>
+          <Suspense fallback={null}>
+            <group position={[S * 0.32, 0, S * 0.24]}><FbxProp url={MILITARY_ASSETS.generator} tex={MILITARY_TEX} size={S * 0.42} rotation={-0.6} /></group>
+          </Suspense>
+        </>
+      )}
+      <Text position={[0, S * 1.0, 0]} fontSize={S * 0.3} color={color} anchorX="center" anchorY="middle" outlineWidth={S * 0.02} outlineColor="#000">{DISTRICT_ICON[kind]}</Text>
     </group>
+  );
+}
+
+/** One sprawl building per city growth stage (per level to 10, per 5 levels to 100).
+ *  Spots are precomputed by the parent (deterministic spiral inside the home zone);
+ *  kind 0 = hut, 1 = house with faction roof, 2 = lit tower block. */
+interface CitySpot { x: number; y: number; z: number; kind: number; rot: number; h: number }
+function CityBuildingsMesh({ spots, size, tier, color }: { spots: CitySpot[]; size: number; tier: number; color: string }) {
+  const S = size * (0.92 + tier * 0.04); // the whole city's scale creeps up with tier
+  return (
+    <group>
+      {spots.map((s, i) => (
+        <group key={i} position={[s.x, s.y, s.z]} rotation={[0, s.rot, 0]}>
+          {s.kind === 0 && (
+            <>
+              <mesh position={[0, S * 0.12 * s.h, 0]} castShadow><cylinderGeometry args={[S * 0.16, S * 0.19, S * 0.24 * s.h, 6]} /><meshStandardMaterial color="#8a7458" roughness={0.9} flatShading /></mesh>
+              <mesh position={[0, S * 0.3 * s.h, 0]} castShadow><coneGeometry args={[S * 0.22, S * 0.2 * s.h, 6]} /><meshStandardMaterial color="#6a5138" roughness={0.9} flatShading /></mesh>
+            </>
+          )}
+          {s.kind === 1 && (
+            <>
+              <mesh position={[0, S * 0.15 * s.h, 0]} castShadow><boxGeometry args={[S * 0.3, S * 0.3 * s.h, S * 0.26]} /><meshStandardMaterial color="#9c8264" roughness={0.85} flatShading /></mesh>
+              <mesh position={[0, S * 0.38 * s.h, 0]} rotation={[0, Math.PI / 4, 0]} castShadow><coneGeometry args={[S * 0.24, S * 0.18 * s.h, 4]} /><meshStandardMaterial color={color} roughness={0.7} flatShading /></mesh>
+            </>
+          )}
+          {s.kind === 2 && (
+            <>
+              <mesh position={[0, S * 0.3 * s.h, 0]} castShadow><boxGeometry args={[S * 0.24, S * 0.6 * s.h, S * 0.24]} /><meshStandardMaterial color="#57616c" roughness={0.6} metalness={0.2} flatShading /></mesh>
+              <mesh position={[0, S * 0.34 * s.h, 0]}><boxGeometry args={[S * 0.26, S * 0.07, S * 0.26]} /><meshStandardMaterial color={color} emissive={color} emissiveIntensity={0.4} flatShading /></mesh>
+            </>
+          )}
+        </group>
+      ))}
+    </group>
+  );
+}
+
+/** Stroked border around the base's home zone — the Civ-style territory outline.
+ *  `positions` is a prebuilt ribbon (world-space triangles hugging the zone's outer
+ *  hex edges); the material pulses gently so the border reads as a live perimeter. */
+function BaseZoneRing({ positions, color }: { positions: Float32Array; color: string }) {
+  const matRef = React.useRef<THREE.MeshBasicMaterial>(null);
+  const geo = React.useMemo(() => {
+    const g = new THREE.BufferGeometry();
+    g.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+    g.computeBoundingSphere();
+    return g;
+  }, [positions]);
+  React.useEffect(() => () => geo.dispose(), [geo]);
+  useFrame(({ clock }) => { if (matRef.current) matRef.current.opacity = 0.6 + Math.sin(clock.getElapsedTime() * 1.6) * 0.18; });
+  return (
+    <mesh geometry={geo} renderOrder={16} frustumCulled={false}>
+      <meshBasicMaterial ref={matRef} color={color} transparent opacity={0.7} depthWrite={false} side={THREE.DoubleSide} />
+    </mesh>
   );
 }
 
@@ -602,6 +966,12 @@ function OutpostMarker({ size, owned, color }: { size: number; owned: boolean; c
       <mesh position={[0, S * 0.08, 0]} rotation={[0, Math.PI / 6, 0]}><cylinderGeometry args={[S * 0.55, S * 0.62, S * 0.16, 6]} /><meshStandardMaterial color="#33383f" roughness={0.85} flatShading /></mesh>
       <mesh position={[0, S * 0.9, 0]} castShadow><cylinderGeometry args={[S * 0.04, S * 0.05, S * 1.6, 6]} /><meshStandardMaterial color="#555" metalness={0.4} /></mesh>
       <mesh ref={flagRef} position={[S * 0.26, S * 1.45, 0]}><boxGeometry args={[S * 0.5, S * 0.34, S * 0.02]} /><meshStandardMaterial color={banner} emissive={owned ? color : '#000'} emissiveIntensity={owned ? 0.4 : 0} roughness={0.6} side={THREE.DoubleSide} /></mesh>
+      {/* Garrison set-dressing from the military FBX pack: watchtower + barrier + tank trap */}
+      <Suspense fallback={null}>
+        <group position={[-S * 0.55, 0, -S * 0.35]}><FbxProp url={MILITARY_ASSETS.tower} tex={MILITARY_TEX} size={S * 1.9} rotation={0.6} /></group>
+        <group position={[S * 0.5, 0, S * 0.45]}><FbxProp url={MILITARY_ASSETS.barriers[0]} tex={MILITARY_TEX} size={S * 0.55} rotation={-0.4} /></group>
+        <group position={[-S * 0.15, 0, S * 0.62]}><FbxProp url={MILITARY_ASSETS.hedgehog} tex={MILITARY_TEX} size={S * 0.3} rotation={0.9} /></group>
+      </Suspense>
       <Text position={[0, S * 1.9, 0]} fontSize={S * 0.3} color={owned ? '#bfead0' : '#cfd4da'} anchorX="center" anchorY="middle" outlineWidth={S * 0.03} outlineColor="#000">{owned ? 'Outpost ✓' : 'Outpost'}</Text>
     </group>
   );
@@ -645,9 +1015,17 @@ function RefugeeCampMarker({ size, done, label, icon, mode, subtitle }: { size: 
   );
   return (
     <group>
-      {tent(-S * 0.5, 0, Math.PI / 4, tents[0])}
-      {tent(S * 0.55, S * 0.2, -Math.PI / 5, tents[1])}
-      {tent(0, -S * 0.6, Math.PI / 3, tents[2])}
+      {/* Modeled army tents (FBX pack), tinted warm for aid camps / hostile for rival
+          camps; the procedural cone tents remain as the loading fallback. */}
+      <Suspense fallback={<>
+        {tent(-S * 0.5, 0, Math.PI / 4, tents[0])}
+        {tent(S * 0.55, S * 0.2, -Math.PI / 5, tents[1])}
+        {tent(0, -S * 0.6, Math.PI / 3, tents[2])}
+      </>}>
+        <group position={[-S * 0.5, 0, 0]}><FbxProp url={MILITARY_ASSETS.tents[0]} tex={MILITARY_TEX} size={S * 1.15} rotation={Math.PI / 4} tint={loot ? '#a05a44' : '#c8a878'} /></group>
+        <group position={[S * 0.55, 0, S * 0.2]}><FbxProp url={MILITARY_ASSETS.tents[1]} tex={MILITARY_TEX} size={S * 0.95} rotation={-Math.PI / 5} tint={loot ? '#8a4030' : undefined} /></group>
+        <group position={[0, 0, -S * 0.6]}><FbxProp url={MILITARY_ASSETS.tents[0]} tex={MILITARY_TEX} size={S * 0.9} rotation={Math.PI / 3} tint={loot ? '#6a3a2a' : '#b89060'} /></group>
+      </Suspense>
       {/* supplies scattered around the settlement */}
       {crate(S * 0.7, -S * 0.55, loot ? '#6a4030' : '#8a6a3a')}
       {barrel(-S * 0.72, -S * 0.4, loot ? '#5a2a22' : '#3a6a5a')}
@@ -737,7 +1115,10 @@ function TouchControls() {
 function tileColor(t: Tile) {
   if (t.type === 'water') return '#87d5ff';
   if (t.type === 'desert') return '#f7d08a';
-  if (t.type === 'plains') return '#a7e39b';
+  // Matches the plains relief gradient's "high" tone (was a mismatched bright
+  // mint '#a7e39b' that visibly clashed against the olive-green grass bump/relief
+  // mesh painted on top, showing as a color seam on the tile's side walls).
+  if (t.type === 'plains') return '#9cc968';
   if (t.type === 'forest') return '#59b96b';
   if (t.type === 'jungle') return '#2a7f49';
   if (t.type === 'hills') return '#a2b86a';
@@ -849,7 +1230,7 @@ const VictoryTrackChips = React.memo(function VictoryTrackChips({
           <button
             key={t}
             onClick={() => onToggle(t)}
-            title={`${def.label} — ${def.blurb}. Click for details.`}
+            title={`${def.label}, ${def.blurb}. Click for details.`}
             className={`flex items-center gap-1.5 px-2 py-1 rounded-lg ring-1 transition ${active ? 'bg-white/12 ring-white/35' : 'ring-transparent hover:bg-white/[0.07] hover:ring-white/15'}`}
           >
             <span className="text-lg leading-none">{def.icon}</span>
@@ -1081,6 +1462,68 @@ function SwayingCanopy({ phase, children }: { phase: number; children: React.Rea
 
 const TREE_GREENS = ['#3f8f4e', '#4aa05c', '#5bb56a', '#357f45'];
 
+/** Forest tile dressed with the SimpleNature FBX pack: 3-4 modeled trees plus an
+ *  occasional stump or bush, seeded per tile. Used under Suspense with the
+ *  procedural TreeCluster as its loading fallback. */
+function FbxForest({ size, seed = 1 }: { size: number; seed?: number }) {
+  const rng = useMemo(() => seededRand(seed), [seed]);
+  const items = useMemo(() => {
+    const arr: Array<{ url: string; x: number; z: number; s: number; rot: number }> = [];
+    const n = 3 + Math.floor(rng() * 2);
+    for (let i = 0; i < n; i++) {
+      const ang = rng() * Math.PI * 2, rad = (0.15 + rng() * 0.6) * size * 0.9;
+      arr.push({
+        url: NATURE_ASSETS.trees[Math.floor(rng() * NATURE_ASSETS.trees.length)],
+        x: Math.cos(ang) * rad, z: Math.sin(ang) * rad,
+        s: size * (1.5 + rng() * 0.9), rot: rng() * Math.PI * 2,
+      });
+    }
+    if (rng() > 0.45) {
+      const ang = rng() * Math.PI * 2, rad = (0.4 + rng() * 0.4) * size * 0.9;
+      arr.push({
+        url: rng() > 0.5 ? NATURE_ASSETS.stump : NATURE_ASSETS.bushes[Math.floor(rng() * NATURE_ASSETS.bushes.length)],
+        x: Math.cos(ang) * rad, z: Math.sin(ang) * rad,
+        s: size * (0.3 + rng() * 0.2), rot: rng() * Math.PI * 2,
+      });
+    }
+    return arr;
+  }, [rng, size]);
+  return (
+    <group>
+      {items.map((it, i) => (
+        <group key={i} position={[it.x, 0, it.z]}>
+          <FbxProp url={it.url} tex={NATURE_TEX} size={it.s} rotation={it.rot} />
+        </group>
+      ))}
+    </group>
+  );
+}
+
+/** A pair of desert cacti from the military pack, seeded per tile. */
+function DesertCacti({ size, seed = 1 }: { size: number; seed?: number }) {
+  const rng = useMemo(() => seededRand(seed), [seed]);
+  const items = useMemo(() => {
+    const n = 1 + Math.floor(rng() * 2);
+    return Array.from({ length: n }, () => {
+      const ang = rng() * Math.PI * 2, rad = (0.2 + rng() * 0.55) * size * 0.9;
+      return {
+        url: MILITARY_ASSETS.cacti[Math.floor(rng() * MILITARY_ASSETS.cacti.length)],
+        x: Math.cos(ang) * rad, z: Math.sin(ang) * rad,
+        s: size * (0.45 + rng() * 0.35), rot: rng() * Math.PI * 2,
+      };
+    });
+  }, [rng, size]);
+  return (
+    <group>
+      {items.map((it, i) => (
+        <group key={i} position={[it.x, 0, it.z]}>
+          <FbxProp url={it.url} tex={MILITARY_TEX} size={it.s} rotation={it.rot} />
+        </group>
+      ))}
+    </group>
+  );
+}
+
 function TreeCluster({ size, seed = 1 }: { size: number; seed?: number }) {
   const rng = useMemo(() => seededRand(seed), [seed]);
   const trees = useMemo(() => {
@@ -1163,20 +1606,110 @@ function RockScatter({ size, seed = 1, count = 3 }: { size: number; seed?: numbe
 
 // Grassy hills: rounded low mounds (real elevation) topped with rocks and grass tufts,
 // instead of the old flat rock scatter — reads as rolling hills in isometric view.
+// ── Noise-displaced terrain relief ──────────────────────────────────────────
+// Adapts the three.js `webgl_geometry_terrain` technique (Perlin-fbm heightfield +
+// height-tinted shading) to the hex map: each mountain/hills/desert/plains tile gets
+// a hex-clipped displaced mesh whose edge falls to the tile top, so organic terrain
+// sits ON the tiles without breaking tile-based gameplay (movement, vision, capture
+// all still read the flat hex heights). Geometry is cached in 8 seed buckets per
+// type, so the whole map shares a handful of geometries.
+const reliefPerlin = new ImprovedNoise();
+function reliefFbm(x: number, z: number, seedZ: number, octaves = 4) {
+  let amp = 1, freq = 1, sum = 0, norm = 0;
+  for (let o = 0; o < octaves; o++) {
+    sum += amp * reliefPerlin.noise(x * freq, z * freq, seedZ + o * 7.31);
+    norm += amp; amp *= 0.5; freq *= 2.05;
+  }
+  return sum / norm; // ≈ [-1, 1]
+}
+/** Distance from center to the flat-top hex boundary at polar angle `a`. */
+function hexBoundaryR(a: number, R: number) {
+  const sector = Math.PI / 3;
+  const d = ((((a - Math.PI / 6) % sector) + sector) % sector) - sector / 2;
+  return (R * Math.cos(Math.PI / 6)) / Math.cos(d);
+}
+type ReliefKind = 'mountain' | 'hills' | 'desert' | 'plains';
+const RELIEF_SPECS: Record<ReliefKind, { amp: number; peak: number; freq: number; low: string; high: string; ridged?: boolean; snow?: string; snowFrom?: number }> = {
+  // amp/peak are in units of hexSize; freq is noise cycles across a tile.
+  mountain: { amp: 1.1, peak: 0.8, freq: 1.7, ridged: true, low: '#59636a', high: '#98a3a9', snow: '#eef4f7', snowFrom: 0.58 },
+  hills:    { amp: 0.34, peak: 0.16, freq: 2.1, low: '#7ba244', high: '#a9d162' },
+  desert:   { amp: 0.14, peak: 0, freq: 2.6, low: '#c5a55c', high: '#e6cd8c' },
+  plains:   { amp: 0.1, peak: 0, freq: 2.4, low: '#7dab4c', high: '#9cc968' },
+};
+const reliefGeoCache = new Map<string, THREE.BufferGeometry>();
+function hexReliefGeo(kind: ReliefKind, R: number, seed: number): THREE.BufferGeometry {
+  const bucket = ((seed % 8) + 8) % 8;
+  const key = `${kind}:${R.toFixed(3)}:${bucket}`;
+  const hit = reliefGeoCache.get(key);
+  if (hit) return hit;
+  const spec = RELIEF_SPECS[kind];
+  const rings = 8, spokes = 30;
+  const pos: number[] = [], col: number[] = [];
+  const cLow = new THREE.Color(spec.low), cHigh = new THREE.Color(spec.high);
+  const cSnow = spec.snow ? new THREE.Color(spec.snow) : null;
+  const seedZ = bucket * 13.7 + kind.length * 3.1;
+  const maxY = (spec.amp + spec.peak) * R;
+  const tmp = new THREE.Color();
+  const pushVert = (f: number, a: number) => {
+    const rB = hexBoundaryR(a, R) * f;
+    const x = Math.cos(a) * rB, z = Math.sin(a) * rB;
+    const fall = Math.pow(Math.max(0, 1 - f), 0.55); // 1 at center → 0 at the hex edge
+    const n = reliefFbm((x / R) * spec.freq, (z / R) * spec.freq, seedZ);
+    const nVal = spec.ridged ? Math.pow(1 - Math.abs(n), 1.6) : n * 0.5 + 0.5; // ridged fbm = crags
+    const y = Math.max(0.012, R * (spec.amp * nVal * fall + spec.peak * fall * fall));
+    pos.push(x, y, z);
+    const h = Math.min(1, y / maxY);
+    tmp.copy(cLow).lerp(cHigh, Math.min(1, h * 1.5));
+    if (cSnow && spec.snowFrom != null && h > spec.snowFrom) {
+      tmp.lerp(cSnow, Math.min(1, (h - spec.snowFrom) / (1 - spec.snowFrom) * 1.6));
+    }
+    col.push(tmp.r, tmp.g, tmp.b);
+  };
+  pushVert(0, 0); // center
+  for (let i = 1; i <= rings; i++) for (let k = 0; k < spokes; k++) pushVert(i / rings, (k / spokes) * Math.PI * 2);
+  const idx: number[] = [];
+  const vAt = (i: number, k: number) => 1 + (i - 1) * spokes + (k % spokes); // ring i ≥ 1
+  for (let k = 0; k < spokes; k++) idx.push(0, vAt(1, k + 1), vAt(1, k)); // center fan
+  for (let i = 1; i < rings; i++) for (let k = 0; k < spokes; k++) {
+    const a = vAt(i, k), b = vAt(i, k + 1), c = vAt(i + 1, k), d = vAt(i + 1, k + 1);
+    idx.push(a, d, c, a, b, d);
+  }
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+  g.setAttribute('color', new THREE.Float32BufferAttribute(col, 3));
+  g.setIndex(idx);
+  g.computeVertexNormals();
+  reliefGeoCache.set(key, g);
+  return g;
+}
+/** Height of the noise relief bump at a tile's CENTER (mirrors hexReliefGeo's
+ *  pushVert(0, a) math exactly) — used to lift actors (hero/pet/enemies/camps)
+ *  so their feet meet the actual bumpy terrain surface instead of the flat tile
+ *  top, which sits well below the grass/rock relief on plains/desert/hills. */
+function reliefCenterHeight(kind: ReliefKind, R: number, seed: number): number {
+  const spec = RELIEF_SPECS[kind];
+  const bucket = ((seed % 8) + 8) % 8;
+  const seedZ = bucket * 13.7 + kind.length * 3.1;
+  const n = reliefFbm(0, 0, seedZ);
+  const nVal = spec.ridged ? Math.pow(1 - Math.abs(n), 1.6) : n * 0.5 + 0.5;
+  return Math.max(0.012, R * (spec.amp * nVal + spec.peak));
+}
+let reliefMatCache: THREE.MeshStandardMaterial | null = null;
+function sharedReliefMat() {
+  if (!reliefMatCache) reliefMatCache = new THREE.MeshStandardMaterial({ vertexColors: true, flatShading: true, roughness: 0.95, metalness: 0.02 });
+  return reliefMatCache;
+}
+/** One noise-displaced relief mesh, sitting on a tile top. */
+function TerrainRelief({ kind, size, seed }: { kind: ReliefKind; size: number; seed: number }) {
+  const geo = useMemo(() => hexReliefGeo(kind, size, seed), [kind, size, seed]);
+  return <mesh geometry={geo} material={sharedReliefMat()} castShadow={kind === 'mountain'} receiveShadow />;
+}
+
 function HillsDeco({ size, seed = 1 }: { size: number; seed?: number }) {
   const rng = useMemo(() => seededRand(seed), [seed]);
   const ap = hexApothem(size);
-  // Hills read as GRASS: taller, rounder green knolls (much taller than desert dunes),
-  // topped with grass-blade tufts and grey rocks — matches the green hills tile.
-  const mounds = useMemo(() => {
-    const n = 2 + Math.floor(rng() * 2); // 2–3 knolls
-    return Array.from({ length: n }, (_, i) => {
-      const ang = rng() * Math.PI * 2;
-      const rad = rng() * ap * 0.4;
-      const r = ap * (0.44 + rng() * 0.28);
-      return { x: Math.cos(ang) * rad, z: Math.sin(ang) * rad, r, flat: 0.5 + rng() * 0.35, rot: rng() * Math.PI, light: i % 2 === 0 };
-    });
-  }, [rng, ap]);
+  // Hills read as GRASS: a rolling noise heightfield (same technique as mountains,
+  // gentler amplitude) topped with grass-blade tufts and grey rocks.
   const rocks = useMemo(() => {
     const n = 1 + Math.floor(rng() * 2);
     return Array.from({ length: n }, () => {
@@ -1191,12 +1724,7 @@ function HillsDeco({ size, seed = 1 }: { size: number; seed?: number }) {
   })), [rng, ap, size]);
   return (
     <group>
-      {mounds.map((m, i) => (
-        <mesh key={`m${i}`} position={[m.x, 0, m.z]} rotation={[0, m.rot, 0]} scale={[1, m.flat, 1]} castShadow receiveShadow>
-          <sphereGeometry args={[m.r, 12, 7, 0, Math.PI * 2, 0, Math.PI / 2]} />
-          <meshStandardMaterial color={m.light ? '#9cc255' : '#84ac4a'} roughness={0.9} metalness={0} flatShading />
-        </mesh>
-      ))}
+      <TerrainRelief kind="hills" size={size} seed={seed} />
       {tufts.map((g, i) => (
         <mesh key={`g${i}`} position={[g.x, g.h * 0.5, g.z]} rotation={[g.tilt, 0, g.tilt]}>
           <coneGeometry args={[size * 0.05, g.h, 4]} />
@@ -1213,42 +1741,22 @@ function HillsDeco({ size, seed = 1 }: { size: number; seed?: number }) {
   );
 }
 
+/** Mountain massif: a ridged-noise heightfield (three.js terrain technique) with
+ *  height-tinted rock and snow baked into vertex colors, plus a scree apron. */
 function MountainDeco({ size, seed=1 }: { size: number; seed?: number }) {
   const rng = useMemo(()=>seededRand(seed),[seed]);
-  // A main peak + two shoulders, each with a darker strata band and a snow cap.
-  const peaks = useMemo(() => [
-    { x: 0,           z: 0,          r: size * 1.05, h: size * 1.55 * (0.9 + rng() * 0.5), main: true },
-    { x: -size * 0.7, z: size * 0.42, r: size * 0.62, h: size * 0.9 * (0.8 + rng() * 0.4), main: false },
-    { x: size * 0.78, z: -size * 0.5, r: size * 0.56, h: size * 0.78 * (0.8 + rng() * 0.4), main: false },
-  ], [rng, size]);
-  const rocks = useMemo(() => Array.from({ length: 3 }, () => ({
-    x: (rng() - 0.5) * size * 1.5, z: (rng() - 0.5) * size * 1.5, s: 0.3 + rng() * 0.4, rx: rng() * 0.5, ry: rng() * Math.PI,
-  })), [rng, size]);
+  const scree = useMemo(() => Array.from({ length: 5 }, (_, i) => {
+    const a = (i / 5) * Math.PI * 2 + rng() * 0.8;
+    const d = size * (0.78 + rng() * 0.45);
+    return { x: Math.cos(a) * d, z: Math.sin(a) * d, s: 0.22 + rng() * 0.38, rx: rng() * 0.6, ry: rng() * Math.PI };
+  }), [rng, size]);
   return (
     <group>
-      {peaks.map((p, i) => (
-        <group key={i} position={[p.x, 0, p.z]}>
-          {/* Rock body */}
-          <mesh position={[0, p.h * 0.5, 0]} castShadow receiveShadow>
-            <coneGeometry args={[p.r, p.h, 6]} />
-            <meshStandardMaterial color={p.main ? '#8b959b' : '#7e878c'} roughness={0.92} metalness={0.03} flatShading />
-          </mesh>
-          {/* Darker strata band (rotated so facets differ from the body) */}
-          <mesh position={[0, p.h * 0.3, 0]} rotation={[0, 0.4, 0]}>
-            <coneGeometry args={[p.r * 0.9, p.h * 0.42, 6]} />
-            <meshStandardMaterial color="#69726f" roughness={0.95} flatShading />
-          </mesh>
-          {/* Snow cap — matches the peak's upper taper */}
-          <mesh position={[0, p.h * 0.84, 0]} castShadow>
-            <coneGeometry args={[p.r * 0.34, p.h * 0.34, 6]} />
-            <meshStandardMaterial color="#eef4f7" roughness={0.55} flatShading />
-          </mesh>
-        </group>
-      ))}
-      {/* Scattered boulders at the base */}
-      {rocks.map((r, i) => (
-        <mesh key={`rk${i}`} position={[r.x, size * 0.12 * r.s, r.z]} rotation={[r.rx, r.ry, 0]} castShadow>
-          <dodecahedronGeometry args={[size * 0.18 * r.s, 0]} />
+      <TerrainRelief kind="mountain" size={size} seed={seed} />
+      {/* Scree apron at the base */}
+      {scree.map((r, i) => (
+        <mesh key={`rk${i}`} position={[r.x, size * 0.1 * r.s, r.z]} rotation={[r.rx, r.ry, 0]} castShadow>
+          <dodecahedronGeometry args={[size * 0.17 * r.s, 0]} />
           <meshStandardMaterial color="#7c8489" roughness={0.9} metalness={0.03} flatShading />
         </mesh>
       ))}
@@ -2963,7 +3471,7 @@ export default function SoloMissionMap3D({
       // A successful raid advances that faction's Domination track (aggressive expansion).
       bumpSoloVictoryRef.current?.(fk as Faction, 'domination', VICTORY_POINTS.raid);
       markRivalPressure();
-      showRivalBanner(fk, ascendant ? 'seized your outpost — ride out and reconquer it!' : 'raided your outpost — recapture it!');
+      showRivalBanner(fk, ascendant ? 'seized your outpost, ride out and reconquer it!' : 'raided your outpost, recapture it!');
     },
     onHeroDamage: (amt) => applyIncomingDamageRef.current(amt),
     awardXp: awardHeroXp,
@@ -3104,6 +3612,10 @@ export default function SoloMissionMap3D({
 
   // Refs so the keydown handler always calls the current actions.
   const investTerraformRef = React.useRef(investTerraform); investTerraformRef.current = investTerraform;
+  // T is context-sensitive: near the terraformer it invests (matching the on-screen
+  // prompt), otherwise it stays the 4th offensive ability key.
+  const nearTerraformerRef = React.useRef(nearTerraformer); nearTerraformerRef.current = nearTerraformer;
+  const terraformDoneRef = React.useRef(terraformDone); terraformDoneRef.current = terraformDone;
   const captureNearbyRef = React.useRef(captureNearby); captureNearbyRef.current = captureNearby;
   const nearbyOutpostRef = React.useRef(nearbyOutpost); nearbyOutpostRef.current = nearbyOutpost;
   const assistRefugeeRef = React.useRef(handleRefugeeInteract); assistRefugeeRef.current = handleRefugeeInteract;
@@ -3409,7 +3921,7 @@ export default function SoloMissionMap3D({
           markRivalPressure();
           const w = axialToWorld({ q: claimed[0].q, r: claimed[0].r }, hexSize);
           spawnCombatText(w.x, w.z, `⚑ ${f} claims this outpost`, FACTION_COLORS[f]?.primary ?? '#ff5555');
-          showRivalBanner(f, `claimed ${claimed.length > 1 ? `${claimed.length} outposts` : 'an outpost'} — their empire is growing.`);
+          showRivalBanner(f, `claimed ${claimed.length > 1 ? `${claimed.length} outposts` : 'an outpost'}, their empire is growing.`);
         }
       }
     }
@@ -4222,14 +4734,152 @@ export default function SoloMissionMap3D({
     const t = tilesByKey.get(key);
     if (!t) return 0.4;
     const ov = terraformedTiles.get(key);
-    return heightFor(ov ? { ...t, type: ov } : t);
-  }, [tilesByKey, terraformedTiles]);
+    const type = ov ?? t.type;
+    const base = heightFor(ov ? { ...t, type: ov } : t);
+    // Plains/desert/hills/mountain tiles render a noise-displaced relief bump ON TOP
+    // of the flat tile top (grass/rock texture); without accounting for it here,
+    // actors anchor to the flat height and visually sink below that bump. Add the
+    // bump height at the tile's center (same seed TerrainRelief uses) so feet meet
+    // the actual terrain surface instead of looking buried.
+    const relief = (type in RELIEF_SPECS) ? reliefCenterHeight(type as ReliefKind, hexSize, t.q * 31 + t.r * 17) : 0;
+    return base + relief;
+  }, [tilesByKey, terraformedTiles, hexSize]);
+
+  // ── Base evolution: player level → build-out tier + city growth stage (drives
+  // the command-center growth, district pads, the sprawl buildings, and the
+  // stroked home-zone border). Visual meta-progression only — no gameplay effect.
+  const heroLevelLive = Math.max(1, getLevelFromXp(Math.floor(heroXpLive)));
+  const baseTier = baseTierFor(heroLevelLive);
+  const baseCityStage = baseGrowthStage(heroLevelLive); // +1/level to 10, then +1/5 levels
+  const baseZoneRadius = baseZoneRadiusFor(heroLevelLive);
+  // Between ring-ups the border stroke creeps outward per growth stage, so EVERY
+  // level visibly pushes the territory line before it snaps to the next ring.
+  const baseZoneCreep = Math.min(0.35,
+    (baseCityStage - baseGrowthStage(baseZoneRingStartLevel(heroLevelLive))) * 0.035);
+  // The 4 neighbour tiles reserved for district pads — fixed regardless of current
+  // tier so sprawl buildings never squat on a pad that unlocks later.
+  const baseDistrictTiles = useMemo(() => {
+    const picks: Array<{ q: number; r: number }> = [];
+    for (const n of axialNeighbors(baseAxial)) {
+      if (picks.length >= 4) break;
+      const t = tilesByKey.get(`${n.q},${n.r}`);
+      if (!t || t.type === 'water' || t.type === 'mountain') continue; // pads need buildable ground
+      picks.push({ q: n.q, r: n.r });
+    }
+    return picks;
+  }, [baseAxial, tilesByKey]);
+  const baseDistricts = useMemo(() => {
+    const kinds: BaseDistrictKind[] = ['habitat', 'agro', 'industry', 'energy'];
+    return baseDistrictTiles.slice(0, Math.min(baseTier - 1, kinds.length))
+      .map((t, i) => ({ ...t, kind: kinds[i] }));
+  }, [baseDistrictTiles, baseTier]);
+  // City sprawl: one building per growth stage, laid out on a deterministic golden-angle
+  // spiral around the base. Candidates are filtered (buildable tile, inside the home
+  // zone, off district pads, min spacing) with the PRNG consumed per-candidate, so the
+  // layout is stable as the city grows — new stages only append buildings.
+  const cityBuildingSpots = useMemo(() => {
+    const bw = axialToWorld(baseAxial, hexSize);
+    const reserved = baseDistrictTiles.map(t => axialToWorld(t, hexSize));
+    const rand = seededRand(4242);
+    const GA = Math.PI * (3 - Math.sqrt(5)); // golden angle
+    const spots: CitySpot[] = [];
+    for (let c = 0; c < 600 && spots.length < baseCityStage; c++) {
+      const jr = rand(), ja = rand(), jk = rand(), jrot = rand(), jh = rand();
+      const ang = c * GA + ja * 0.5;
+      const rad = hexSize * (1.6 + 0.24 * Math.sqrt(c + 1) + jr * 0.18);
+      const x = bw.x + Math.cos(ang) * rad, z = bw.z + Math.sin(ang) * rad;
+      const t = worldToAxial(x, z, hexSize);
+      const tile = tilesByKey.get(`${t.q},${t.r}`);
+      if (!tile || tile.type === 'water' || tile.type === 'mountain') continue;
+      if (axialDistance(t, baseAxial) > baseZoneRadius) continue; // stay inside the border
+      if (reserved.some(n => (x - n.x) ** 2 + (z - n.z) ** 2 < (hexSize * 0.85) ** 2)) continue;
+      if (spots.some(s => (x - s.x) ** 2 + (z - s.z) ** 2 < (hexSize * 0.34) ** 2)) continue;
+      spots.push({ x, y: tileTopAt(t.q, t.r), z, kind: Math.floor(jk * 3), rot: jrot * Math.PI * 2, h: 0.8 + jh * 0.5 });
+    }
+    return spots;
+  }, [baseAxial, baseCityStage, baseZoneRadius, baseDistrictTiles, tilesByKey, tileTopAt, hexSize]);
+  // Ribbon triangles along every hex edge of the home zone whose far side is
+  // outside it, scaled outward from the base by the per-level creep. Each vertex
+  // re-anchors to the tile it lands on, so the stroke hugs terrain even mid-creep.
+  const baseZoneRingPositions = useMemo(() => {
+    const R = baseZoneRadius;
+    const zone = new Set<string>();
+    for (let dq = -R; dq <= R; dq++) {
+      for (let dr = Math.max(-R, -dq - R); dr <= Math.min(R, -dq + R); dr++) {
+        const q = baseAxial.q + dq, r = baseAxial.r + dr;
+        if (tilesByKey.has(`${q},${r}`)) zone.add(`${q},${r}`);
+      }
+    }
+    // Neighbour across edge i, where edge i spans hex corners at angles i·60° and (i+1)·60°.
+    const EDGE_NEIGH: Array<[number, number]> = [[1, 0], [0, 1], [-1, 1], [-1, 0], [0, -1], [1, -1]];
+    const verts: number[] = [];
+    const W = 0.14; // stroke width as a fraction of the hex radius
+    const bw = axialToWorld(baseAxial, hexSize);
+    const scaleF = 1 + baseZoneCreep;
+    const push = (px: number, pz: number) => {
+      const sx = bw.x + (px - bw.x) * scaleF, sz = bw.z + (pz - bw.z) * scaleF;
+      const t = worldToAxial(sx, sz, hexSize);
+      verts.push(sx, tileTopAt(t.q, t.r) + 0.06, sz);
+    };
+    for (const key of zone) {
+      const [q, r] = key.split(',').map(Number);
+      const c = axialToWorld({ q, r }, hexSize);
+      for (let i = 0; i < 6; i++) {
+        const [dq, dr] = EDGE_NEIGH[i];
+        if (zone.has(`${q + dq},${r + dr}`)) continue;
+        const a1 = (Math.PI / 3) * i, a2 = (Math.PI / 3) * (i + 1);
+        const o1x = c.x + Math.cos(a1) * hexSize, o1z = c.z + Math.sin(a1) * hexSize;
+        const o2x = c.x + Math.cos(a2) * hexSize, o2z = c.z + Math.sin(a2) * hexSize;
+        const i1x = c.x + Math.cos(a1) * hexSize * (1 - W), i1z = c.z + Math.sin(a1) * hexSize * (1 - W);
+        const i2x = c.x + Math.cos(a2) * hexSize * (1 - W), i2z = c.z + Math.sin(a2) * hexSize * (1 - W);
+        push(o1x, o1z); push(o2x, o2z); push(i2x, i2z);
+        push(o1x, o1z); push(i2x, i2z); push(i1x, i1z);
+      }
+    }
+    return new Float32Array(verts);
+  }, [baseAxial, baseZoneRadius, baseZoneCreep, tilesByKey, tileTopAt, hexSize]);
 
   // Graphics quality — 'high' adds post-processing (bloom/vignette) + 2048 shadows;
   // 'low' keeps the lean pipeline for weaker machines. Persisted per browser.
   const [gfxHigh, setGfxHigh] = useState<boolean>(() => {
     try { return localStorage.getItem('afrofuture.gfxHigh') !== '0'; } catch { return true; }
   });
+  // Player-chosen FPS cap (30 / 60 / 120, persisted). No auto-tuning: quality and
+  // framerate only change when the player asks via the ✨ and 🎞 buttons.
+  const [fpsCap, setFpsCap] = useState<number>(() => {
+    try {
+      const v = Number(localStorage.getItem('afrofuture.fpsCap'));
+      return (FPS_CAP_OPTIONS as readonly number[]).includes(v) ? v : 120;
+    } catch { return 120; }
+  });
+  const cycleFpsCap = React.useCallback(() => setFpsCap(cur => {
+    const i = (FPS_CAP_OPTIONS as readonly number[]).indexOf(cur);
+    const next = FPS_CAP_OPTIONS[(i + 1) % FPS_CAP_OPTIONS.length];
+    try { localStorage.setItem('afrofuture.fpsCap', String(next)); } catch {}
+    return next;
+  }), []);
+  // Rendered-frame counter feeding the dev FPS chip (single meter, StrictMode-safe).
+  const fpsCounterRef = React.useRef(0);
+
+  // ── Tutorial card: centered, pageable (prev/next), closable. Auto-opens on a
+  // player's first campaign (persisted per browser); reopenable via the ❓ button.
+  const [tutorialOpen, setTutorialOpen] = useState<boolean>(() => {
+    try { return localStorage.getItem('afrofuture.tutorialSeen') !== '1'; } catch { return true; }
+  });
+  const [tutorialPage, setTutorialPage] = useState(0);
+  const closeTutorial = React.useCallback(() => {
+    setTutorialOpen(false);
+    try { localStorage.setItem('afrofuture.tutorialSeen', '1'); } catch {}
+  }, []);
+  const openTutorial = React.useCallback(() => { setTutorialPage(0); setTutorialOpen(true); }, []);
+  const tutorialPages = React.useMemo(() => [
+    { icon: '🎯', title: 'Current Objective', body: storyArc[storyBeatIdx]?.objective ?? 'Fill any victory track to win the campaign.' },
+    { icon: '🕹️', title: 'Getting Around', body: 'Move with WASD. Pan the camera with the arrow keys or by dragging, and zoom with the mouse wheel.' },
+    { icon: '🚩', title: 'Capturing Outposts', body: 'Walk next to an outpost and press G to assault it, or use its buttons to Infiltrate 🥷 or Negotiate 🕊️ (skill-gated). Captured outposts claim territory and feed the Control track.' },
+    { icon: '⚔️', title: 'Combat & Abilities', body: 'Press F to attack an adjacent enemy or camp. Offensive abilities are on Q / E / R / T, defensive on Z / X / C / V. Tab swaps the active set.' },
+    { icon: '🌱', title: 'Economy & Aid', body: 'Pick up resources as you explore. Invest them at the Terraformer with T, aid refugee camps with H, and use items with 1-8.' },
+    { icon: '🏆', title: 'Winning', body: 'Fill any of the four victory tracks in the top bar (Domination, Control, Prosperity, Exploitation) before a rival faction fills theirs. Your base and borders grow as you level.' },
+  ], [storyArc, storyBeatIdx]);
   const toggleGfx = React.useCallback(() => setGfxHigh(v => {
     const n = !v;
     try { localStorage.setItem('afrofuture.gfxHigh', n ? '1' : '0'); } catch {}
@@ -4369,7 +5019,7 @@ export default function SoloMissionMap3D({
       onRestoreEP?.(999999);
       setDeathBanner(true);
       setTimeout(() => setDeathBanner(false), 1600);
-      console.log(`[death] Hero defeated — respawned at ${own ? 'owned outpost ' + own.key : 'base'}`);
+      console.log(`[death] Hero defeated, respawned at ${own ? 'owned outpost ' + own.key : 'base'}`);
     } else if (hp > 0 && diedRef.current) {
       diedRef.current = false;
     }
@@ -4523,8 +5173,9 @@ export default function SoloMissionMap3D({
         mobaFightRef.current();     // rival hero if adjacent (MOBA)
         return;
       }
-      // ─── TERRAFORM (Y) — invest a resource at the terraformer ──────────
-      // (Moved off T so T can serve as the 4th offensive ability slot.)
+      // ─── TERRAFORM — invest a resource at the terraformer ──────────────
+      // Y is the dedicated terraform key (T is reserved for the 4th offensive
+      // ability hotkey, so it's left alone here to avoid the conflict).
       if (k === 'y') {
         if (e.repeat) return;
         investTerraformRef.current();
@@ -4624,7 +5275,11 @@ export default function SoloMissionMap3D({
             <HexTile t={t} size={hexSize} onClick={() => {}} onHover={setHover} />
             {/* Terrain decorations — visible now OR previously explored (FoW dim sits on top) */}
             {(inVision || explored) && t.type === 'forest' && !collectibleMushrooms.has(key) && !blockDeco && (
-              <group position={[0, tileTop, 0]}><TreeCluster size={hexSize} seed={t.q * 31 + t.r * 17} /></group>
+              <group position={[0, tileTop, 0]}>
+                <Suspense fallback={<TreeCluster size={hexSize} seed={t.q * 31 + t.r * 17} />}>
+                  <FbxForest size={hexSize} seed={t.q * 31 + t.r * 17} />
+                </Suspense>
+              </group>
             )}
             {(inVision || explored) && t.type === 'jungle' && !blockDeco && (
               <group position={[0, tileTop, 0]}><TreeCluster size={hexSize} seed={t.q * 31 + t.r * 17} /></group>
@@ -4638,11 +5293,22 @@ export default function SoloMissionMap3D({
             {(inVision || explored) && t.type === 'water' && (
               <group position={[0, tileTop, 0]}><WaterWaves size={hexSize} /></group>
             )}
+            {/* Gentle noise relief so open ground rolls instead of sitting flat
+                (kept low-amplitude — actors still anchor to the flat tile top). */}
+            {(inVision || explored) && (t.type === 'plains' || t.type === 'desert') && (
+              <group position={[0, tileTop, 0]}><TerrainRelief kind={t.type} size={hexSize} seed={t.q * 31 + t.r * 17} /></group>
+            )}
             {(inVision || explored) && t.type === 'plains' && !blockDeco && (
               <group position={[0, tileTop, 0]}><GrassCluster size={hexSize} seed={t.q * 37 + t.r * 13} /></group>
             )}
             {(inVision || explored) && t.type === 'desert' && !blockDeco && (
               <group position={[0, tileTop, 0]} renderOrder={5}><DesertDunes size={hexSize} seed={t.q * 41 + t.r * 19} /></group>
+            )}
+            {/* Cacti (military-pack models) on roughly a third of desert tiles */}
+            {(inVision || explored) && t.type === 'desert' && !blockDeco && ((t.q * 31 + t.r * 17) & 7) < 3 && (
+              <group position={[0, tileTop, 0]}>
+                <Suspense fallback={null}><DesertCacti size={hexSize} seed={t.q * 41 + t.r * 19} /></Suspense>
+              </group>
             )}
             {/* Gatherable resource node (ore / energy / bio) — removed from the
                 map on collect, so drive it off the collectible map, not t.resource. */}
@@ -4709,8 +5375,11 @@ export default function SoloMissionMap3D({
     {/* Camera elevation ≈ 33.3° above the ground plane (height/horizontal = tan(33.3°)). */}
     {/* Perf: dpr capped at 1.5 (high-DPI screens otherwise render 2x+ the pixels),
         plain PCF shadows (soft PCF costs extra taps per fragment), no stencil. */}
-    <Canvas shadows="percentage" dpr={[1, 1.5]} camera={{ position: [0, 14.47, 22], fov: 45 }} gl={{ alpha: false, powerPreference: 'high-performance', stencil: false }} style={{ background: '#111827' }} onCreated={({ gl, scene }) => { gl.setClearColor('#111827', 1); scene.background = new THREE.Color('#111827'); gl.toneMappingExposure = 1.12; }}>
-  {import.meta.env.DEV && <Stats />}
+    <Canvas shadows="percentage" frameloop="demand" dpr={[1, 1.5]} camera={{ position: [0, 14.47, 22], fov: 45 }} gl={{ alpha: false, powerPreference: 'high-performance', stencil: false }} style={{ background: '#111827' }} onCreated={({ gl, scene }) => { gl.setClearColor('#111827', 1); scene.background = new THREE.Color('#111827'); gl.toneMappingExposure = 1.12; }}>
+  {/* The limiter drives demand-mode rendering at the player's chosen cap (🎞 button,
+      30/60/120). No auto-tuning: quality changes only via the ✨ Hi/Lo button. */}
+  <FrameLimiter maxFps={fpsCap} />
+  {import.meta.env.DEV && <FpsProbe counter={fpsCounterRef} />}
   <MapCameraController
     bounds={mapBounds}
     gameMode={true}
@@ -4850,12 +5519,20 @@ export default function SoloMissionMap3D({
                   }
                   return <EnemyUnitMesh key={en.id} enemy={en} size={hexSize} target={[ew.x, y, ew.z]} />;
                 })}
-                {/* Base / Command Center at spawn */}
+                {/* Base / Command Center at spawn — build-out tier follows player level,
+                    with district pads on adjacent tiles + a stroked home-zone border */}
                 {(() => { const bw = axialToWorld(baseAxial, hexSize); return (
                   <group key="base" position={[bw.x, tileTopAt(baseAxial.q, baseAxial.r), bw.z]} frustumCulled={false}>
-                    <CommandCenter size={hexSize} color={heroColors.primary} />
+                    <CommandCenter size={hexSize} color={heroColors.primary} tier={baseTier} stage={baseCityStage} playstyle={dominantStyle} />
                   </group>
                 ); })()}
+                {baseDistricts.map(d => { const dw = axialToWorld(d, hexSize); return (
+                  <group key={`district-${d.q},${d.r}`} position={[dw.x, tileTopAt(d.q, d.r), dw.z]} frustumCulled={false}>
+                    <BaseDistrictMesh size={hexSize} kind={d.kind} color={heroColors.primary} />
+                  </group>
+                ); })}
+                <CityBuildingsMesh spots={cityBuildingSpots} size={hexSize} tier={baseTier} color={heroColors.primary} />
+                <BaseZoneRing positions={baseZoneRingPositions} color={heroColors.primary} />
                 {/* Terraformer objective */}
                 {(() => { const tw = axialToWorld(terraformAxial, hexSize); return (
                   <group key="terraformer" position={[tw.x, tileTopAt(terraformAxial.q, terraformAxial.r), tw.z]} frustumCulled={false}>
@@ -4937,6 +5614,7 @@ export default function SoloMissionMap3D({
               <ContactShadows position={[0, 0, 0]} opacity={0.15} blur={1.5} far={15} />
               {/* OrbitControls removed in favor of custom edge + drag panning controller */}
             </Canvas>
+              {import.meta.env.DEV && <DevFpsMeter counter={fpsCounterRef} />}
               {/* Collision message box */}
               {collisionMessage.show && (
                 <div className="absolute inset-0 flex items-center justify-center z-50">
@@ -5004,7 +5682,7 @@ export default function SoloMissionMap3D({
               {!nearbyFactionEnemy && nearbyCreepCamp && (
                 <div className="fixed top-20 left-1/2 -translate-x-1/2 z-40">
                   <div className="px-4 py-2 rounded-xl bg-rose-900/80 border border-rose-400/60 text-sm font-bold text-rose-100 backdrop-blur-sm shadow-lg flex items-center gap-2">
-                    ⚔️ Enemy Camp — Lv {nearbyCreepCamp.level} · {nearbyCreepCamp.creeps.filter(c => c.hp > 0).length} left
+                    ⚔️ Enemy Camp, Lv {nearbyCreepCamp.level} · {nearbyCreepCamp.creeps.filter(c => c.hp > 0).length} left
                     <span className="ml-1 px-1.5 py-0.5 rounded bg-rose-700 font-bold">F</span> to attack
                   </div>
                 </div>
@@ -5023,23 +5701,23 @@ export default function SoloMissionMap3D({
               {(nearTerraformer && !terraformDone) && (
                 <div className="fixed top-28 left-1/2 -translate-x-1/2 z-40">
                   <div className="px-4 py-2 rounded-xl bg-amber-900/80 border border-amber-400/60 text-sm font-bold text-amber-100 backdrop-blur-sm shadow-lg flex items-center gap-2">
-                    🌱 Terraformer {terraformProgress}% — <span className="px-1.5 py-0.5 rounded bg-amber-700 font-bold">T</span> to invest a resource
+                    🌱 Terraformer {terraformProgress}%, press <span className="px-1.5 py-0.5 rounded bg-amber-700 font-bold">Y</span> to invest a resource
                   </div>
                 </div>
               )}
               {nearbyOutpost && (
                 <div className="fixed top-28 left-1/2 -translate-x-1/2 z-40 max-w-[94vw] pointer-events-auto">
                   <div className="px-4 py-2.5 rounded-xl bg-[#0c1219]/90 border border-white/15 text-xs sm:text-sm backdrop-blur-sm shadow-lg text-center space-y-2">
-                    <div className="font-bold">🚩 Neutral Outpost — choose your approach</div>
+                    <div className="font-bold">🚩 Neutral Outpost, choose your approach</div>
                     {/* GDD: outposts are taken via stealth, combat, or tactical diplomacy */}
                     <div className="flex flex-wrap items-center justify-center gap-2">
-                      <button onClick={() => captureOutpostWithRef.current('assault')} title="Take it by force — fast, but rival defenders respond."
+                      <button onClick={() => captureOutpostWithRef.current('assault')} title="Take it by force, fast, but rival defenders respond."
                         className="px-3 py-1.5 rounded-lg font-bold bg-rose-700/80 hover:bg-rose-600 ring-1 ring-rose-400/40">⚔️ Assault</button>
                       <button onClick={() => captureOutpostWithRef.current('infiltrate')} disabled={!canInfiltrate}
-                        title={canInfiltrate ? 'Slip in quietly — no reprisal (best with a Stealth build).' : `Locked — unlock ${APPROACH_SKILL.infiltrate.label} in the skill tree.`}
+                        title={canInfiltrate ? 'Slip in quietly, no reprisal (best with a Stealth build).' : `Locked, unlock ${APPROACH_SKILL.infiltrate.label} in the skill tree.`}
                         className={`px-3 py-1.5 rounded-lg font-bold ring-1 ${canInfiltrate ? 'bg-violet-700/80 hover:bg-violet-600 ring-violet-400/40' : 'bg-gray-800/70 ring-white/10 opacity-50 cursor-not-allowed'}`}>{canInfiltrate ? '🥷' : '🔒'} Infiltrate</button>
                       <button onClick={() => captureOutpostWithRef.current('negotiate')} disabled={!canNegotiate}
-                        title={canNegotiate ? 'Tactical diplomacy — peaceful, earns extra faction standing.' : `Locked — unlock ${APPROACH_SKILL.negotiate.label} in the skill tree.`}
+                        title={canNegotiate ? 'Tactical diplomacy, peaceful, earns extra faction standing.' : `Locked, unlock ${APPROACH_SKILL.negotiate.label} in the skill tree.`}
                         className={`px-3 py-1.5 rounded-lg font-bold ring-1 ${canNegotiate ? 'bg-sky-700/80 hover:bg-sky-600 ring-sky-400/40' : 'bg-gray-800/70 ring-white/10 opacity-50 cursor-not-allowed'}`}>{canNegotiate ? '🕊️' : '🔒'} Negotiate</button>
                     </div>
                     <div className="text-[10px] opacity-50"><span className="px-1 rounded bg-white/10 font-bold">G</span> = quick assault</div>
@@ -5057,7 +5735,7 @@ export default function SoloMissionMap3D({
                       <div className="font-bold flex flex-wrap items-center justify-center gap-x-2">
                         <span>{c.mission.icon} {c.mission.title}</span>
                         <span className="opacity-70 font-normal">
-                          {loot ? `— ${FACTION_LABEL[c.campFaction]} camp` : `— ${c.delivered}/${c.required.amount} ${resLbl} · holding ${held}`}
+                          {loot ? `, ${FACTION_LABEL[c.campFaction]} camp` : `, ${c.delivered}/${c.required.amount} ${resLbl} · holding ${held}`}
                         </span>
                       </div>
                       {/* Player DECIDES the approach (GDD strategy layer) */}
@@ -5065,14 +5743,14 @@ export default function SoloMissionMap3D({
                         {loot ? (
                           <>
                             <button onClick={() => resolveRefugeeRef.current('negotiate')} disabled={!canNegotiate}
-                              title={canNegotiate ? PLAYSTYLES.negotiate.desc : `Locked — unlock ${APPROACH_SKILL.negotiate.label} in the skill tree.`}
+                              title={canNegotiate ? PLAYSTYLES.negotiate.desc : `Locked, unlock ${APPROACH_SKILL.negotiate.label} in the skill tree.`}
                               className={`px-3 py-1.5 rounded-lg font-bold ring-1 ${canNegotiate ? 'bg-sky-700/80 hover:bg-sky-600 ring-sky-400/40' : 'bg-gray-800/70 ring-white/10 opacity-50 cursor-not-allowed'}`}>{canNegotiate ? '🕊️' : '🔒'} Negotiate</button>
                             <button onClick={() => resolveRefugeeRef.current('loot')} title={PLAYSTYLES.loot.desc}
                               className="px-3 py-1.5 rounded-lg font-bold bg-orange-700/80 hover:bg-orange-600 ring-1 ring-orange-400/40">🔥 Loot</button>
                           </>
                         ) : (
                           <button onClick={() => resolveRefugeeRef.current('help')} title={PLAYSTYLES.help.desc}
-                            className="px-3 py-1.5 rounded-lg font-bold bg-emerald-700/80 hover:bg-emerald-600 ring-1 ring-emerald-400/40">✚ Help — deliver {resLbl}</button>
+                            className="px-3 py-1.5 rounded-lg font-bold bg-emerald-700/80 hover:bg-emerald-600 ring-1 ring-emerald-400/40">✚ Help, deliver {resLbl}</button>
                         )}
                       </div>
                       <div className="text-[10px] opacity-50"><span className="px-1 rounded bg-white/10 font-bold">H</span> = {loot ? (canNegotiate ? 'negotiate' : 'negotiate (🔒 needs Diplomacy)') : 'help'} (peaceful default)</div>
@@ -5086,14 +5764,14 @@ export default function SoloMissionMap3D({
                 <div className="flex items-center justify-between gap-2 px-3 py-2.5 min-h-[3rem] bg-gradient-to-b from-[#0a0f16]/95 to-[#0a0f16]/75 border-b border-white/10 shadow-lg text-[13px] text-gray-100 overflow-x-auto no-scrollbar">
                   {/* Left cluster: yields */}
                   <div className="flex items-center gap-x-3 gap-y-0.5 flex-nowrap">
-                    <div className="flex items-center gap-1.5" title="4X campaign score — outposts, regions, terraforming & refugee camps">
+                    <div className="flex items-center gap-1.5" title="4X campaign score, outposts, regions, terraforming & refugee camps">
                       <span>🏆</span><span className="opacity-50 hidden md:inline">Score</span><span className="font-extrabold tabular-nums text-amber-300">{fourXScore}</span>
                     </div>
                     <div className="flex items-center gap-1.5" title="Faction Points earned in-game">
                       <span className="text-amber-300">✦</span><span className="opacity-50 hidden md:inline">FP</span>
                       <span className="font-extrabold tabular-nums">{(profile?.progress as any)?.factionPoints ?? 0}</span>
                     </div>
-                    <div className="flex items-center gap-1.5" title="Unspent skill points — open the skill tree to invest">
+                    <div className="flex items-center gap-1.5" title="Unspent skill points, open the skill tree to invest">
                       <span>⭐</span><span className="opacity-50 hidden md:inline">Skill</span>
                       <span className={`font-extrabold tabular-nums ${(skillPoints ?? 0) > 0 ? 'text-emerald-300' : 'text-gray-300'}`}>{skillPoints ?? 0}</span>
                     </div>
@@ -5130,7 +5808,7 @@ export default function SoloMissionMap3D({
                   {/* Right cluster: emergent playstyle identity + faction */}
                   <div className="flex items-center gap-3 flex-nowrap">
                     {dominantStyle && (
-                      <div className="flex items-center gap-1.5" title={`Your emergent playstyle — ${PLAYSTYLES[dominantStyle].desc}`} style={{ color: PLAYSTYLES[dominantStyle].color }}>
+                      <div className="flex items-center gap-1.5" title={`Your emergent playstyle, ${PLAYSTYLES[dominantStyle].desc}`} style={{ color: PLAYSTYLES[dominantStyle].color }}>
                         <span>{PLAYSTYLES[dominantStyle].icon}</span><span className="font-bold whitespace-nowrap">{PLAYSTYLES[dominantStyle].title}</span>
                       </div>
                     )}
@@ -5146,7 +5824,7 @@ export default function SoloMissionMap3D({
                     <div className="flex items-center gap-1.5 pointer-events-auto">
                       <button
                         onClick={openSkillTree}
-                        title="Skill tree — spend points on combat & utility perks"
+                        title="Skill tree, spend points on combat & utility perks"
                         className={`flex items-center gap-1 px-2.5 py-1 rounded-md text-[12px] font-bold ring-1 shadow transition ${
                           (skillPoints ?? 0) > 0
                             ? 'bg-emerald-800/80 ring-emerald-400/70 text-emerald-50 hover:bg-emerald-700/80'
@@ -5176,11 +5854,23 @@ export default function SoloMissionMap3D({
                       )}
                       <button
                         onClick={toggleGfx}
-                        title={gfxHigh ? 'Graphics: High (bloom + sharp shadows) — click for Low' : 'Graphics: Low (max FPS) — click for High'}
+                        title={gfxHigh ? 'Graphics: High (bloom + sharp shadows), click for Low' : 'Graphics: Low (max FPS), click for High'}
                         className={`flex items-center gap-1 px-2.5 py-1 rounded-md text-[12px] font-bold ring-1 shadow transition ${
                           gfxHigh ? 'bg-[#141b26]/90 ring-amber-400/50 text-amber-200 hover:ring-amber-300' : 'bg-[#141b26]/90 ring-white/15 text-gray-400 hover:ring-white/40'
                         }`}
                       ><span>✨</span><span className="hidden sm:inline">{gfxHigh ? 'Hi' : 'Lo'}</span></button>
+                      <button
+                        onClick={cycleFpsCap}
+                        title={`Framerate cap: ${fpsCap}fps, click to cycle 30 / 60 / 120`}
+                        className={`flex items-center gap-1 px-2.5 py-1 rounded-md text-[12px] font-bold ring-1 shadow transition ${
+                          fpsCap >= 120 ? 'bg-[#141b26]/90 ring-emerald-400/50 text-emerald-200 hover:ring-emerald-300' : 'bg-[#141b26]/90 ring-white/15 text-gray-300 hover:ring-white/40'
+                        }`}
+                      ><span>🎞</span><span className="hidden sm:inline tabular-nums">{fpsCap}</span></button>
+                      <button
+                        onClick={openTutorial}
+                        title="How to play + current objective"
+                        className="flex items-center gap-1 px-2.5 py-1 rounded-md text-[12px] font-bold ring-1 ring-white/15 bg-[#141b26]/90 text-gray-300 hover:ring-white/40 shadow transition"
+                      ><span>❓</span></button>
                       <button
                         onClick={() => setHudMenuOpen(o => !o)}
                         title="Menu (Esc)"
@@ -5202,6 +5892,38 @@ export default function SoloMissionMap3D({
                 )}
               </div>
 
+              {/* ── Tutorial card: centered, pageable, closable (❓ reopens) ─────────── */}
+              {soloEnabled && tutorialOpen && (
+                <div className="fixed inset-0 z-40 flex items-center justify-center pointer-events-none">
+                  <div className="pointer-events-auto w-[min(24rem,92vw)] rounded-2xl bg-[#0c1219]/95 ring-1 ring-white/15 shadow-2xl text-gray-100 p-5 relative">
+                    <button onClick={closeTutorial} title="Close" aria-label="Close tutorial"
+                      className="absolute top-2.5 right-2.5 h-7 w-7 rounded-md bg-white/5 hover:bg-white/15 ring-1 ring-white/10 text-gray-300 text-sm font-bold">✕</button>
+                    <div className="flex items-center gap-2.5 mb-2">
+                      <span className="text-2xl">{tutorialPages[tutorialPage].icon}</span>
+                      <div className="font-bold text-base">{tutorialPages[tutorialPage].title}</div>
+                    </div>
+                    <div className="text-[13px] leading-relaxed text-gray-300 min-h-[4.5rem]">{tutorialPages[tutorialPage].body}</div>
+                    <div className="flex items-center justify-between mt-4">
+                      <button onClick={() => setTutorialPage(p => Math.max(0, p - 1))} disabled={tutorialPage === 0}
+                        className="px-3 py-1.5 rounded-lg text-[12px] font-bold ring-1 ring-white/15 bg-white/5 hover:bg-white/10 disabled:opacity-30 disabled:cursor-default">‹ Prev</button>
+                      <div className="flex items-center gap-1.5">
+                        {tutorialPages.map((_, i) => (
+                          <button key={i} onClick={() => setTutorialPage(i)} aria-label={`Page ${i + 1}`}
+                            className={`h-2 w-2 rounded-full transition ${i === tutorialPage ? 'bg-amber-300' : 'bg-white/20 hover:bg-white/40'}`} />
+                        ))}
+                      </div>
+                      {tutorialPage < tutorialPages.length - 1 ? (
+                        <button onClick={() => setTutorialPage(p => Math.min(tutorialPages.length - 1, p + 1))}
+                          className="px-3 py-1.5 rounded-lg text-[12px] font-bold ring-1 ring-amber-400/40 bg-amber-600/70 hover:bg-amber-500/70">Next ›</button>
+                      ) : (
+                        <button onClick={closeTutorial}
+                          className="px-3 py-1.5 rounded-lg text-[12px] font-bold ring-1 ring-emerald-400/40 bg-emerald-700/80 hover:bg-emerald-600/80">Got it ✓</button>
+                      )}
+                    </div>
+                  </div>
+                </div>
+              )}
+
               {/* ── 1v1 PvP Duel: lobby + result (launcher lives in the top HUD bar) ─── */}
               {!mobaMode && duelLobbyOpen && (
                 <div className="fixed top-28 right-3 z-40 w-[min(18rem,92vw)] p-4 rounded-xl bg-[#0c1219]/95 ring-1 ring-white/12 shadow-2xl text-sm text-gray-100 space-y-3">
@@ -5216,7 +5938,7 @@ export default function SoloMissionMap3D({
                         🎯 Find Opponent
                         {duelWaiting > 0 && <span className="px-1.5 py-0.5 rounded-full bg-black/30 text-[10px] font-bold">{duelWaiting} waiting</span>}
                       </button>
-                      <div className="text-[11px] opacity-50 text-center">— or play a friend: host, share the code, they paste & join —</div>
+                      <div className="text-[11px] opacity-50 text-center">or play a friend: host, share the code, they paste & join</div>
                       <button onClick={() => duel.host()} className="w-full py-2 rounded-lg bg-rose-700 hover:bg-rose-600 font-bold">Host with a code</button>
                       <div className="flex gap-1.5">
                         <input
@@ -5229,14 +5951,14 @@ export default function SoloMissionMap3D({
                         <button onClick={pasteDuelCode} title="Paste code" className="px-2.5 py-2 rounded-lg bg-white/10 hover:bg-white/20 text-sm">📋</button>
                         <button onClick={() => duel.join(duelJoinCode)} disabled={duelJoinCode.length < 4} className="px-3 py-2 rounded-lg bg-indigo-700 hover:bg-indigo-600 font-bold disabled:opacity-40">Join</button>
                       </div>
-                      {duel.status === 'error' && <div className="text-[11px] text-rose-400">Couldn't connect — try again or check the code.</div>}
+                      {duel.status === 'error' && <div className="text-[11px] text-rose-400">Couldn't connect, try again or check the code.</div>}
                     </>
                   )}
 
                   {duel.status === 'searching' && (
                     <div className="space-y-2 text-center">
                       <div className="text-[12px] text-emerald-400 font-bold animate-pulse py-1">🎯 Searching for an opponent…</div>
-                      {duel.code && <div className="text-[11px] opacity-60">You're in the queue{duel.role === 'host' ? ' as host' : ''} — hang tight.</div>}
+                      {duel.code && <div className="text-[11px] opacity-60">You're in the queue{duel.role === 'host' ? ' as host' : ''}, hang tight.</div>}
                       <button onClick={() => duel.leave()} className="w-full py-1.5 rounded-lg bg-white/10 hover:bg-white/20 text-xs">Cancel search</button>
                     </div>
                   )}
@@ -5260,10 +5982,10 @@ export default function SoloMissionMap3D({
 
                   {duel.status === 'connected' && (
                     <div className="space-y-2">
-                      <div className="text-center text-emerald-400 font-bold">Connected — Fight!</div>
+                      <div className="text-center text-emerald-400 font-bold">Connected, Fight!</div>
                       <div className="text-center text-lg font-extrabold tabular-nums">
                         <span className="text-amber-300">You {duel.myScore}</span>
-                        <span className="opacity-50"> — </span>
+                        <span className="opacity-50"> · </span>
                         <span className="text-rose-300">{duel.oppScore} Rival</span>
                       </div>
                       <div className="text-[11px] opacity-70 text-center">First to {duel.winTarget} · get adjacent & press <span className="px-1 rounded bg-white/10 font-bold">F</span> to strike.</div>
@@ -5273,7 +5995,7 @@ export default function SoloMissionMap3D({
 
                   {duel.status === 'reconnecting' && (
                     <div className="space-y-2 text-center">
-                      <div className="text-[12px] text-amber-300 font-bold animate-pulse">Connection dropped — reconnecting…</div>
+                      <div className="text-[12px] text-amber-300 font-bold animate-pulse">Connection dropped, reconnecting…</div>
                       <div className="text-[11px] opacity-60">Hang tight, trying to recover the link.</div>
                       <button onClick={() => duel.leave()} className="w-full py-1.5 rounded-lg bg-white/10 hover:bg-white/20 text-xs">Leave duel</button>
                     </div>
@@ -5285,16 +6007,6 @@ export default function SoloMissionMap3D({
                       <button onClick={() => duel.leave()} className="w-full py-1.5 rounded-lg bg-white/10 hover:bg-white/20 text-xs">Back</button>
                     </div>
                   )}
-                </div>
-              )}
-
-              {/* ── Current objective pointer — the story arc's compass (fixes cold start). */}
-              {soloEnabled && !activeStoryBeat && (
-                <div className="fixed top-11 left-3 z-30 pointer-events-none">
-                  <div className="px-3 py-1.5 rounded-lg bg-[#0c1219]/85 ring-1 ring-white/12 text-[11px] text-gray-200 max-w-[22rem] leading-snug shadow">
-                    <span className="opacity-60 mr-1">🎯</span>
-                    {storyArc[storyBeatIdx]?.objective ?? 'Fill a victory track to win the campaign.'}
-                  </div>
                 </div>
               )}
 
@@ -5359,7 +6071,7 @@ export default function SoloMissionMap3D({
                     <span className="text-sm font-bold text-rose-200" style={{ color: FACTION_COLORS[raidBanner.faction]?.label ?? '#fecaca' }}>
                       {FACTION_LABEL[raidBanner.faction] ?? raidBanner.faction}
                     </span>
-                    <span className="text-sm font-semibold text-rose-100">{raidBanner.text ?? 'raided your outpost — recapture it!'}</span>
+                    <span className="text-sm font-semibold text-rose-100">{raidBanner.text ?? 'raided your outpost, recapture it!'}</span>
                   </div>
                 </div>
               )}
@@ -5369,7 +6081,7 @@ export default function SoloMissionMap3D({
                 <div className="fixed top-1/3 left-1/2 -translate-x-1/2 z-40 pointer-events-none">
                   <div className="px-6 py-3 rounded-2xl bg-emerald-900/85 ring-1 ring-emerald-400/60 text-center shadow-2xl animate-bounce">
                     <div className="text-2xl font-extrabold text-emerald-300">⭐ Level {levelUpBanner}!</div>
-                    <div className="text-xs opacity-80 mt-0.5">New skill points available — open the skill tree</div>
+                    <div className="text-xs opacity-80 mt-0.5">New skill points available, open the skill tree</div>
                   </div>
                 </div>
               )}
@@ -5391,8 +6103,8 @@ export default function SoloMissionMap3D({
                     <div className={`text-4xl font-extrabold mb-2 ${duel.result === 'win' ? 'text-amber-300' : 'text-rose-400'}`}>
                       {duel.result === 'win' ? '🏆 Victory' : '☠️ Defeat'}
                     </div>
-                    <div className="text-lg font-bold tabular-nums mb-1"><span className="text-amber-300">{duel.myScore}</span> <span className="opacity-50">—</span> <span className="text-rose-300">{duel.oppScore}</span></div>
-                    <div className="opacity-70 text-sm mb-4">{duel.result === 'win' ? `Best of ${duel.winTarget * 2 - 1} — you won the match.` : 'Your rival won the match.'}</div>
+                    <div className="text-lg font-bold tabular-nums mb-1"><span className="text-amber-300">{duel.myScore}</span> <span className="opacity-50">:</span> <span className="text-rose-300">{duel.oppScore}</span></div>
+                    <div className="opacity-70 text-sm mb-4">{duel.result === 'win' ? `Best of ${duel.winTarget * 2 - 1}, you won the match.` : 'Your rival won the match.'}</div>
                     <button onClick={() => { duel.leave(); setDuelLobbyOpen(false); }} className="px-6 py-2 rounded-lg bg-rose-700 hover:bg-rose-600 font-bold">Close</button>
                   </div>
                 </div>
@@ -5416,7 +6128,7 @@ export default function SoloMissionMap3D({
                       </div>
                       <div className="opacity-70 text-sm mb-4">{won ? `You reached the ${def.label} threshold first. +60 shards.` : `${soloVictoryResult.faction} filled the ${def.label} track before you.`}</div>
                       <div className="flex items-center justify-center gap-3">
-                        <button disabled={campaignResetting} onClick={resetCampaign} title="Reset the world — territory, terraforming, camps and the victory race start over. Your hero, skills, pet, shards and items carry over."
+                        <button disabled={campaignResetting} onClick={resetCampaign} title="Reset the world, territory, terraforming, camps and the victory race start over. Your hero, skills, pet, shards and items carry over."
                           className="px-6 py-2 rounded-lg font-bold bg-emerald-700 hover:bg-emerald-600 disabled:opacity-60">
                           {campaignResetting ? 'Resetting…' : '🔁 New Campaign'}
                         </button>
@@ -5458,7 +6170,7 @@ export default function SoloMissionMap3D({
 
                   {(moba.status === 'idle' || moba.status === 'error') && (
                     <>
-                      <div className="text-[11px] opacity-60">Pick your faction — the 3rd is played by AI.</div>
+                      <div className="text-[11px] opacity-60">Pick your faction, the 3rd is played by AI.</div>
                       <div className="grid grid-cols-3 gap-1.5">
                         {(['PAA','ASF','WC'] as Faction[]).map(f => {
                           const taken = mobaTakenFactions.has(f);
@@ -5479,7 +6191,7 @@ export default function SoloMissionMap3D({
                         🎯 Quick Match
                         {mobaWaiting > 0 && <span className="px-1.5 py-0.5 rounded-full bg-black/30 text-[10px] font-bold">{mobaWaiting} waiting</span>}
                       </button>
-                      <div className="text-[11px] opacity-50 text-center">— or host / join by code —</div>
+                      <div className="text-[11px] opacity-50 text-center">or host / join by code</div>
                       <button onClick={() => moba.host(mobaFactionPick)} className="w-full py-2 rounded-lg bg-[#1c2838] hover:bg-[#243448] ring-1 ring-white/15 font-bold">Host with a code</button>
                       <div className="flex gap-1.5">
                         <input
@@ -5491,14 +6203,14 @@ export default function SoloMissionMap3D({
                         />
                         <button onClick={() => moba.join(mobaJoinCode, mobaFactionPick)} disabled={mobaJoinCode.length < 4} className="px-3 py-2 rounded-lg bg-indigo-700 hover:bg-indigo-600 font-bold disabled:opacity-40">Join</button>
                       </div>
-                      {moba.status === 'error' && <div className="text-[11px] text-rose-400">Couldn't connect — try again or check the code.</div>}
+                      {moba.status === 'error' && <div className="text-[11px] text-rose-400">Couldn't connect, try again or check the code.</div>}
                     </>
                   )}
 
                   {moba.status === 'searching' && (
                     <div className="space-y-2 text-center">
                       <div className="text-[12px] text-emerald-400 font-bold animate-pulse py-1">🎯 Searching for a match…</div>
-                      <div className="text-[11px] opacity-60">Joining the next open lobby, or opening one for others — AI fills any empty faction.</div>
+                      <div className="text-[11px] opacity-60">Joining the next open lobby, or opening one for others, AI fills any empty faction.</div>
                       <button onClick={() => moba.leave()} className="w-full py-1.5 rounded-lg bg-white/10 hover:bg-white/20 text-xs">Cancel search</button>
                     </div>
                   )}
@@ -5565,7 +6277,7 @@ export default function SoloMissionMap3D({
                               disabled={notReady}
                               className="w-full py-2 rounded-lg bg-emerald-600 hover:bg-emerald-500 font-bold disabled:opacity-40"
                             >{outposts.size === 0 ? 'Loading map…' : 'Start Match'}</button>
-                            {dupFactions && <div className="text-[11px] text-amber-400 text-center">Two players share a faction — pick distinct factions to start.</div>}
+                            {dupFactions && <div className="text-[11px] text-amber-400 text-center">Two players share a faction, pick distinct factions to start.</div>}
                           </>
                         );
                       })() : (
@@ -5577,7 +6289,7 @@ export default function SoloMissionMap3D({
 
                   {mobaActive && (
                     <div className="space-y-2">
-                      <div className="text-center text-emerald-400 font-bold text-[13px]">Match live — {FACTION_LABEL[moba.myFaction ?? 'PAA']}</div>
+                      <div className="text-center text-emerald-400 font-bold text-[13px]">Match live, {FACTION_LABEL[moba.myFaction ?? 'PAA']}</div>
                       <div className="text-[11px] opacity-70 text-center">Get adjacent to an outpost & press <span className="px-1 rounded bg-white/10 font-bold">G</span> to capture. Fill a victory track to win.</div>
                       <button onClick={() => moba.leave()} className="w-full py-1.5 rounded-lg bg-white/10 hover:bg-white/20 text-xs">Leave match</button>
                     </div>
