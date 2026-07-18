@@ -862,46 +862,41 @@ function CommandCenter({ size, tier = 1, stage = 0, playstyle = null, hqUrl = nu
 /** District pad on a tile adjacent to the base — unlocked one per tier (Civ districts). */
 type BaseDistrictKind = 'habitat' | 'agro' | 'industry' | 'energy';
 const DISTRICT_ICON: Record<BaseDistrictKind, string> = { habitat: '🏠', agro: '🌾', industry: '⚙️', energy: '🔋' };
+/** Model-only district pads — no procedural three.js geometry (per design direction,
+ *  the base builds out of real asset-pack models only): habitat = army tent, agro =
+ *  bushes + flowers, industry = crate + barrel, energy = generator. Icon label on top. */
 function BaseDistrictMesh({ size, kind, color }: { size: number; kind: BaseDistrictKind; color: string }) {
   const S = size;
   return (
     <group>
-      {/* shared foundation pad */}
-      <mesh position={[0, S * 0.05, 0]} rotation={[0, Math.PI / 6, 0]} receiveShadow><cylinderGeometry args={[S * 0.66, S * 0.74, S * 0.1, 6]} /><meshStandardMaterial color="#2e343c" roughness={0.9} flatShading /></mesh>
-      {kind === 'habitat' && (
-        <>
-          <mesh position={[-S * 0.2, S * 0.28, S * 0.08]} scale={[1, 0.72, 1]} castShadow><sphereGeometry args={[S * 0.3, 8, 6]} /><meshStandardMaterial color="#b8895a" roughness={0.8} flatShading /></mesh>
-          <mesh position={[S * 0.28, S * 0.22, -S * 0.16]} scale={[1, 0.72, 1]} castShadow><sphereGeometry args={[S * 0.22, 8, 6]} /><meshStandardMaterial color="#a8734a" roughness={0.8} flatShading /></mesh>
-          <mesh position={[-S * 0.2, S * 0.2, S * 0.36]}><boxGeometry args={[S * 0.12, S * 0.18, S * 0.06]} /><meshStandardMaterial color="#1a120c" roughness={1} /></mesh>
-        </>
-      )}
-      {kind === 'agro' && (
-        <>
-          <mesh position={[-S * 0.24, S * 0.24, 0]} rotation={[0, 0.3, 0]} castShadow><boxGeometry args={[S * 0.44, S * 0.28, S * 0.3]} /><meshStandardMaterial color="#8fd66b" transparent opacity={0.75} emissive="#4caf50" emissiveIntensity={0.3} flatShading /></mesh>
-          {[0, 1, 2].map(i => (
-            <mesh key={i} position={[S * (0.28 + i * 0.12), S * 0.16, S * (0.28 - i * 0.22)]} castShadow><coneGeometry args={[S * 0.09, S * 0.22, 5]} /><meshStandardMaterial color="#4e8f4a" roughness={0.9} flatShading /></mesh>
-          ))}
-        </>
-      )}
-      {kind === 'industry' && (
-        <>
-          <Suspense fallback={<mesh position={[-S * 0.18, S * 0.22, S * 0.1]} rotation={[0, 0.5, 0]} castShadow><boxGeometry args={[S * 0.34, S * 0.3, S * 0.3]} /><meshStandardMaterial color="#8a6a3a" roughness={0.85} flatShading /></mesh>}>
+      <Suspense fallback={null}>
+        {kind === 'habitat' && (
+          <>
+            <group position={[-S * 0.12, 0, S * 0.04]}><FbxProp url={MILITARY_ASSETS.tents[0]} tex={MILITARY_TEX} size={S * 0.85} rotation={0.5} tint="#c8a878" /></group>
+            <group position={[S * 0.3, 0, -S * 0.26]}><FbxProp url={MILITARY_ASSETS.boxes[0]} tex={MILITARY_TEX} size={S * 0.24} rotation={1.1} /></group>
+          </>
+        )}
+        {kind === 'agro' && (
+          <>
+            <group position={[-S * 0.24, 0, S * 0.02]}><FbxProp url={NATURE_ASSETS.bushes[0]} tex={NATURE_TEX} size={S * 0.42} rotation={0.3} /></group>
+            <group position={[S * 0.24, 0, S * 0.26]}><FbxProp url={NATURE_ASSETS.flowers[0]} tex={NATURE_TEX} size={S * 0.34} rotation={1.8} /></group>
+            <group position={[S * 0.18, 0, -S * 0.3]}><FbxProp url={NATURE_ASSETS.bushes[2]} tex={NATURE_TEX} size={S * 0.3} rotation={2.6} /></group>
+          </>
+        )}
+        {kind === 'industry' && (
+          <>
             <group position={[-S * 0.2, 0, S * 0.12]}><FbxProp url={MILITARY_ASSETS.boxes[1]} tex={MILITARY_TEX} size={S * 0.42} rotation={0.5} /></group>
             <group position={[-S * 0.02, 0, -S * 0.28]}><FbxProp url={MILITARY_ASSETS.barrel} tex={MILITARY_TEX} size={S * 0.3} rotation={1.2} /></group>
-          </Suspense>
-          <mesh position={[S * 0.26, S * 0.34, -S * 0.14]} castShadow><cylinderGeometry args={[S * 0.09, S * 0.11, S * 0.6, 6]} /><meshStandardMaterial color="#4a4e57" roughness={0.7} metalness={0.3} flatShading /></mesh>
-          <mesh position={[S * 0.26, S * 0.66, -S * 0.14]}><sphereGeometry args={[S * 0.07, 5, 5]} /><meshStandardMaterial color="#666" transparent opacity={0.7} /></mesh>
-        </>
-      )}
-      {kind === 'energy' && (
-        <>
-          <mesh position={[0, S * 0.34, 0]} rotation={[-0.6, 0.4, 0]} castShadow><boxGeometry args={[S * 0.5, S * 0.03, S * 0.36]} /><meshStandardMaterial color="#4fc3f7" emissive="#2196f3" emissiveIntensity={0.6} metalness={0.4} roughness={0.3} flatShading /></mesh>
-          <mesh position={[0, S * 0.16, 0]}><cylinderGeometry args={[S * 0.04, S * 0.05, S * 0.3, 5]} /><meshStandardMaterial color="#555" metalness={0.4} /></mesh>
-          <Suspense fallback={null}>
-            <group position={[S * 0.32, 0, S * 0.24]}><FbxProp url={MILITARY_ASSETS.generator} tex={MILITARY_TEX} size={S * 0.42} rotation={-0.6} /></group>
-          </Suspense>
-        </>
-      )}
+            <group position={[S * 0.3, 0, S * 0.02]}><FbxProp url={MILITARY_ASSETS.tires} tex={MILITARY_TEX} size={S * 0.28} rotation={2.1} /></group>
+          </>
+        )}
+        {kind === 'energy' && (
+          <>
+            <group position={[S * 0.12, 0, S * 0.08]}><FbxProp url={MILITARY_ASSETS.generator} tex={MILITARY_TEX} size={S * 0.46} rotation={-0.6} /></group>
+            <group position={[-S * 0.26, 0, -S * 0.18]}><FbxProp url={MILITARY_ASSETS.barrel} tex={MILITARY_TEX} size={S * 0.26} rotation={0.8} /></group>
+          </>
+        )}
+      </Suspense>
       <Text position={[0, S * 1.0, 0]} fontSize={S * 0.3} color={color} anchorX="center" anchorY="middle" outlineWidth={S * 0.02} outlineColor="#000">{DISTRICT_ICON[kind]}</Text>
     </group>
   );
@@ -917,46 +912,21 @@ function HouseVariantModel({ url, size, rotation }: { url: string; size: number;
     ? <FbxRawProp url={url} size={size} rotation={rotation} />
     : <GltfRawProp url={url} size={size} rotation={rotation} />;
 }
-function CityBuildingsMesh({ spots, size, tier, color, houses }: { spots: CitySpot[]; size: number; tier: number; color: string; houses?: string[] }) {
+/** MODEL-ONLY sprawl: every building is a house model from the manifest pool — no
+ *  procedural three.js fallback geometry, at any level (per design direction). While
+ *  a model streams (or if the manifest is empty) the slot simply stays empty. */
+function CityBuildingsMesh({ spots, size, tier, houses }: { spots: CitySpot[]; size: number; tier: number; color?: string; houses?: string[] }) {
   const S = size * (0.92 + tier * 0.04); // the whole city's scale creeps up with tier
+  if (!houses || houses.length === 0) return null;
   return (
     <group>
-      {spots.map((s, i) => {
-        // Procedural building — the default look AND the Suspense fallback while a
-        // house model variant streams in.
-        const procedural = (
-          <>
-            {s.kind === 0 && (
-              <>
-                <mesh position={[0, S * 0.12 * s.h, 0]} castShadow><cylinderGeometry args={[S * 0.16, S * 0.19, S * 0.24 * s.h, 6]} /><meshStandardMaterial color="#8a7458" roughness={0.9} flatShading /></mesh>
-                <mesh position={[0, S * 0.3 * s.h, 0]} castShadow><coneGeometry args={[S * 0.22, S * 0.2 * s.h, 6]} /><meshStandardMaterial color="#6a5138" roughness={0.9} flatShading /></mesh>
-              </>
-            )}
-            {s.kind === 1 && (
-              <>
-                <mesh position={[0, S * 0.15 * s.h, 0]} castShadow><boxGeometry args={[S * 0.3, S * 0.3 * s.h, S * 0.26]} /><meshStandardMaterial color="#9c8264" roughness={0.85} flatShading /></mesh>
-                <mesh position={[0, S * 0.38 * s.h, 0]} rotation={[0, Math.PI / 4, 0]} castShadow><coneGeometry args={[S * 0.24, S * 0.18 * s.h, 4]} /><meshStandardMaterial color={color} roughness={0.7} flatShading /></mesh>
-              </>
-            )}
-            {s.kind === 2 && (
-              <>
-                <mesh position={[0, S * 0.3 * s.h, 0]} castShadow><boxGeometry args={[S * 0.24, S * 0.6 * s.h, S * 0.24]} /><meshStandardMaterial color="#57616c" roughness={0.6} metalness={0.2} flatShading /></mesh>
-                <mesh position={[0, S * 0.34 * s.h, 0]}><boxGeometry args={[S * 0.26, S * 0.07, S * 0.26]} /><meshStandardMaterial color={color} emissive={color} emissiveIntensity={0.4} flatShading /></mesh>
-              </>
-            )}
-          </>
-        );
-        return (
-          <group key={i} position={[s.x, s.y, s.z]} rotation={[0, s.rot, 0]}>
-            {houses && houses.length > 0 ? (
-              // House model variations (manifest-driven): each growth stage's building is a
-              // deterministic pick from the pool, so the skyline stays stable as it grows.
-              <Suspense fallback={procedural}>
-                <HouseVariantModel url={houses[Math.min(houses.length - 1, Math.floor(s.v * houses.length))]} size={S * (0.5 + 0.24 * s.h)} rotation={0} /></Suspense>
-            ) : procedural}
-          </group>
-        );
-      })}
+      {spots.map((s, i) => (
+        <group key={i} position={[s.x, s.y, s.z]} rotation={[0, s.rot, 0]}>
+          <Suspense fallback={null}>
+            <HouseVariantModel url={houses[Math.min(houses.length - 1, Math.floor(s.v * houses.length))]} size={S * (0.5 + 0.24 * s.h)} rotation={0} />
+          </Suspense>
+        </group>
+      ))}
     </group>
   );
 }
