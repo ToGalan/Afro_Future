@@ -78,13 +78,15 @@ interface UseRefugeeCampsOptions {
   centerQ: number;
   centerR: number;
   faction?: string;
+  /** Coordinates already occupied by other systems (creep camps, outposts) to keep clear of. */
+  avoid?: { q: number; r: number }[];
   /** Fired when a camp mission is resolved. `approach` is HOW the player chose to resolve
    *  it — aid (help), negotiate (diplomacy), or loot (force) — so the caller can apply the
    *  right reward, reputation, and consequences. */
   onComplete?: (camp: RefugeeCamp, approach: 'aid' | 'negotiate' | 'loot') => void;
 }
 
-export function useRefugeeCamps({ tiles, heroQ, heroR, centerQ, centerR, faction, onComplete }: UseRefugeeCampsOptions) {
+export function useRefugeeCamps({ tiles, heroQ, heroR, centerQ, centerR, faction, avoid, onComplete }: UseRefugeeCampsOptions) {
   const [camps, setCamps] = useState<Map<string, RefugeeCamp>>(new Map());
   const [nearbyCamp, setNearbyCamp] = useState<RefugeeCamp | null>(null);
 
@@ -100,12 +102,17 @@ export function useRefugeeCamps({ tiles, heroQ, heroR, centerQ, centerR, faction
     if (!tiles.length) return;
     const m = new Map<string, RefugeeCamp>();
     const FKS: FactionKey[] = ['PAA', 'ASF', 'WC'];
+    const placed: { q: number; r: number }[] = [];
+    const MIN_SPACING = 3;
     for (const t of tiles) {
       if (t.type === 'water' || t.type === 'mountain') continue;
       const dist = axialDist(t.q, t.r, centerQ, centerR);
       if (dist < 4) continue;
       const h = hash(t.q, t.r);
       if (h >= 0.014) continue;                          // ~1.4% of eligible tiles
+      if (avoid?.some(a => axialDist(t.q, t.r, a.q, a.r) < MIN_SPACING)) continue;
+      if (placed.some(p => axialDist(t.q, t.r, p.q, p.r) < MIN_SPACING)) continue;
+      placed.push({ q: t.q, r: t.r });
       const campFaction = FKS[Math.floor(hash(t.q * 3 + 1, t.r * 7 + 2) * 3) % 3];
       const mode: 'aid' | 'loot' = campFaction === me ? 'aid' : 'loot';
       let mission: RefugeeMission;
@@ -129,7 +136,7 @@ export function useRefugeeCamps({ tiles, heroQ, heroR, centerQ, centerR, faction
     }
     setCamps(m);
     console.log('[refugee] Generated', m.size, `camps (player ${me})`);
-  }, [tiles, centerQ, centerR, me]);
+  }, [tiles, centerQ, centerR, me, avoid]);
 
   const engagedKey = useCallback((): string | null => {
     const { q, r } = heroRef.current;

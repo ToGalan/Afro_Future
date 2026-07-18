@@ -54,11 +54,13 @@ interface UseOutpostsOptions {
   heroR: number;
   centerQ: number;
   centerR: number;
+  /** Coordinates already occupied by other systems (creep camps, refugee camps) to keep clear of. */
+  avoid?: { q: number; r: number }[];
   /** `prevOwner` distinguishes claiming neutral ground from RECONQUERING rival ground. */
   onCapture?: (region: number, regionCleared: boolean, prevOwner: OutpostOwner) => void;
 }
 
-export function useOutposts({ tiles, heroQ, heroR, centerQ, centerR, onCapture }: UseOutpostsOptions) {
+export function useOutposts({ tiles, heroQ, heroR, centerQ, centerR, avoid, onCapture }: UseOutpostsOptions) {
   const [outposts, setOutposts] = useState<Map<string, Outpost>>(new Map());
   const [nearbyOutpost, setNearbyOutpost] = useState<Outpost | null>(null);
   // Voronoi partition: every tile → the key of its nearest outpost. Together the
@@ -78,12 +80,16 @@ export function useOutposts({ tiles, heroQ, heroR, centerQ, centerR, onCapture }
   useEffect(() => {
     if (!tiles.length) return;
 
-    // 1) Candidate outpost coords: sparse, walkable, away from spawn.
+    // 1) Candidate outpost coords: sparse, walkable, away from spawn, spaced apart from
+    //    each other AND from creep camps / refugee camps (min 3-tile clearance).
+    const MIN_SPACING = 3;
     const coords: { q: number; r: number }[] = [];
     for (const t of tiles) {
       if (t.type === 'water' || t.type === 'mountain') continue;
       if (axialDist(t.q, t.r, centerQ, centerR) < 6) continue;
       if (hash(t.q, t.r) >= 0.007) continue;
+      if (avoid?.some(a => axialDist(t.q, t.r, a.q, a.r) < MIN_SPACING)) continue;
+      if (coords.some(c => axialDist(t.q, t.r, c.q, c.r) < MIN_SPACING)) continue;
       coords.push({ q: t.q, r: t.r });
     }
     if (!coords.length) { setOutposts(new Map()); setTerritory(new Map()); setRegionMeta(new Map()); return; }
@@ -140,7 +146,7 @@ export function useOutposts({ tiles, heroQ, heroR, centerQ, centerR, onCapture }
     }
     setTerritory(terr);
     console.log('[outposts] Generated', m.size, 'outposts in', meta.size, 'regions;', terr.size, 'tiles partitioned');
-  }, [tiles, centerQ, centerR]);
+  }, [tiles, centerQ, centerR, avoid]);
 
   const engagedKey = useCallback((): string | null => {
     const { q, r } = heroRef.current;

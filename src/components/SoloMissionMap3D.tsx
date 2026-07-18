@@ -9,7 +9,7 @@ import * as THREE from 'three';
 import { Canvas, useThree, useFrame } from '@react-three/fiber';
 import { OrbitControls, Text, Sky, ContactShadows } from '@react-three/drei';
 import { ImprovedNoise } from 'three/examples/jsm/math/ImprovedNoise.js';
-import { FbxProp, NATURE_ASSETS, NATURE_TEX, MILITARY_ASSETS, MILITARY_TEX } from './FbxProps';
+import { FbxProp, FbxPbrProp, FbxRawProp, GltfRawProp, FbxAnimatedProp, FbxAnimatedTexturedProp, NATURE_ASSETS, NATURE_TEX, MILITARY_ASSETS, MILITARY_TEX, PBR_PROP_ASSETS, PBR_PROP_TEX, MUSHROOM_ASSET, MUSHROOM_TEX, MINING_ASSETS, PET_ASSETS, WC_NPC_ASSET, WC_NPC_TEX, CREEP_ASSETS, CREEP_TEX, ELEPHANT_ASSET } from './FbxProps';
 import { EffectComposer, Bloom, Vignette } from '@react-three/postprocessing';
 import { arcFor, beatReady, storyNpc, storyText, type StoryBeat, type StoryChoice, type StoryWorldState } from '../services/storyline';
 import { GameAvatar, type AvatarColors } from './GameAvatarMesh';
@@ -45,7 +45,6 @@ import '../assets/ref_3d_map/hills-system.js';
 import '../assets/ref_3d_map/desert-system.js';
 import { useVisibleChunks } from '../hooks/useVisibleChunks';
 import { getCachedChunk } from '../services/mapChunks';
-import { updateAvatarCollision, createFloorCollider } from '../services/collisionDetection';
 
 // Types
 type TileType = 'water' | 'desert' | 'plains' | 'forest' | 'jungle' | 'hills' | 'mountain';
@@ -383,11 +382,35 @@ function adjacentMountains(tilesByKey: Map<string, Tile>, a: Axial) {
 /** Neutral creep camp: a demon-beast pack guarding a war-totem fire pit, ringed by a
  *  crooked palisade. Creeps idle-breathe, the fire flickers, and higher-level packs
  *  are visibly bulkier. Each creep keeps its HP bar; the camp keeps its level tag. */
-function CreepCampMesh({ camp, size }: { camp: CreepCamp; size: number }) {
+// Species pool for creep-camp critters, in a stable order so the per-creep hash pick
+// below stays deterministic across renders. Most are rigged FBX (played through
+// FbxAnimatedTexturedProp); the elephant is a static glTF (no animation clip) so it's
+// tagged separately and rendered through GltfRawProp instead — CreepBody below picks
+// the right loader per entry.
+type CreepSpeciesEntry = { kind: 'fbx'; url: string } | { kind: 'gltf'; url: string };
+const CREEP_SPECIES: CreepSpeciesEntry[] = [
+  ...Object.values(CREEP_ASSETS).map(url => ({ kind: 'fbx' as const, url })),
+  { kind: 'gltf' as const, url: ELEPHANT_ASSET },
+];
+
+/** Renders one creep-camp critter body, picking the loader that matches its export
+ *  format (animated FBX vs. static glTF) — shared by both the combat creeps and the
+ *  purely-cosmetic ambient wildlife below. */
+function CreepBody({ species, size }: { species: CreepSpeciesEntry; size: number }) {
+  // The elephant (the only static glTF entry) renders at 2x the shared per-species
+  // footprint size so it actually reads as the biggest animal in camp, not uniformly
+  // sized like the rest of the pool.
+  return species.kind === 'gltf'
+    ? <GltfRawProp url={species.url} size={size * 2} />
+    : <FbxAnimatedTexturedProp url={species.url} tex={CREEP_TEX} size={size} />;
+}
+
+function CreepCampMesh({ camp, size, terrain }: { camp: CreepCamp; size: number; terrain?: string }) {
   const alive = camp.creeps.filter(c => c.hp > 0);
   const breatheRefs = React.useRef<(THREE.Group | null)[]>([]);
   const flameRef = React.useRef<THREE.Mesh>(null);
   const emberRef = React.useRef<THREE.Mesh>(null);
+  const isFortify = camp.kind === 'fortify';
   useFrame(({ clock }) => {
     const t = clock.getElapsedTime();
     breatheRefs.current.forEach((g, i) => {
@@ -398,42 +421,147 @@ function CreepCampMesh({ camp, size }: { camp: CreepCamp; size: number }) {
     if (flameRef.current) { const s = 1 + Math.sin(t * 7) * 0.18; flameRef.current.scale.set(s, s + Math.sin(t * 9) * 0.12, s); }
     if (emberRef.current) (emberRef.current.material as THREE.MeshBasicMaterial).opacity = 0.45 + Math.sin(t * 5) * 0.25;
   });
+  // Spread the camp's dressing across its own tile PLUS two neighbor tiles (opposite
+  // sides of the hex, picked deterministically from the camp's key) instead of cramming
+  // everything onto one hex — reads as a small compound and fills the 3-tile clearing
+  // decoBlockedKeys already keeps free around every camp. Offsets are in LOCAL space
+  // since the caller already anchors this group at the camp's own tile center.
+  const [satA, satB] = React.useMemo(() => {
+    const nbrs = axialNeighbors({ q: camp.q, r: camp.r });
+    const idxA = enemyHash(camp.key) % 6;
+    const idxB = (idxA + 3) % 6; // opposite side of the hex ring → spreads instead of clumping
+    const center = axialToWorld({ q: camp.q, r: camp.r }, size);
+    const wA = axialToWorld(nbrs[idxA], size);
+    const wB = axialToWorld(nbrs[idxB], size);
+    return [
+      [wA.x - center.x, wA.z - center.z] as [number, number],
+      [wB.x - center.x, wB.z - center.z] as [number, number],
+    ];
+  }, [camp.key, camp.q, camp.r, size]);
   if (!alive.length) return null;
   const cs = size * (0.3 + Math.min(0.072, camp.level * 0.012)); // higher-level packs are bulkier
   const spikes = 8;
+  // Camp footprint widened to read as ~2 tiles across (ground, palisade ring and the
+  // creep spawn ring all pushed outward) instead of clustering inside one hex — the
+  // satA/satB dressing above already reaches into neighbor tiles, this just makes the
+  // core camp itself feel that size too.
+  const campR = size * 1.6;
+  // A couple of purely-cosmetic ambient critters (not combat creeps — no HP bar, don't
+  // despawn as the camp's real creeps die) grazing at the edge of the widened footprint,
+  // picked from the same species pool as the combat creeps for variety.
+  const ambient = React.useMemo(() => (
+    [0, 1].map(i => ({
+      species: CREEP_SPECIES[enemyHash(`${camp.key}:amb:${i}`) % CREEP_SPECIES.length],
+      a: (enemyHash(`${camp.key}:amb-a:${i}`) % 360) * (Math.PI / 180),
+      r: campR * (0.62 + 0.18 * (enemyHash(`${camp.key}:amb-r:${i}`) % 100) / 100),
+    }))
+  ), [camp.key, campR]);
   return (
     <group>
       {/* scorched ground */}
-      <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, 0.015, 0]}><circleGeometry args={[size * 0.72, 12]} /><meshStandardMaterial color="#241a16" roughness={1} transparent opacity={0.85} /></mesh>
-      {/* crooked palisade ring (gap left at the front) */}
+      <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, 0.015, 0]}><circleGeometry args={[campR, 12]} /><meshStandardMaterial color="#241a16" roughness={1} transparent opacity={0.85} /></mesh>
+      {/* crooked palisade ring (gap left at the front) — modeled anti-obstacle props
+          (hedgehog spikes alternating with barrier fencing) from the military pack,
+          instead of plain procedural cones; fortify camps tint the hedgehogs steel-grey
+          and stand taller, raid camps keep them at natural scrap-metal size. */}
       {Array.from({ length: spikes }, (_, i) => {
         const a = (i / spikes) * Math.PI * 2 + Math.PI / spikes;
+        const px = Math.cos(a) * campR * 0.92, pz = Math.sin(a) * campR * 0.92;
         const lean = 0.28 + (i % 3) * 0.08;
-        const h = size * (0.42 + (i % 2) * 0.16);
+        const h = size * (0.42 + (i % 2) * 0.16) * (isFortify ? 1.2 : 1);
+        const useHedgehog = i % 2 === 0;
         return (
-          <mesh key={`spk${i}`} position={[Math.cos(a) * size * 0.66, h * 0.4, Math.sin(a) * size * 0.66]}
-            rotation={[Math.sin(a) * lean, 0, -Math.cos(a) * lean]} castShadow>
-            <coneGeometry args={[size * 0.05, h, 4]} /><meshStandardMaterial color="#221410" roughness={0.95} flatShading />
-          </mesh>
+          <Suspense key={`spk${i}`} fallback={
+            <mesh position={[px, h * 0.4, pz]} rotation={[Math.sin(a) * lean, 0, -Math.cos(a) * lean]} castShadow>
+              <coneGeometry args={[size * (isFortify ? 0.065 : 0.05), h, isFortify ? 6 : 4]} /><meshStandardMaterial color={isFortify ? '#3a3f42' : '#221410'} roughness={0.95} flatShading />
+            </mesh>
+          }>
+            <group position={[px, 0, pz]} rotation={[0, a, 0]}>
+              {useHedgehog ? (
+                <FbxProp url={MILITARY_ASSETS.hedgehog} tex={MILITARY_TEX} size={size * (isFortify ? 0.42 : 0.32)} tint={isFortify ? '#3a3f42' : undefined} />
+              ) : (
+                <FbxProp url={MILITARY_ASSETS.barriers[isFortify ? 0 : 1]} tex={MILITARY_TEX} size={size * (isFortify ? 0.5 : 0.4)} />
+              )}
+            </group>
+          </Suspense>
         );
       })}
-      {/* central fire pit: stone ring + flickering flame + ember glow */}
-      {[0, 1, 2, 3, 4].map(i => { const a = (i / 5) * Math.PI * 2; return (
-        <mesh key={`st${i}`} position={[Math.cos(a) * size * 0.14, size * 0.035, Math.sin(a) * size * 0.14]}><dodecahedronGeometry args={[size * 0.05, 0]} /><meshStandardMaterial color="#453f38" roughness={1} flatShading /></mesh>
-      ); })}
+      {/* central fire pit — the modeled FBX campfire (logs + stones baked in), same prop
+          the refugee camp uses, replacing the old procedural stone-ring; the flickering
+          flame cone + ember glow stay separate synthetic meshes so they keep animating
+          regardless of load state. */}
+      <Suspense fallback={
+        [0, 1, 2, 3, 4].map(i => { const a = (i / 5) * Math.PI * 2; return (
+          <mesh key={`st${i}`} position={[Math.cos(a) * size * 0.14, size * 0.035, Math.sin(a) * size * 0.14]}><dodecahedronGeometry args={[size * 0.05, 0]} /><meshStandardMaterial color="#453f38" roughness={1} flatShading /></mesh>
+        ); })
+      }>
+        <FbxPbrProp url={PBR_PROP_ASSETS.campfire} tex={PBR_PROP_TEX.campfire} size={size * 0.5} />
+      </Suspense>
       <mesh ref={flameRef} position={[0, size * 0.16, 0]}><coneGeometry args={[size * 0.08, size * 0.26, 6]} /><meshBasicMaterial color="#ff6a2c" /></mesh>
       <mesh ref={emberRef} rotation={[-Math.PI / 2, 0, 0]} position={[0, 0.03, 0]}><circleGeometry args={[size * 0.2, 10]} /><meshBasicMaterial color="#ff4a1c" transparent opacity={0.5} /></mesh>
-      {/* war totem behind the fire */}
+      {/* war totem behind the fire — fortify totems read as steel/cyan watch-idols, raid
+          totems keep the blood-red skull-and-banner look. */}
       <group position={[-size * 0.3, 0, -size * 0.28]}>
-        <mesh position={[0, size * 0.42, 0]} castShadow><cylinderGeometry args={[size * 0.045, size * 0.06, size * 0.84, 5]} /><meshStandardMaterial color="#2e1c14" roughness={0.95} flatShading /></mesh>
+        <mesh position={[0, size * 0.42, 0]} castShadow><cylinderGeometry args={[size * 0.045, size * 0.06, size * 0.84, 5]} /><meshStandardMaterial color={isFortify ? '#3a3f42' : '#2e1c14'} roughness={0.95} flatShading /></mesh>
         <mesh position={[0, size * 0.88, 0]} castShadow><icosahedronGeometry args={[size * 0.11, 0]} /><meshStandardMaterial color="#d8ccb0" roughness={0.8} flatShading /></mesh>
         {[0.06, -0.06].map((ex, ei) => (
-          <mesh key={ei} position={[size * ex, size * 0.9, size * 0.09]}><sphereGeometry args={[size * 0.02, 5, 5]} /><meshBasicMaterial color="#ff3b3b" /></mesh>
+          <mesh key={ei} position={[size * ex, size * 0.9, size * 0.09]}><sphereGeometry args={[size * 0.02, 5, 5]} /><meshBasicMaterial color={isFortify ? '#7ad9ff' : '#ff3b3b'} /></mesh>
         ))}
         {[[0.1, -0.5], [-0.1, 0.5]].map(([hx, rz], hi) => (
           <mesh key={`th${hi}`} position={[size * hx, size * 1.0, 0]} rotation={[0, 0, rz]} castShadow><coneGeometry args={[size * 0.025, size * 0.16, 4]} /><meshStandardMaterial color="#2a0e16" roughness={0.85} flatShading /></mesh>
         ))}
-        <mesh position={[0, size * 0.62, size * 0.02]}><boxGeometry args={[size * 0.14, size * 0.24, size * 0.015]} /><meshStandardMaterial color="#7a1420" emissive="#5a0a10" emissiveIntensity={0.4} roughness={0.8} side={THREE.DoubleSide} flatShading /></mesh>
+        <mesh position={[0, size * 0.62, size * 0.02]}><boxGeometry args={[size * 0.14, size * 0.24, size * 0.015]} /><meshStandardMaterial color={isFortify ? '#33424a' : '#7a1420'} emissive={isFortify ? '#1a2a30' : '#5a0a10'} emissiveIntensity={0.4} roughness={0.8} side={THREE.DoubleSide} flatShading /></mesh>
+      </group>
+      {/* satellite A (opposite side of the hex ring, on a neighbor tile) — fortify camps
+          get a stone watchtower; raid camps get a leaning banner pole, both reading as
+          camp dressing spread across the wider 3-tile clearing instead of one hex. */}
+      <group position={[satA[0], 0, satA[1]]}>
+        {isFortify ? (
+          <Suspense fallback={<>
+            <mesh position={[0, size * 0.5, 0]} castShadow><cylinderGeometry args={[size * 0.16, size * 0.2, size * 1.0, 6]} /><meshStandardMaterial color="#3a3f42" roughness={0.9} flatShading /></mesh>
+            <mesh position={[0, size * 1.05, 0]} castShadow><boxGeometry args={[size * 0.5, size * 0.12, size * 0.5]} /><meshStandardMaterial color="#2a2d2f" roughness={0.85} flatShading /></mesh>
+          </>}>
+            <FbxProp url={MILITARY_ASSETS.tower} tex={MILITARY_TEX} size={size * 1.3} tint="#3a3f42" />
+          </Suspense>
+        ) : (
+          <>
+            <mesh rotation={[0, 0, 0.18]} position={[0, size * 0.5, 0]} castShadow><cylinderGeometry args={[size * 0.03, size * 0.045, size * 1.0, 5]} /><meshStandardMaterial color="#241410" roughness={0.9} flatShading /></mesh>
+            <mesh position={[size * 0.14, size * 0.86, 0]} rotation={[0, 0, 0.18]}><planeGeometry args={[size * 0.32, size * 0.22]} /><meshStandardMaterial color="#7a1420" emissive="#4a0a10" emissiveIntensity={0.5} side={THREE.DoubleSide} roughness={0.9} /></mesh>
+          </>
+        )}
+      </group>
+      {/* desert/hills camps dress with the mining pack — ore, crates, a lantern —
+          reading as a prospector's dig instead of the generic forest war-camp. */}
+      {(terrain === 'desert' || terrain === 'hills') && (
+        <Suspense fallback={null}>
+          <group position={[size * 0.5, 0, -size * 0.18]}><FbxRawProp url={MINING_ASSETS.rockMoss} tint="#8a7350" size={size * 0.5} rotation={0.4} /></group>
+          <group position={[-size * 0.5, 0, size * 0.4]}><FbxRawProp url={MINING_ASSETS.crateWooden} tint="#7a5a34" size={size * 0.4} rotation={-0.3} /></group>
+          <group position={[size * 0.36, 0, size * 0.42]}><FbxRawProp url={MINING_ASSETS.lantern} tint="#e8c04a" size={size * 0.28} rotation={0.8} /></group>
+        </Suspense>
+      )}
+      {/* satellite B (the ring's opposite-facing neighbor) — fortify camps stack a
+          sandbag/stone barricade; raid camps pile plunder crates + a stolen-loot glow.
+          The bone pile always sits close to the fire pit (unchanged). */}
+      <group position={[satB[0], 0, satB[1]]}>
+        {isFortify ? (
+          <Suspense fallback={[0, 1, 2].map(i => (
+            <mesh key={i} position={[size * (i - 1) * 0.24, size * 0.08, 0]} castShadow><boxGeometry args={[size * 0.26, size * 0.16, size * 0.2]} /><meshStandardMaterial color="#6b5d45" roughness={1} flatShading /></mesh>
+          ))}>
+            <group position={[-size * 0.24, 0, 0]} rotation={[0, 0.3, 0]}><FbxProp url={MILITARY_ASSETS.barriers[0]} tex={MILITARY_TEX} size={size * 0.55} /></group>
+            <group position={[size * 0.24, 0, 0]} rotation={[0, -0.3, 0]}><FbxProp url={MILITARY_ASSETS.barriers[1]} tex={MILITARY_TEX} size={size * 0.5} /></group>
+          </Suspense>
+        ) : (
+          <>
+            <Suspense fallback={<>
+              <mesh position={[0, size * 0.09, 0]} rotation={[0, 0.4, 0]} castShadow><boxGeometry args={[size * 0.28, size * 0.18, size * 0.28]} /><meshStandardMaterial color="#4a3620" roughness={0.9} flatShading /></mesh>
+              <mesh position={[size * 0.22, size * 0.07, size * 0.12]} rotation={[0, -0.3, 0]} castShadow><boxGeometry args={[size * 0.2, size * 0.14, size * 0.2]} /><meshStandardMaterial color="#5a4128" roughness={0.9} flatShading /></mesh>
+            </>}>
+              <group position={[0, 0, 0]} rotation={[0, 0.4, 0]}><FbxPbrProp url={PBR_PROP_ASSETS.crateXBrace} tex={PBR_PROP_TEX.crateXBrace} size={size * 0.42} /></group>
+              <group position={[size * 0.22, 0, size * 0.12]} rotation={[0, -0.3, 0]}><FbxPbrProp url={PBR_PROP_ASSETS.crateXBrace} tex={PBR_PROP_TEX.crateXBrace} size={size * 0.32} /></group>
+            </Suspense>
+            <mesh position={[0, size * 0.22, 0]}><octahedronGeometry args={[size * 0.05, 0]} /><meshStandardMaterial color="#ffd24a" emissive="#c9962e" emissiveIntensity={0.6} flatShading /></mesh>
+          </>
+        )}
       </group>
       {/* bone pile */}
       <group position={[size * 0.34, 0, size * 0.3]}>
@@ -443,59 +571,21 @@ function CreepCampMesh({ camp, size }: { camp: CreepCamp; size: number }) {
       </group>
       {alive.map((c, i) => {
         const ang = (i / alive.length) * Math.PI * 2;
-        const rad = alive.length > 1 ? size * 0.46 : size * 0.2;
+        const rad = alive.length > 1 ? campR * 0.5 : campR * 0.22;
         const x = Math.cos(ang) * rad, z = Math.sin(ang) * rad;
         const hpPct = Math.max(0, c.hp / c.maxHp);
+        // Each creep is a real Africa-plausible critter FBX (rigged + its own baked
+        // AnimStack clip) instead of the old procedural cyber-demon body — species picked
+        // deterministically per creep so a camp shows a mix, not one clone repeated.
+        const species = CREEP_SPECIES[enemyHash(`${camp.key}:${c.id}`) % CREEP_SPECIES.length];
         return (
           <group key={c.id} position={[x, 0, z]} rotation={[0, ang, 0]}>
             <group ref={el => { breatheRefs.current[i] = el; }}>
-            {/* Lower body / haunches */}
-            <mesh position={[0, cs * 0.6, -cs * 0.08]} castShadow><dodecahedronGeometry args={[cs * 0.5, 0]} /><meshStandardMaterial color="#47182a" roughness={0.8} flatShading /></mesh>
-            {/* Chest / torso */}
-            <mesh position={[0, cs * 0.98, 0]} castShadow>
-              <icosahedronGeometry args={[cs * 0.66, 0]} />
-              <meshStandardMaterial color="#5a2233" roughness={0.7} emissive="#3a0d18" emissiveIntensity={0.35} flatShading />
-            </mesh>
-            {/* Cyber shoulder plates */}
-            {[0.5, -0.5].map((px, pi) => (
-              <mesh key={pi} position={[cs * px, cs * 1.15, -cs * 0.05]} rotation={[0, 0, px > 0 ? -0.4 : 0.4]} castShadow><octahedronGeometry args={[cs * 0.24, 0]} /><meshStandardMaterial color="#241018" metalness={0.5} roughness={0.5} flatShading /></mesh>
-            ))}
-            {/* Head + snout/maw */}
-            <mesh position={[0, cs * 1.28, cs * 0.12]} castShadow><icosahedronGeometry args={[cs * 0.34, 0]} /><meshStandardMaterial color="#4a1c2b" roughness={0.7} flatShading /></mesh>
-            <mesh position={[0, cs * 1.16, cs * 0.4]} rotation={[0.5, 0, 0]} castShadow><coneGeometry args={[cs * 0.2, cs * 0.4, 6]} /><meshStandardMaterial color="#3a1622" roughness={0.75} flatShading /></mesh>
-            {/* Fangs */}
-            {[0.09, -0.09].map((fx, fi) => (
-              <mesh key={fi} position={[cs * fx, cs * 1.02, cs * 0.5]} rotation={[Math.PI, 0, 0]}><coneGeometry args={[cs * 0.04, cs * 0.16, 4]} /><meshStandardMaterial color="#e8dcc0" flatShading /></mesh>
-            ))}
-            {/* Glowing eyes */}
-            <mesh position={[cs * 0.16, cs * 1.34, cs * 0.36]}><sphereGeometry args={[cs * 0.09, 8, 8]} /><meshBasicMaterial color="#ff3b3b" /></mesh>
-            <mesh position={[-cs * 0.16, cs * 1.34, cs * 0.36]}><sphereGeometry args={[cs * 0.09, 8, 8]} /><meshBasicMaterial color="#ff3b3b" /></mesh>
-            {/* Horns (paired, swept) */}
-            {[[0.32, -0.5], [-0.32, 0.5]].map(([hx, rz], hi) => (
-              <mesh key={hi} position={[cs * hx, cs * 1.55, -cs * 0.05]} rotation={[-0.3, 0, rz]} castShadow><coneGeometry args={[cs * 0.11, cs * 0.52, 6]} /><meshStandardMaterial color="#2a0e16" roughness={0.8} flatShading /></mesh>
-            ))}
-            {/* Glowing cyber spine implants */}
-            {[0.45, 0.7, 0.95].map((sy, si) => (
-              <mesh key={si} position={[0, cs * sy, -cs * 0.42]}><octahedronGeometry args={[cs * (0.12 - si * 0.015), 0]} /><meshStandardMaterial color="#ff5a3c" emissive="#ff2a10" emissiveIntensity={0.9} flatShading /></mesh>
-            ))}
-            {/* Tail */}
-            <mesh position={[0, cs * 0.5, -cs * 0.6]} rotation={[0.8, 0, 0]} castShadow><coneGeometry args={[cs * 0.14, cs * 0.7, 6]} /><meshStandardMaterial color="#3a1622" roughness={0.85} flatShading /></mesh>
-            {/* Clawed arms — upper + forearm + claws */}
-            {[0.62, -0.62].map((ax, ai) => (
-              <group key={ai} position={[cs * ax, cs * 0.85, cs * 0.1]} rotation={[0, 0, ax > 0 ? -0.9 : 0.9]}>
-                <mesh castShadow><cylinderGeometry args={[cs * 0.09, cs * 0.11, cs * 0.6, 6]} /><meshStandardMaterial color="#4a1c2b" roughness={0.75} flatShading /></mesh>
-                {[-0.08, 0, 0.08].map((clx, ci) => (
-                  <mesh key={ci} position={[cs * clx, -cs * 0.42, cs * 0.06]} rotation={[0.4, 0, 0]}><coneGeometry args={[cs * 0.03, cs * 0.2, 4]} /><meshStandardMaterial color="#d8ccb0" flatShading /></mesh>
-                ))}
-              </group>
-            ))}
-            {/* Legs — thigh + clawed foot */}
-            {[0.26, -0.26].map((lx, li) => (
-              <group key={li} position={[cs * lx, 0, 0]}>
-                <mesh position={[0, cs * 0.32, 0]} castShadow><cylinderGeometry args={[cs * 0.1, cs * 0.12, cs * 0.6, 6]} /><meshStandardMaterial color="#3a1622" roughness={0.8} flatShading /></mesh>
-                <mesh position={[0, cs * 0.04, cs * 0.08]} castShadow><boxGeometry args={[cs * 0.2, cs * 0.1, cs * 0.3]} /><meshStandardMaterial color="#2a0e16" flatShading /></mesh>
-              </group>
-            ))}
+              <Suspense fallback={
+                <mesh position={[0, cs * 0.5, 0]}><icosahedronGeometry args={[cs * 0.5, 0]} /><meshStandardMaterial color="#47182a" roughness={0.8} flatShading /></mesh>
+              }>
+                <CreepBody species={species} size={cs * 1.7} />
+              </Suspense>
             </group>
             {/* HP bar (outside the breathing group so it stays steady) */}
             <mesh position={[0, cs * 1.95, 0]}><boxGeometry args={[cs * 1.2, cs * 0.16, cs * 0.05]} /><meshBasicMaterial color="#300000" /></mesh>
@@ -503,7 +593,16 @@ function CreepCampMesh({ camp, size }: { camp: CreepCamp; size: number }) {
           </group>
         );
       })}
-      <Text position={[0, cs * 2.7, 0]} fontSize={size * 0.3} color="#ff9a9a" anchorX="center" anchorY="middle" outlineWidth={size * 0.02} outlineColor="#000">Lv {camp.level}  ⚔️{camp.dmgPerCreep}</Text>
+      {/* ambient wildlife — purely cosmetic critters grazing at the edge of the widened
+          camp footprint (no HP bar, don't despawn with the actual creeps) for atmosphere. */}
+      {ambient.map((am, i) => (
+        <Suspense key={`amb${i}`} fallback={null}>
+          <group position={[Math.cos(am.a) * am.r, 0, Math.sin(am.a) * am.r]} rotation={[0, am.a + Math.PI, 0]}>
+            <CreepBody species={am.species} size={cs * 1.3} />
+          </group>
+        </Suspense>
+      ))}
+      <Text position={[0, cs * 2.7, 0]} fontSize={size * 0.3} color="#ff9a9a" anchorX="center" anchorY="middle" outlineWidth={size * 0.02} outlineColor="#000">{isFortify ? '🏰' : '🔥'} Lv {camp.level}  ⚔️{camp.dmgPerCreep}</Text>
     </group>
   );
 }
@@ -539,18 +638,32 @@ function enemyHash(id: string): number {
 function EnemyUnitMesh({ enemy, size, target }: { enemy: FactionEnemy; size: number; target: [number, number, number] }) {
   const ref = React.useRef<THREE.Group>(null);
   const snapped = React.useRef(false);
+  // Last derived heading — kept across frames so the unit still faces its most recent
+  // travel direction while idling/guarding between discrete AI ticks, instead of
+  // reverting to a default +Z facing the moment it stops moving.
+  const facingRef = React.useRef(0);
   useFrame((_, delta) => {
     const g = ref.current; if (!g) return;
     if (!snapped.current) { g.position.set(target[0], target[1], target[2]); snapped.current = true; return; }
     // Frame-rate-independent lerp (was a flat 0.2-per-frame step, which converged twice
     // as fast in real time on a 120Hz display as on 60Hz — same decay curve either way now).
     const k = 1 - Math.exp(-13.4 * Math.min(0.05, delta));
-    g.position.x += (target[0] - g.position.x) * k;
-    g.position.y += (target[1] - g.position.y) * k;
-    g.position.z += (target[2] - g.position.z) * k;
-    // Face the direction of travel (the whole unit — character + overlays — rotates).
+    // Derive the travel direction from the CURRENT position (before this frame's step)
+    // so it reflects where the unit is actually headed this frame.
     const dx = target[0] - g.position.x, dz = target[2] - g.position.z;
-    if (dx * dx + dz * dz > 1e-4) g.rotation.y = Math.atan2(dx, dz);
+    // +Math.PI: the character model's front faces -Z at rotation.y=0, opposite the
+    // atan2(dx,dz) "facing +Z" convention used elsewhere (hero/RemoteMobaHero) — without
+    // this offset the unit walks backwards-facing.
+    if (dx * dx + dz * dz > 1e-6) facingRef.current = Math.atan2(dx, dz) + Math.PI;
+    g.position.x += dx * k;
+    g.position.y += (target[1] - g.position.y) * k;
+    g.position.z += dz * k;
+    // Smoothly turn the whole unit (character + overlays) toward its derived heading —
+    // shortest-path angle interpolation (same convention as RemoteMobaHero) instead of
+    // an instant snap, so the turn itself is visible rather than a hard pop.
+    let da = ((facingRef.current - g.rotation.y + Math.PI) % (Math.PI * 2)) - Math.PI;
+    if (da < -Math.PI) da += Math.PI * 2;
+    g.rotation.y += da * Math.min(1, k * 1.6);
   });
   const doc = DOCTRINE[enemy.faction];
   const boss = enemy.role === 'boss';
@@ -573,18 +686,31 @@ function EnemyUnitMesh({ enemy, size, target }: { enemy: FactionEnemy; size: num
 
   return (
     <group ref={ref} frustumCulled={false}>
-      {/* Chibi character body (same rig/style as the hero), faction-tinted + kitted.
-          facingAngle is left undefined so it inherits this group's travel rotation. */}
-      <group scale={charScale} frustumCulled={false}>
-        <IsometricCharacter
-          gender={gender}
-          colors={ENEMY_FACTION_COLORS[enemy.faction]}
-          hexSize={size}
-          faction={enemy.faction}
-          isMoving={moving}
-          speedMult={speedMult}
-        />
-      </group>
+      {/* WC-faction grunts use the modeled wc_npc FBX (civilian-styled militia) instead
+          of the procedural chibi rig other factions use; falls back to the chibi while
+          the FBX/texture load. */}
+      {enemy.faction === 'WC' ? (
+        <Suspense fallback={
+          <group scale={charScale} frustumCulled={false}>
+            <IsometricCharacter gender={gender} colors={ENEMY_FACTION_COLORS[enemy.faction]} hexSize={size} faction={enemy.faction} isMoving={moving} speedMult={speedMult} />
+          </group>
+        }>
+          <FbxAnimatedTexturedProp url={WC_NPC_ASSET} tex={WC_NPC_TEX} size={targetH} playing={moving} tint={hunting ? '#ff8a6a' : undefined} />
+        </Suspense>
+      ) : (
+        /* Chibi character body (same rig/style as the hero), faction-tinted + kitted.
+           facingAngle is left undefined so it inherits this group's travel rotation. */
+        <group scale={charScale} frustumCulled={false}>
+          <IsometricCharacter
+            gender={gender}
+            colors={ENEMY_FACTION_COLORS[enemy.faction]}
+            hexSize={size}
+            faction={enemy.faction}
+            isMoving={moving}
+            speedMult={speedMult}
+          />
+        </group>
+      )}
 
       {/* Ground threat aura — doctrine-coloured, flares red while actively hunting. */}
       <mesh position={[0, 0.04, 0]} rotation={[-Math.PI / 2, 0, 0]} frustumCulled={false}>
@@ -705,6 +831,10 @@ function baseZoneRadiusFor(level: number) {
 }
 function baseZoneRingStartLevel(level: number) {
   return level >= 50 ? 50 : level >= 25 ? 25 : level >= 10 ? 10 : 1;
+}
+/** Level at which the NEXT ring-radius jump kicks in (Infinity once at the final ring). */
+function baseZoneRingNextLevel(level: number) {
+  return level >= 50 ? Infinity : level >= 25 ? 50 : level >= 10 ? 25 : 10;
 }
 
 /** Player base / command center — the hub the pet fetches from and terraforming ties
@@ -955,20 +1085,14 @@ function Terraformer({ size, progress, done }: { size: number; progress: number;
   );
 }
 
-/** Capturable outpost flag — grey when neutral, faction-colored when owned. */
+/** Capturable outpost — the watchtower + garrison props; faction-colored glow when owned. */
 function OutpostMarker({ size, owned, color }: { size: number; owned: boolean; color: string }) {
-  const flagRef = React.useRef<THREE.Mesh>(null);
-  useFrame(({ clock }) => { if (flagRef.current) flagRef.current.rotation.z = Math.sin(clock.getElapsedTime() * 2) * 0.08; });
   const S = size;
-  const banner = owned ? color : '#8a8f96';
   return (
     <group>
-      <mesh position={[0, S * 0.08, 0]} rotation={[0, Math.PI / 6, 0]}><cylinderGeometry args={[S * 0.55, S * 0.62, S * 0.16, 6]} /><meshStandardMaterial color="#33383f" roughness={0.85} flatShading /></mesh>
-      <mesh position={[0, S * 0.9, 0]} castShadow><cylinderGeometry args={[S * 0.04, S * 0.05, S * 1.6, 6]} /><meshStandardMaterial color="#555" metalness={0.4} /></mesh>
-      <mesh ref={flagRef} position={[S * 0.26, S * 1.45, 0]}><boxGeometry args={[S * 0.5, S * 0.34, S * 0.02]} /><meshStandardMaterial color={banner} emissive={owned ? color : '#000'} emissiveIntensity={owned ? 0.4 : 0} roughness={0.6} side={THREE.DoubleSide} /></mesh>
       {/* Garrison set-dressing from the military FBX pack: watchtower + barrier + tank trap */}
       <Suspense fallback={null}>
-        <group position={[-S * 0.55, 0, -S * 0.35]}><FbxProp url={MILITARY_ASSETS.tower} tex={MILITARY_TEX} size={S * 1.9} rotation={0.6} /></group>
+        <group position={[-S * 0.55, 0, -S * 0.35]}><FbxProp url={MILITARY_ASSETS.tower} tex={MILITARY_TEX} size={S * 1.9} rotation={0.6} tint={owned ? color : undefined} /></group>
         <group position={[S * 0.5, 0, S * 0.45]}><FbxProp url={MILITARY_ASSETS.barriers[0]} tex={MILITARY_TEX} size={S * 0.55} rotation={-0.4} /></group>
         <group position={[-S * 0.15, 0, S * 0.62]}><FbxProp url={MILITARY_ASSETS.hedgehog} tex={MILITARY_TEX} size={S * 0.3} rotation={0.9} /></group>
       </Suspense>
@@ -980,7 +1104,7 @@ function OutpostMarker({ size, owned, color }: { size: number; owned: boolean; c
 // Refugee camp — a friendly settlement (tents + campfire) that offers a
 // faction-specific side mission. Amber banner when the mission is open, green ✓ once
 // its aid mission is complete.
-function RefugeeCampMarker({ size, done, label, icon, mode, subtitle }: { size: number; done: boolean; label: string; icon: string; mode: 'aid' | 'loot'; subtitle?: string }) {
+function RefugeeCampMarker({ size, done, label, icon, mode, subtitle, showWcNpc }: { size: number; done: boolean; label: string; icon: string; mode: 'aid' | 'loot'; subtitle?: string; showWcNpc?: boolean }) {
   const fireRef = React.useRef<THREE.Mesh>(null);
   useFrame(({ clock }) => { if (fireRef.current) { const s = 1 + Math.sin(clock.getElapsedTime() * 6) * 0.15; fireRef.current.scale.set(s, s, s); } });
   const S = size;
@@ -1002,12 +1126,17 @@ function RefugeeCampMarker({ size, done, label, icon, mode, subtitle }: { size: 
       <mesh position={[0, S * 0.02, 0]}><cylinderGeometry args={[S * 0.46, S * 0.48, S * 0.04, 7]} /><meshStandardMaterial color="#2a2118" roughness={1} flatShading /></mesh>
     </group>
   );
-  // Stacked supply crate.
+  // Stacked supply crate — the modeled X-braced wooden crate (FBX) replaces this when
+  // loaded; the procedural boxes remain as the Suspense fallback.
   const crate = (x: number, z: number, col = '#8a6a3a') => (
-    <group position={[x, 0, z]}>
-      <mesh position={[0, S * 0.11, 0]} castShadow><boxGeometry args={[S * 0.24, S * 0.22, S * 0.24]} /><meshStandardMaterial color={col} roughness={0.85} flatShading /></mesh>
-      <mesh position={[0, S * 0.3, 0]} rotation={[0, 0.4, 0]} castShadow><boxGeometry args={[S * 0.18, S * 0.16, S * 0.18]} /><meshStandardMaterial color={col} roughness={0.85} flatShading /></mesh>
-    </group>
+    <Suspense fallback={
+      <group position={[x, 0, z]}>
+        <mesh position={[0, S * 0.11, 0]} castShadow><boxGeometry args={[S * 0.24, S * 0.22, S * 0.24]} /><meshStandardMaterial color={col} roughness={0.85} flatShading /></mesh>
+        <mesh position={[0, S * 0.3, 0]} rotation={[0, 0.4, 0]} castShadow><boxGeometry args={[S * 0.18, S * 0.16, S * 0.18]} /><meshStandardMaterial color={col} roughness={0.85} flatShading /></mesh>
+      </group>
+    }>
+      <group position={[x, 0, z]}><FbxPbrProp url={PBR_PROP_ASSETS.crateXBrace} tex={PBR_PROP_TEX.crateXBrace} size={S * 0.4} /></group>
+    </Suspense>
   );
   // Fuel/water barrel.
   const barrel = (x: number, z: number, col: string) => (
@@ -1016,7 +1145,8 @@ function RefugeeCampMarker({ size, done, label, icon, mode, subtitle }: { size: 
   return (
     <group>
       {/* Modeled army tents (FBX pack), tinted warm for aid camps / hostile for rival
-          camps; the procedural cone tents remain as the loading fallback. */}
+          camps; the procedural cone tents remain as the loading fallback. Aid camps get
+          a civilian yellow camping tent as their 3rd tent instead of a military one. */}
       <Suspense fallback={<>
         {tent(-S * 0.5, 0, Math.PI / 4, tents[0])}
         {tent(S * 0.55, S * 0.2, -Math.PI / 5, tents[1])}
@@ -1024,8 +1154,25 @@ function RefugeeCampMarker({ size, done, label, icon, mode, subtitle }: { size: 
       </>}>
         <group position={[-S * 0.5, 0, 0]}><FbxProp url={MILITARY_ASSETS.tents[0]} tex={MILITARY_TEX} size={S * 1.15} rotation={Math.PI / 4} tint={loot ? '#a05a44' : '#c8a878'} /></group>
         <group position={[S * 0.55, 0, S * 0.2]}><FbxProp url={MILITARY_ASSETS.tents[1]} tex={MILITARY_TEX} size={S * 0.95} rotation={-Math.PI / 5} tint={loot ? '#8a4030' : undefined} /></group>
-        <group position={[0, 0, -S * 0.6]}><FbxProp url={MILITARY_ASSETS.tents[0]} tex={MILITARY_TEX} size={S * 0.9} rotation={Math.PI / 3} tint={loot ? '#6a3a2a' : '#b89060'} /></group>
+        {loot ? (
+          <group position={[0, 0, -S * 0.6]}><FbxProp url={MILITARY_ASSETS.tents[0]} tex={MILITARY_TEX} size={S * 0.9} rotation={Math.PI / 3} tint={'#6a3a2a'} /></group>
+        ) : (
+          <group position={[0, 0, -S * 0.6]}><FbxPbrProp url={PBR_PROP_ASSETS.tentYellow} tex={PBR_PROP_TEX.tentYellow} size={S * 0.85} rotation={Math.PI / 3} /></group>
+        )}
       </Suspense>
+      {/* A rolled carpet outside the tents — civilian touch, aid camps only. */}
+      {!loot && (
+        <Suspense fallback={null}>
+          <group position={[-S * 0.15, 0, S * 0.15]}><FbxPbrProp url={PBR_PROP_ASSETS.carpet} tex={PBR_PROP_TEX.carpet} size={S * 0.55} rotation={0.3} /></group>
+        </Suspense>
+      )}
+      {/* WC-faction civilian NPC (only shown for WC players, for now) standing outside
+          an active aid camp — purely a decorative presence, no dialogue/logic yet. */}
+      {!loot && !done && showWcNpc && (
+        <Suspense fallback={null}>
+          <group position={[S * 0.3, 0, -S * 0.2]} rotation={[0, 0.6, 0]}><FbxAnimatedTexturedProp url={WC_NPC_ASSET} tex={WC_NPC_TEX} size={S * 1.1} playing /></group>
+        </Suspense>
+      )}
       {/* supplies scattered around the settlement */}
       {crate(S * 0.7, -S * 0.55, loot ? '#6a4030' : '#8a6a3a')}
       {barrel(-S * 0.72, -S * 0.4, loot ? '#5a2a22' : '#3a6a5a')}
@@ -1042,14 +1189,18 @@ function RefugeeCampMarker({ size, done, label, icon, mode, subtitle }: { size: 
           <mesh><boxGeometry args={[S * 0.12, S * 0.34, S * 0.06]} /><meshStandardMaterial color="#e8f4f0" emissive="#4fd6a0" emissiveIntensity={0.5} flatShading /></mesh>
         </group>
       )}
-      {/* campfire */}
-      <mesh position={[0, S * 0.06, S * 0.35]}><cylinderGeometry args={[S * 0.18, S * 0.22, S * 0.08, 8]} /><meshStandardMaterial color="#3a2a1e" roughness={1} flatShading /></mesh>
-      {/* stones ring */}
-      {[0, 1, 2, 3, 4].map(i => { const a = (i / 5) * Math.PI * 2; return (
-        <mesh key={i} position={[Math.cos(a) * S * 0.2, S * 0.05, S * 0.35 + Math.sin(a) * S * 0.2]}><dodecahedronGeometry args={[S * 0.05, 0]} /><meshStandardMaterial color="#555049" roughness={1} flatShading /></mesh>
-      ); })}
-      {/* logs */}
-      <mesh position={[0, S * 0.05, S * 0.35]} rotation={[Math.PI / 2, 0, 0.4]}><cylinderGeometry args={[S * 0.03, S * 0.03, S * 0.34, 5]} /><meshStandardMaterial color="#2a1c12" roughness={1} flatShading /></mesh>
+      {/* campfire — the modeled FBX (logs + stones baked in) replaces the procedural
+          base/stones/logs when loaded; the flickering flame cone stays separate so it
+          keeps animating regardless of load state. */}
+      <Suspense fallback={<>
+        <mesh position={[0, S * 0.06, S * 0.35]}><cylinderGeometry args={[S * 0.18, S * 0.22, S * 0.08, 8]} /><meshStandardMaterial color="#3a2a1e" roughness={1} flatShading /></mesh>
+        {[0, 1, 2, 3, 4].map(i => { const a = (i / 5) * Math.PI * 2; return (
+          <mesh key={i} position={[Math.cos(a) * S * 0.2, S * 0.05, S * 0.35 + Math.sin(a) * S * 0.2]}><dodecahedronGeometry args={[S * 0.05, 0]} /><meshStandardMaterial color="#555049" roughness={1} flatShading /></mesh>
+        ); })}
+        <mesh position={[0, S * 0.05, S * 0.35]} rotation={[Math.PI / 2, 0, 0.4]}><cylinderGeometry args={[S * 0.03, S * 0.03, S * 0.34, 5]} /><meshStandardMaterial color="#2a1c12" roughness={1} flatShading /></mesh>
+      </>}>
+        <group position={[0, 0, S * 0.35]}><FbxPbrProp url={PBR_PROP_ASSETS.campfire} tex={PBR_PROP_TEX.campfire} size={S * 0.7} /></group>
+      </Suspense>
       <mesh ref={fireRef} position={[0, S * 0.22, S * 0.35]}><coneGeometry args={[S * 0.1, S * 0.28, 6]} /><meshBasicMaterial color={flame} /></mesh>
       <Text position={[0, S * 1.8, 0]} fontSize={S * 0.3} color={titleCol} anchorX="center" anchorY="middle" outlineWidth={S * 0.03} outlineColor="#000">
         {done ? 'Camp Cleared ✓' : `${icon} ${label}`}
@@ -1126,13 +1277,12 @@ function tileColor(t: Tile) {
   return '#c9c6c0';
 }
 
-// All tiles same low height for flat prototype
-// Per-terrain tile heights — the map reads as relief instead of a flat carpet.
-// Mountains are impassable (tall is safe); water is player-impassable (sunken reads as
-// depth; the pet "swims" slightly lower when crossing). Walkable land stays in a gentle
-// 0.36–0.6 band and every actor anchors via tileTopAt(), so nothing floats or clips.
+// All tiles are the same flat height — terrain "reads" through what's placed ON TOP
+// (mountain massif/relief bump, forest trees, hills bumps, water waves) rather than the
+// flat hex slab itself being taller/shorter per type, which used to create visible
+// stepped cliffs between adjacent tiles of different terrain.
 const TILE_HEIGHT: Record<string, number> = {
-  water: 0.26, desert: 0.36, plains: 0.4, forest: 0.46, jungle: 0.5, hills: 0.6, mountain: 1.0,
+  water: 0.4, desert: 0.4, plains: 0.4, forest: 0.4, jungle: 0.4, hills: 0.4, mountain: 0.4,
 };
 function heightFor(t: Tile) { return TILE_HEIGHT[t.type] ?? 0.4; }
 
@@ -1406,6 +1556,12 @@ function ResourceProp({ type, size, seed = 1 }: { type: ResourceType; size: numb
           <octahedronGeometry args={[S * 0.26, 0]} />
           <meshStandardMaterial color="#b7c4d4" roughness={0.3} metalness={0.8} flatShading />
         </mesh>
+        {/* Extra mossy rock + gemstone glints from the mining prop pack, purely additive
+            set-dressing (own vertex-color materials, no fallback needed if still loading). */}
+        <Suspense fallback={null}>
+          <group position={[S * 0.4, 0, S * 0.32]}><FbxRawProp url={MINING_ASSETS.rockMoss} tint="#5b5f6b" size={S * 0.5} rotation={seed} /></group>
+          <group position={[-S * 0.38, 0, -S * 0.22]}><FbxRawProp url={MINING_ASSETS.gemGold} tint="#e8c04a" size={S * 0.24} rotation={seed * 1.7} /></group>
+        </Suspense>
       </group>
     );
   }
@@ -1427,20 +1583,17 @@ function ResourceProp({ type, size, seed = 1 }: { type: ResourceType; size: numb
       </group>
     );
   }
-  // bio
+  // bio — natural plant colors, no glow halo/emissive (matches the mushroom collectible's
+  // earlier de-glow fix; a leafy resource node doesn't need to look radioactive).
   return (
     <group position={[ox, 0, oz]} rotation={[0, seed, 0]}>
-      <mesh ref={glowRef} position={[0, S * 0.7, 0]}>
-        <sphereGeometry args={[S * 0.6, 10, 10]} />
-        <meshBasicMaterial color="#7CFF6B" transparent opacity={0.16} depthWrite={false} />
-      </mesh>
       <mesh castShadow position={[0, S * 0.55, 0]}>
         <icosahedronGeometry args={[S * 0.5, 0]} />
-        <meshStandardMaterial color="#3fa14a" emissive="#2e8b3a" emissiveIntensity={0.5} roughness={0.6} flatShading />
+        <meshStandardMaterial color="#3fa14a" roughness={0.7} flatShading />
       </mesh>
       <mesh position={[0, S * 0.95, 0]}>
         <icosahedronGeometry args={[S * 0.24, 0]} />
-        <meshStandardMaterial color="#8fe36b" emissive="#5fd44a" emissiveIntensity={0.7} roughness={0.5} flatShading />
+        <meshStandardMaterial color="#8fe36b" roughness={0.6} flatShading />
       </mesh>
     </group>
   );
@@ -1468,22 +1621,25 @@ const TREE_GREENS = ['#3f8f4e', '#4aa05c', '#5bb56a', '#357f45'];
 function FbxForest({ size, seed = 1 }: { size: number; seed?: number }) {
   const rng = useMemo(() => seededRand(seed), [seed]);
   const items = useMemo(() => {
-    const arr: Array<{ url: string; x: number; z: number; s: number; rot: number }> = [];
+    const arr: Array<{ url: string; tex: string; x: number; z: number; s: number; rot: number }> = [];
     const n = 3 + Math.floor(rng() * 2);
     for (let i = 0; i < n; i++) {
       const ang = rng() * Math.PI * 2, rad = (0.15 + rng() * 0.6) * size * 0.9;
       arr.push({
-        url: NATURE_ASSETS.trees[Math.floor(rng() * NATURE_ASSETS.trees.length)],
+        url: NATURE_ASSETS.trees[Math.floor(rng() * NATURE_ASSETS.trees.length)], tex: NATURE_TEX,
         x: Math.cos(ang) * rad, z: Math.sin(ang) * rad,
         s: size * (1.5 + rng() * 0.9), rot: rng() * Math.PI * 2,
       });
     }
     if (rng() > 0.45) {
       const ang = rng() * Math.PI * 2, rad = (0.4 + rng() * 0.4) * size * 0.9;
+      // Occasionally a fly-agaric mushroom instead of the usual stump/bush.
+      const pick = rng();
+      const url = pick > 0.72 ? MUSHROOM_ASSET : pick > 0.36 ? NATURE_ASSETS.stump : NATURE_ASSETS.bushes[Math.floor(rng() * NATURE_ASSETS.bushes.length)];
       arr.push({
-        url: rng() > 0.5 ? NATURE_ASSETS.stump : NATURE_ASSETS.bushes[Math.floor(rng() * NATURE_ASSETS.bushes.length)],
+        url, tex: url === MUSHROOM_ASSET ? MUSHROOM_TEX : NATURE_TEX,
         x: Math.cos(ang) * rad, z: Math.sin(ang) * rad,
-        s: size * (0.3 + rng() * 0.2), rot: rng() * Math.PI * 2,
+        s: size * (url === MUSHROOM_ASSET ? 0.22 + rng() * 0.1 : 0.3 + rng() * 0.2), rot: rng() * Math.PI * 2,
       });
     }
     return arr;
@@ -1492,7 +1648,7 @@ function FbxForest({ size, seed = 1 }: { size: number; seed?: number }) {
     <group>
       {items.map((it, i) => (
         <group key={i} position={[it.x, 0, it.z]}>
-          <FbxProp url={it.url} tex={NATURE_TEX} size={it.s} rotation={it.rot} />
+          <FbxProp url={it.url} tex={it.tex} size={it.s} rotation={it.rot} />
         </group>
       ))}
     </group>
@@ -1622,10 +1778,22 @@ function reliefFbm(x: number, z: number, seedZ: number, octaves = 4) {
   }
   return sum / norm; // ≈ [-1, 1]
 }
-/** Distance from center to the flat-top hex boundary at polar angle `a`. */
+/** Distance from center to the flat-top hex boundary at polar angle `a`. `HexTile`'s
+ *  base tile mesh is rotated 30° (`Math.PI/6`) so its VERTICES sit at 0°,60°,120°,...
+ *  and its FLAT EDGES face the neighbor directions (30°,90°,150°,...) — that's what
+ *  actually tiles edge-to-edge with no gaps. This must return the hex's shortest
+ *  reach (apothem) at those SAME edge-facing angles (30°,90°,...) and its longest
+ *  reach (full circumradius, the corner) at 0°,60°,... to match. A previous version
+ *  subtracted an extra `Math.PI/6` phase here, putting the corners at 30°,90°,...
+ *  instead — i.e. this relief mesh's own hex footprint was rotated 30° relative to
+ *  the tile beneath it, so its corners poked past the tile's real edge into the
+ *  NEXT tile (at 30°,90°,...) while falling short of the tile's actual corners (at
+ *  0°,60°,...). Visually that reads as "tiles meeting at a tip instead of an edge,
+ *  with a gap" — only affects RELIEF_SPECS terrain (mountain/hills/desert/plains),
+ *  since water/forest/jungle don't use hexReliefGeo. */
 function hexBoundaryR(a: number, R: number) {
   const sector = Math.PI / 3;
-  const d = ((((a - Math.PI / 6) % sector) + sector) % sector) - sector / 2;
+  const d = ((a % sector) + sector) % sector - sector / 2;
   return (R * Math.cos(Math.PI / 6)) / Math.cos(d);
 }
 type ReliefKind = 'mountain' | 'hills' | 'desert' | 'plains';
@@ -1999,130 +2167,34 @@ function CollectibleFlower({ size }: { size: number }) {
 // Collectible mushroom for forest tiles - restores EP
 function CollectibleMushroom({ size }: { size: number }) {
   const S = size * 0.7;
-  const glowRef = React.useRef<THREE.Mesh>(null);
-  useFrame(({ clock }) => {
-    const t = clock.getElapsedTime();
-    if (glowRef.current) {
-      (glowRef.current.material as any).emissiveIntensity = 0.8 + 0.5 * Math.sin(t * 2.5);
-    }
-  });
 
   return (
     <group>
-      {/* Pulsing blue glow halo at ground level */}
-      <mesh ref={glowRef} position={[0, S * 0.28, 0]} renderOrder={24}>
-        <sphereGeometry args={[S * 0.45, 10, 10]} />
-        <meshStandardMaterial
-          color="#00aaff"
-          emissive="#00aaff"
-          emissiveIntensity={1.0}
-          transparent
-          opacity={0.30}
-          depthWrite={false}
-          roughness={1}
-          metalness={0}
-        />
-      </mesh>
-      {/* Stem - sits on tile surface, center at half stem height */}
-      <mesh position={[0, S * 0.18, 0]} renderOrder={25}>
-        <cylinderGeometry args={[S * 0.06, S * 0.08, S * 0.36, 7]} />
-        <meshStandardMaterial
-          color="#aaddff"
-          emissive="#66bbff"
-          emissiveIntensity={0.6}
-          roughness={0.4}
-          metalness={0.1}
-        />
-      </mesh>
-      {/* Cap - vivid blue dome sitting on top of stem */}
-      <mesh position={[0, S * 0.44, 0]} renderOrder={25}>
-        <sphereGeometry args={[S * 0.24, 10, 7, 0, Math.PI * 2, 0, Math.PI * 0.6]} />
-        <meshStandardMaterial
-          color="#0066ff"
-          emissive="#0044cc"
-          emissiveIntensity={0.8}
-          roughness={0.3}
-          metalness={0.2}
-        />
-      </mesh>
+      {/* Mushroom body — the modeled fly-agaric FBX, natural texture colors (no tint).
+          Procedural cone+sphere stand-in only while the model/texture are loading. */}
+      <Suspense fallback={
+        <>
+          <mesh position={[0, S * 0.18, 0]} renderOrder={25}><cylinderGeometry args={[S * 0.06, S * 0.08, S * 0.36, 7]} /><meshStandardMaterial color="#e8dcc0" roughness={0.6} /></mesh>
+          <mesh position={[0, S * 0.44, 0]} renderOrder={25}><sphereGeometry args={[S * 0.24, 10, 7, 0, Math.PI * 2, 0, Math.PI * 0.6]} /><meshStandardMaterial color="#c8342a" roughness={0.5} /></mesh>
+        </>
+      }>
+        <group renderOrder={25}><FbxProp url={MUSHROOM_ASSET} tex={MUSHROOM_TEX} size={S * 0.9} /></group>
+      </Suspense>
       {/* White spots on cap */}
       {Array.from({ length: 5 }).map((_, i) => {
         const angle = (i / 5) * Math.PI * 2;
         return (
           <mesh key={`spot-${i}`} position={[Math.cos(angle) * S * 0.12, S * 0.48, Math.sin(angle) * S * 0.12]} renderOrder={26}>
             <sphereGeometry args={[S * 0.04, 5, 4]} />
-            <meshStandardMaterial color="#ffffff" emissive="#aaddff" emissiveIntensity={1.0} roughness={0.2} metalness={0} />
+            <meshStandardMaterial color="#ffffff" roughness={0.4} />
           </mesh>
         );
       })}
-      {/* Companion mushrooms — a small cluster reads richer than a lone cap */}
+      {/* Companion mushrooms — small FBX clones read richer than a lone cap */}
       {[{ x: S * 0.3, z: S * 0.12, s: 0.55 }, { x: -S * 0.26, z: -S * 0.16, s: 0.42 }].map((m, i) => (
-        <group key={`mini-${i}`} position={[m.x, 0, m.z]} renderOrder={25}>
-          <mesh position={[0, S * 0.12 * m.s, 0]}><cylinderGeometry args={[S * 0.04 * m.s, S * 0.055 * m.s, S * 0.24 * m.s, 6]} /><meshStandardMaterial color="#aaddff" emissive="#66bbff" emissiveIntensity={0.5} roughness={0.4} metalness={0.1} /></mesh>
-          <mesh position={[0, S * 0.28 * m.s, 0]}><sphereGeometry args={[S * 0.15 * m.s, 8, 6, 0, Math.PI * 2, 0, Math.PI * 0.6]} /><meshStandardMaterial color="#0066ff" emissive="#0044cc" emissiveIntensity={0.7} roughness={0.3} metalness={0.2} /></mesh>
-        </group>
-      ))}
-      {/* Glowing spores drifting up */}
-      {[0, 1, 2].map(i => (
-        <mesh key={`spore-${i}`} position={[Math.cos(i * 2.1) * S * 0.2, S * (0.6 + i * 0.14), Math.sin(i * 2.1) * S * 0.2]}>
-          <sphereGeometry args={[S * 0.025, 5, 4]} />
-          <meshBasicMaterial color="#bfe9ff" transparent opacity={0.7} />
-        </mesh>
-      ))}
-    </group>
-  );
-}
-
-function DesertDunes({ size, seed = 1 }: { size: number; seed?: number }) {
-  const rng = useMemo(() => seededRand(seed), [seed]);
-  const ap = hexApothem(size);
-  // Desert reads as SAND: low, wide, smooth wind-swept dunes (much flatter than the
-  // grassy hill knolls), sandy-coloured to match the tile, with ripple lines and small
-  // sand pebbles — no grass, no tall mounds.
-  const dunes = useMemo(() => {
-    const n = 2 + Math.floor(rng() * 2); // 2–3 dunes
-    const arr: Array<{ x:number; z:number; r:number; flat:number; rot:number; light:boolean }> = [];
-    for (let i = 0; i < n; i++) {
-      const ang = rng() * Math.PI * 2;
-      const rad = rng() * ap * 0.4;
-      const r = ap * (0.42 + rng() * 0.34);               // wider
-      arr.push({ x: Math.cos(ang) * rad, z: Math.sin(ang) * rad, r, flat: 0.12 + rng() * 0.1, rot: rng() * Math.PI, light: i % 2 === 0 }); // much flatter
-    }
-    return arr;
-  }, [rng, ap]);
-  const ripples = useMemo(() => Array.from({ length: 4 }, () => ({
-    x: (rng() - 0.5) * ap * 0.75, z: (rng() - 0.5) * ap * 0.75, r: ap * (0.12 + rng() * 0.2), rot: rng() * Math.PI * 2,
-  })), [rng, ap]);
-  const pebbles = useMemo(() => Array.from({ length: 2 + Math.floor(rng() * 2) }, () => ({
-    x: (rng() - 0.5) * ap * 1.1, z: (rng() - 0.5) * ap * 1.1, s: 0.3 + rng() * 0.4, rot: rng() * Math.PI,
-  })), [rng, ap]);
-  return (
-    <group>
-      {/* Sandy base — matches the desert tile colour */}
-      <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, 0.06, 0]} receiveShadow>
-        <circleGeometry args={[ap * 0.98, 6]} />
-        <meshStandardMaterial color="#f7d08a" roughness={1} metalness={0} flatShading />
-      </mesh>
-      {/* Low, wide dune mounds */}
-      {dunes.map((d, i) => (
-        <mesh key={`dune${i}`} position={[d.x, 0.06, d.z]} rotation={[0, d.rot, 0]} scale={[1.35, d.flat, 1]} castShadow>
-          <sphereGeometry args={[d.r, 14, 6, 0, Math.PI * 2, 0, Math.PI / 2]} />
-          <meshStandardMaterial color={d.light ? '#f2c877' : '#e3b45e'} roughness={1} metalness={0} flatShading />
-        </mesh>
-      ))}
-      {/* Wind-ripple arcs */}
-      {ripples.map((p, i) => (
-        <mesh key={`rip${i}`} rotation={[-Math.PI / 2, 0, p.rot]} position={[p.x, 0.11, p.z]}>
-          <ringGeometry args={[p.r, p.r + ap * 0.025, 16, 1, 0, Math.PI * 0.85]} />
-          <meshBasicMaterial color="#d9a94e" transparent opacity={0.55} depthWrite={false} />
-        </mesh>
-      ))}
-      {/* Small sand pebbles (sandstone-coloured, not grey rock) */}
-      {pebbles.map((p, i) => (
-        <mesh key={`peb${i}`} position={[p.x, 0.08 * p.s, p.z]} rotation={[p.rot, p.rot * 1.3, 0]} castShadow>
-          <dodecahedronGeometry args={[size * 0.07 * p.s, 0]} />
-          <meshStandardMaterial color="#cda15c" roughness={0.95} metalness={0} flatShading />
-        </mesh>
+        <Suspense key={`mini-${i}`} fallback={null}>
+          <group position={[m.x, 0, m.z]} renderOrder={25}><FbxProp url={MUSHROOM_ASSET} tex={MUSHROOM_TEX} size={S * 0.6 * m.s} /></group>
+        </Suspense>
       ))}
     </group>
   );
@@ -2402,61 +2474,20 @@ function RefDesert({
  * Runs each frame to enforce floor collision for player and pet avatars
  * Prevents them from falling through terrain
  */
-function AvatarCollisionDetector({ 
-  heroAvatarRef, 
-  heroWorldPos, 
-  culledTiles, 
-  hexSize 
-}: { 
-  heroAvatarRef: React.MutableRefObject<THREE.Group | null>;
-  heroWorldPos: { x: number; z: number };
-  culledTiles: Tile[];
-  hexSize: number;
-}) {
-  const { scene } = useThree();
-  const floorColliderRef = React.useRef<THREE.Group | null>(null);
-  
-  // Build floor collider on first mount from culled tiles
-  React.useEffect(() => {
-    if (!floorColliderRef.current && culledTiles.length > 0) {
-      const group = new THREE.Group();
-      group.userData.type = 'floor-colliders';
-      
-      for (const tile of culledTiles) {
-        const { x, z } = axialToWorld(tile, hexSize);
-        const floorMesh = createFloorCollider(hexSize * 1.2, new THREE.Vector3(x, 0.01, z));
-        group.add(floorMesh);
-      }
-      
-      scene.add(group);
-      floorColliderRef.current = group;
-      console.log('[collision] Created floor collider with', culledTiles.length, 'tiles');
-    }
-  }, [culledTiles.length, hexSize, scene]);
-  
-  // Update collider position and hero avatar collision each frame
-  useFrame(() => {
-    if (!heroAvatarRef.current || !floorColliderRef.current) return;
-    
-    // Hero avatar is positioned at world coordinates
-    const heroPos = new THREE.Vector3(heroWorldPos.x, heroAvatarRef.current.position.y, heroWorldPos.z);
-    
-    // Update collision and clamp avatar to floor
-    try {
-      updateAvatarCollision(heroPos, heroAvatarRef, floorColliderRef.current, {
-        rayDirection: new THREE.Vector3(0, -1, 0),
-        rayLength: 5,
-        floorOffset: 0.1,
-        debugVisualize: false,
-      });
-    } catch (e) {
-      // Silently ignore collision errors to prevent frame drops
-      if (Math.random() < 0.0001) console.warn('[collision] Error:', e);
-    }
-  });
-  
-  return null; // No rendering, just collision updates
-}
+/**
+ * REMOVED: AvatarCollisionDetector — a legacy raycast-based floor clamp that built
+ * FLAT plane colliders (hardcoded y=0.01) for every tile, ignoring the relief bump
+ * height entirely, then clamped the hero group's Y every frame via
+ * `Math.max(desiredY, currentPosition.y)`. Under normal terrain heights (base 0.4+)
+ * this was a no-op (desiredY≈0.11 is always lower), but if the avatar's Y ever
+ * dipped below ~0.11 for any reason (hit-react/knockback/jump), it would "correct"
+ * the height back up to the flat 0.11 floor instead of the actual (possibly much
+ * taller, e.g. mountain) terrain surface height — reading as the avatar's feet
+ * sinking into the ground on elevated terrain. `tileTopAt()` (used directly on the
+ * hero group's JSX `position`) is already the single, relief-aware source of truth
+ * for every actor's ground height — this second, terrain-blind authority fighting
+ * over the same Y value was the bug, not a fix. Deleted rather than patched.
+ */
 
 /**
  * Explored-memory tile layer as ONE instanced mesh. These tiles are pure map "memory"
@@ -2468,7 +2499,7 @@ function AvatarCollisionDetector({
 const MEMORY_TILE_CAP = 6000;
 function MemoryTileField({ tiles: memTiles, hexSize }: { tiles: Tile[]; hexSize: number }) {
   const ref = React.useRef<THREE.InstancedMesh>(null);
-  const geo = React.useMemo(() => new THREE.CylinderGeometry(hexSize, hexSize, 1, 6), [hexSize]);
+  const geo = React.useMemo(() => new THREE.CylinderGeometry(hexSize * HEX_TILE_OVERLAP, hexSize * HEX_TILE_OVERLAP, 1, 6), [hexSize]);
   const mat = React.useMemo(() => new THREE.MeshLambertMaterial(), []);
   React.useEffect(() => {
     const m = ref.current; if (!m) return;
@@ -2555,10 +2586,19 @@ function SunLight({ heroWorld, quality }: { heroWorld: { x: number; z: number };
 // objects that are all identical. These caches hand every tile the SAME geometry
 // and one material per distinct colour, which is a large chunk of the frame budget.
 const hexGeoCache = new Map<string, THREE.CylinderGeometry>();
+// Adjacent flat-top hex prisms sit with their side walls exactly touching at the shared
+// edge — with every tile now the same flat height, those coincident walls z-fight at
+// isometric angles and read as hairline gaps, worse between DIFFERENT terrain types
+// (different tile materials/colors either side of the seam make any sliver of
+// background bleeding through far more noticeable than a same-color seam). Inflate the
+// rendered radius a bit beyond the perfect-tiling circumradius so neighbors overlap
+// instead of exactly touching; tile CENTER spacing (axialToWorld) is untouched so
+// nothing else (decor placement, actor anchoring) shifts.
+const HEX_TILE_OVERLAP = 1.02;
 function sharedHexGeo(radius: number, h: number): THREE.CylinderGeometry {
   const k = `${radius}:${h}`;
   let g = hexGeoCache.get(k);
-  if (!g) { g = new THREE.CylinderGeometry(radius, radius, h, 6); hexGeoCache.set(k, g); }
+  if (!g) { g = new THREE.CylinderGeometry(radius * HEX_TILE_OVERLAP, radius * HEX_TILE_OVERLAP, h, 6); hexGeoCache.set(k, g); }
   return g;
 }
 const tileMatCache = new Map<string, THREE.MeshStandardMaterial>();
@@ -2603,6 +2643,14 @@ function HexTile({ t, size, onClick, onHover }: { t: Tile; size: number; onClick
       />
     </group>
   );
+}
+
+/** Modeled cartoon dog/cat FBX — these packs are rigged with a baked "Take 001"
+ *  walk-cycle clip, played via FbxAnimatedProp while moving and frozen (idle pose)
+ *  while standing still. `tint` covers submeshes whose embedded material renders
+ *  solid black (see FbxAnimatedProp doc). */
+function PetFbxBody({ url, ps, isMoving, tint }: { url: string; ps: number; isMoving: boolean; tint?: string }) {
+  return <FbxAnimatedProp url={url} size={ps * 1.8} playing={isMoving} tint={tint} />;
 }
 
 /** Animated isometric cat pet with leg & tail walk cycle */
@@ -3285,6 +3333,12 @@ export default function SoloMissionMap3D({
   };
 
   // ── Outposts / region control ────────────────────────────────────────────────
+  // Keep outposts clear of creep camps (size-keyed memo so combat HP-only updates,
+  // which replace the Map reference, don't re-trigger outpost generation).
+  const creepCampCoords = React.useMemo(
+    () => Array.from(creepCamps.values()).map(c => ({ q: c.q, r: c.r })),
+    [creepCamps.size]
+  );
   const {
     outposts, nearbyOutpost, captureNearby, raidOutpost, claimForFaction, control: outpostControl,
     territory: outpostTerritory, regions: outpostRegions, nearestOwnedOutpost,
@@ -3295,6 +3349,7 @@ export default function SoloMissionMap3D({
     heroR: hero.pos.r,
     centerQ: centerAxial.q,
     centerR: centerAxial.r,
+    avoid: creepCampCoords,
     onCapture: (_region, regionCleared, prevOwner) => {
       const approach = captureApproachRef.current;
       const hw = axialToWorld({ q: heroPosRef.current.q, r: heroPosRef.current.r }, hexSize);
@@ -3344,12 +3399,23 @@ export default function SoloMissionMap3D({
     });
   }, [setLocalHeroInventory]);
 
+  // Keep refugee camps clear of both creep camps and outposts (size-keyed memo, same
+  // rationale as creepCampCoords above).
+  const outpostCoords = React.useMemo(
+    () => Array.from(outposts.values()).map(o => ({ q: o.q, r: o.r })),
+    [outposts.size]
+  );
+  const refugeeAvoidCoords = React.useMemo(
+    () => [...creepCampCoords, ...outpostCoords],
+    [creepCampCoords, outpostCoords]
+  );
   const { camps: refugeeCamps, nearbyCamp: nearbyRefugeeCamp, deliverToNearby: deliverRefugee, lootNearby: lootRefugee, negotiateNearby: negotiateRefugee, applyCompleted: applyRefugeeCompleted, progress: refugeeProgress } = useRefugeeCamps({
     tiles,
     heroQ: hero.pos.q,
     heroR: hero.pos.r,
     centerQ: centerAxial.q,
     centerR: centerAxial.r,
+    avoid: refugeeAvoidCoords,
     faction: factionName,
     onComplete: (camp, approach) => {
       // The player's CHOSEN approach (GDD: help / negotiate / loot) drives the outcome,
@@ -4752,10 +4818,17 @@ export default function SoloMissionMap3D({
   const baseTier = baseTierFor(heroLevelLive);
   const baseCityStage = baseGrowthStage(heroLevelLive); // +1/level to 10, then +1/5 levels
   const baseZoneRadius = baseZoneRadiusFor(heroLevelLive);
-  // Between ring-ups the border stroke creeps outward per growth stage, so EVERY
-  // level visibly pushes the territory line before it snaps to the next ring.
-  const baseZoneCreep = Math.min(0.35,
-    (baseCityStage - baseGrowthStage(baseZoneRingStartLevel(heroLevelLive))) * 0.035);
+  // Between ring-ups the border stroke creeps outward toward the next radius jump, so
+  // EVERY level visibly pushes the territory line before it snaps to the next ring.
+  // (Driven directly by level, not by baseCityStage — that stage only ticks once per
+  // 5 levels past level 10, which froze the ring across most level-ups in that range.)
+  const baseZoneCreep = (() => {
+    const start = baseZoneRingStartLevel(heroLevelLive);
+    const next = baseZoneRingNextLevel(heroLevelLive);
+    if (!Number.isFinite(next)) return 0.3; // final ring: hold a steady partial creep
+    const progress = Math.min(1, (heroLevelLive - start) / (next - start));
+    return progress * 0.4;
+  })();
   // The 4 neighbour tiles reserved for district pads — fixed regardless of current
   // tier so sprawl buildings never squat on a pad that unlocks later.
   const baseDistrictTiles = useMemo(() => {
@@ -5301,9 +5374,6 @@ export default function SoloMissionMap3D({
             {(inVision || explored) && t.type === 'plains' && !blockDeco && (
               <group position={[0, tileTop, 0]}><GrassCluster size={hexSize} seed={t.q * 37 + t.r * 13} /></group>
             )}
-            {(inVision || explored) && t.type === 'desert' && !blockDeco && (
-              <group position={[0, tileTop, 0]} renderOrder={5}><DesertDunes size={hexSize} seed={t.q * 41 + t.r * 19} /></group>
-            )}
             {/* Cacti (military-pack models) on roughly a third of desert tiles */}
             {(inVision || explored) && t.type === 'desert' && !blockDeco && ((t.q * 31 + t.r * 17) & 7) < 3 && (
               <group position={[0, tileTop, 0]}>
@@ -5397,7 +5467,6 @@ export default function SoloMissionMap3D({
               <SceneSetupVerifier />
               <AvatarRenderingVerifier />
               <PerformanceChecker />
-              <AvatarCollisionDetector heroAvatarRef={heroAvatarRef} heroWorldPos={heroWorld} culledTiles={culledTiles} hexSize={hexSize} />
               <SceneBridge outerRadius={hexSize} onReady={(caps) => { setRefMountains(!!caps.mountain); setRefTrees(!!caps.tree); setRefWater(!!caps.water); setRefHills(!!caps.hills); setRefDesert(!!caps.desert); }} />
               {/* Distance haze — adds depth and dissolves the render-radius edge into
                   atmosphere instead of a hard cutoff. Colour sits between sky and dusk. */}
@@ -5473,7 +5542,12 @@ export default function SoloMissionMap3D({
                 </group>
                 {(() => { const world = axialToWorld(pet.pos, hexSize); const ps = hexSize * 0.32; return (
                   <group key={pet.id} position={[world.x, tileTopAt(pet.pos.q, pet.pos.r) + 0.08, world.z]} rotation={[0, petFacingAngle, 0]} frustumCulled={false}>
-                    {isDog ? <IsometricDog ps={ps} isMoving={isPetMoving} /> : <IsometricPet ps={ps} isMoving={isPetMoving} />}
+                    {/* Modeled cartoon dog/cat FBX (unrigged, so a simple bob conveys
+                        movement) with the fully-animated procedural mesh as the
+                        Suspense-loading fallback — same pattern as the hero avatar. */}
+                    <Suspense fallback={isDog ? <IsometricDog ps={ps} isMoving={isPetMoving} /> : <IsometricPet ps={ps} isMoving={isPetMoving} />}>
+                      <PetFbxBody url={isDog ? PET_ASSETS.dog : PET_ASSETS.cat} ps={ps} isMoving={isPetMoving} tint={isDog ? '#8a6240' : '#d99a45'} />
+                    </Suspense>
                     {/* Name label + role/attack counter */}
                     <Text position={[0, ps * 3.1, 0]} fontSize={ps * 0.5} color="#fff" anchorX="center" anchorY="middle" outlineWidth={ps * 0.03} outlineColor="#000">{isDog ? `Dog  ⚔️${petCombatBonus}` : `Cat  👁️+${petVisionBonus}`}</Text>
                   </group> ); })()}
@@ -5495,7 +5569,7 @@ export default function SoloMissionMap3D({
                   const cw = axialToWorld({ q: camp.q, r: camp.r }, hexSize);
                   return (
                     <group key={`camp-${camp.key}`} position={[cw.x, tileTopAt(camp.q, camp.r), cw.z]} frustumCulled={false}>
-                      <CreepCampMesh camp={camp} size={hexSize} />
+                      <CreepCampMesh camp={camp} size={hexSize} terrain={tilesByKey.get(ckey)?.type} />
                     </group>
                   );
                 })}
@@ -5593,6 +5667,7 @@ export default function SoloMissionMap3D({
                         icon={c.mission.icon}
                         mode={c.mode}
                         subtitle={c.mode === 'aid' ? `${c.delivered}/${c.required.amount} ${RESOURCE_DEFS[c.required.resource].label}` : undefined}
+                        showWcNpc={playerFactionKey === 'WC'}
                       />
                     </group>
                   );
@@ -5682,7 +5757,7 @@ export default function SoloMissionMap3D({
               {!nearbyFactionEnemy && nearbyCreepCamp && (
                 <div className="fixed top-20 left-1/2 -translate-x-1/2 z-40">
                   <div className="px-4 py-2 rounded-xl bg-rose-900/80 border border-rose-400/60 text-sm font-bold text-rose-100 backdrop-blur-sm shadow-lg flex items-center gap-2">
-                    ⚔️ Enemy Camp, Lv {nearbyCreepCamp.level} · {nearbyCreepCamp.creeps.filter(c => c.hp > 0).length} left
+                    ⚔️ {nearbyCreepCamp.kind === 'fortify' ? 'Fortify' : 'Raid'} Camp, Lv {nearbyCreepCamp.level} · {nearbyCreepCamp.creeps.filter(c => c.hp > 0).length} left
                     <span className="ml-1 px-1.5 py-0.5 rounded bg-rose-700 font-bold">F</span> to attack
                   </div>
                 </div>
@@ -5770,10 +5845,6 @@ export default function SoloMissionMap3D({
                     <div className="flex items-center gap-1.5" title="Faction Points earned in-game">
                       <span className="text-amber-300">✦</span><span className="opacity-50 hidden md:inline">FP</span>
                       <span className="font-extrabold tabular-nums">{(profile?.progress as any)?.factionPoints ?? 0}</span>
-                    </div>
-                    <div className="flex items-center gap-1.5" title="Unspent skill points, open the skill tree to invest">
-                      <span>⭐</span><span className="opacity-50 hidden md:inline">Skill</span>
-                      <span className={`font-extrabold tabular-nums ${(skillPoints ?? 0) > 0 ? 'text-emerald-300' : 'text-gray-300'}`}>{skillPoints ?? 0}</span>
                     </div>
                     <span className="w-px h-4 bg-white/15" />
                     <div className="flex items-center gap-1" title="Tiles explored"><span>🧭</span><span className="opacity-50 hidden md:inline">Explore</span><span className={`font-semibold tabular-nums ${explorationComplete ? 'text-emerald-300' : ''}`}>{exploredCount}/{explorationGoal}{explorationComplete ? ' ✓' : ''}</span></div>
@@ -6394,7 +6465,7 @@ export default function SoloMissionMap3D({
                 onAbility={activateAbility}
                 onItem={(id: string) => { const idx = itemSlots.findIndex(s => s.id === id); if (idx >= 0) handleItemUse(idx); }}
                 items={itemSlots}
-                resources={[{ id: 'shards', label: 'Faction Points', value: (profile?.progress as any)?.factionPoints ?? 0, icon: '✦' }, ...(resources || [])]}
+                resources={[{ id: 'factionPoints', label: 'Faction Points', value: (profile?.progress as any)?.factionPoints ?? 0, icon: '✦' }, ...(resources || [])]}
                 skillTokens={skillTokens || 0}
                 petTokens={0}
                 minimapData={minimapData}

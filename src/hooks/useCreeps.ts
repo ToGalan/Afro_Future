@@ -16,11 +16,16 @@ type TileType = 'water' | 'desert' | 'plains' | 'forest' | 'jungle' | 'hills' | 
 interface MinTile { q: number; r: number; type: TileType }
 
 export interface Creep { id: string; hp: number; maxHp: number }
+/** Fortify = dug-in, defensive camp (bunker/watchtower dressing); raid = aggressive
+ *  raiding-party camp (war banners/spike totems, bigger bonfire). Purely cosmetic —
+ *  read by CreepCampMesh to pick which satellite decor set to render. */
+export type CreepCampKind = 'fortify' | 'raid';
 export interface CreepCamp {
   key: string; q: number; r: number; level: number;
   creeps: Creep[]; cleared: boolean;
   xpReward: number; shardReward: number;
   dmgPerCreep: number;
+  kind: CreepCampKind;
 }
 
 function axialDist(aq: number, ar: number, bq: number, br: number): number {
@@ -69,21 +74,29 @@ export function useCreeps({
   useEffect(() => {
     if (!tiles.length) return;
     const m = new Map<string, CreepCamp>();
+    const placed: { q: number; r: number }[] = [];
+    const MIN_SPACING = 3; // hex-distance kept clear between any two camps
     for (const t of tiles) {
       if (t.type === 'water' || t.type === 'mountain') continue; // impassable
       const dist = axialDist(t.q, t.r, centerQ, centerR);
       if (dist < 5) continue;                    // keep spawn area safe
       const h = hash(t.q, t.r);
       if (h >= 0.028) continue;                  // ~2.8% of eligible tiles
+      if (placed.some(p => axialDist(t.q, t.r, p.q, p.r) < MIN_SPACING)) continue; // too close to another camp
+      placed.push({ q: t.q, r: t.r });
       const level = 1 + Math.floor(dist / 7);    // farther = tougher
       const n = 2 + (Math.floor(h * 1000) % 3);  // 2–4 creeps
       const maxHp = 18 + level * 12;
       const creeps: Creep[] = Array.from({ length: n }, (_, i) => ({ id: `${t.q},${t.r}-${i}`, hp: maxHp, maxHp }));
+      // Deterministic fortify/raid split off a second, independent hash draw (roughly
+      // even 50/50) so a camp's kind doesn't correlate with its level/creep-count roll.
+      const kind: CreepCampKind = hash(t.q + 71, t.r + 71) < 0.5 ? 'fortify' : 'raid';
       m.set(`${t.q},${t.r}`, {
         key: `${t.q},${t.r}`, q: t.q, r: t.r, level, creeps, cleared: false,
         xpReward: 12 + level * 10,
         shardReward: 4 + level * 3,
         dmgPerCreep: 2 + level,
+        kind,
       });
     }
     setCamps(m);
