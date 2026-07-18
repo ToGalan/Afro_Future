@@ -97,7 +97,11 @@
       "PowerShell(npx tsc --noEmit 2>$null; echo \"tsc exit: $LASTEXITCODE\"; node .\\\\loadcheck.tmp.mjs)",
       "PowerShell(node .\\\\loadcheck.tmp.mjs 2>&1 | Select-String 'POST-PLAY|HP |Explore|Defeated|PAGEERROR' ; npx tsc --noEmit 2>$null; echo \"tsc exit: $LASTEXITCODE\")",
       "PowerShell(node .\\\\loadcheck.tmp.mjs 2>&1 | Select-String 'POST-PLAY' -Context 0,2; npx tsc --noEmit 2>$null; echo \"tsc exit: $LASTEXITCODE\")",
-      "PowerShell(node .\\\\loadcheck2.tmp.mjs; npx tsc --noEmit 2>$null; echo \"tsc exit: $LASTEXITCODE\")"
+      "PowerShell(node .\\\\loadcheck2.tmp.mjs; npx tsc --noEmit 2>$null; echo \"tsc exit: $LASTEXITCODE\")",
+      "PowerShell(\\(Get-Content src\\\\components\\\\SnowflakeSkillTree.tsx | Measure-Object -Line\\).Lines)",
+      "PowerShell(node .\\\\loadcheck.tmp.mjs B)",
+      "PowerShell(Remove-Item -Recurse -Force \"$env:TEMP\\\\afro-persist-test\" -ErrorAction SilentlyContinue; node .\\\\loadcheck.tmp.mjs A; \"-----\"; node .\\\\loadcheck.tmp.mjs B)",
+      "PowerShell(Remove-Item .\\\\loadcheck.tmp.mjs -Confirm:$false -ErrorAction SilentlyContinue)"
     ]
   }
 }

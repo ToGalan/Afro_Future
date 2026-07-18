@@ -1,6 +1,6 @@
-import { useEffect, useState, useCallback, useRef } from 'react';
+import { useEffect, useState, useCallback, useReducer } from 'react';
 import { useSkillStore } from '../store/skillStore';
-import { auth, db, ensureAnonAuth, ensureUserAuth, rtdb, rtdbHelpers } from '../services/firebase';
+import { auth, db, ensureAnonAuth, rtdb, rtdbHelpers } from '../services/firebase';
 import { doc, getDoc, setDoc, serverTimestamp } from 'firebase/firestore';
 import type { PlayerProfile, PlayerProgress } from '../types/player';
 
@@ -54,128 +54,239 @@ function stripUndefinedDeep<T>(value: T): T {
   return value;
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// MODULE-LEVEL SINGLETON STORE.
+//
+// This hook is mounted by MANY components at once (App shell, TopNav, MissionScreen,
+// SoloMissionMap3D, PetPanel, useAutoSyncSkills, …). It used to give each instance its
+// OWN `profile` state + `progressRef`, so every instance saved patches merged onto a
+// snapshot from whenever IT mounted — and because the write sends the whole `progress`
+// object, any save from a stale instance (e.g. the skill auto-sync firing on a mid-game
+// level-up) overwrote hero XP / solo world / position with app-boot values. That was
+// the "autosave doesn't stick" bug. Now every instance shares ONE profile, ONE
+// progressRef and ONE write pipeline, so saves always merge onto the freshest state.
+// ─────────────────────────────────────────────────────────────────────────────
+let sharedProfile: PlayerProfile | null = null;
+let sharedLoading = true;
+let sharedError: string | null = null;
+let loadStarted = false;
+const listeners = new Set<() => void>();
+
+const progressRef: { current: PlayerProgress | null } = { current: null };
+const uidRef: { current: string | null } = { current: null };
+let saveThrottleAt = 0;
+let pendingTimer: ReturnType<typeof setTimeout> | null = null;
+let flushListenersInstalled = false;
+let skillStoreHydrated = false;
+const migrationHandled = new Set<string>();
+
+function emit() { listeners.forEach(l => l()); }
+
+function setSharedProfile(next: PlayerProfile | null) {
+  sharedProfile = next;
+  if (next) { progressRef.current = next.progress; uidRef.current = next.uid; }
+  emit();
+}
+
+/** Persist the latest accumulated progress (bypasses throttle). Resolves once the
+ *  write lands. Failures are logged — a silently-swallowed save error looks exactly
+ *  like "autosave is broken", so make it visible in the console. */
+function writeProgress(): Promise<void> {
+  const uid = uidRef.current;
+  const merged = progressRef.current;
+  if (!uid || !merged) return Promise.resolve();
+  saveThrottleAt = Date.now();
+  return setDoc(doc(db, 'players', uid), { progress: stripUndefinedDeep(merged), updatedAt: serverTimestamp() }, { merge: true })
+    .catch((e: any) => {
+      // eslint-disable-next-line no-console
+      console.warn('[profile] save failed:', e?.code || e?.message || e);
+    });
+}
+
+function flushPendingWrite() {
+  if (pendingTimer) {
+    clearTimeout(pendingTimer);
+    pendingTimer = null;
+    writeProgress();
+  }
+}
+
+function installFlushListeners() {
+  if (flushListenersInstalled || typeof document === 'undefined') return;
+  flushListenersInstalled = true;
+  // Flush the throttled write when the tab hides or the page closes — otherwise up to
+  // 1.5s (stacked with callers' own debounces, several seconds) of progress is lost.
+  document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'hidden') flushPendingWrite(); });
+  window.addEventListener('pagehide', flushPendingWrite);
+}
+
+function saveProgressShared(partial: ProgressPatch, opts?: { immediate?: boolean }): Promise<void> {
+  if (!sharedProfile) return Promise.resolve();
+  const now = Date.now();
+  // Merge onto the freshest progress (progressRef is updated synchronously so rapid
+  // successive saves in the same tick accumulate instead of clobbering).
+  const base = progressRef.current ?? sharedProfile.progress;
+  const merged = mergeProgress({ ...base }, { ...partial, lastLogin: now });
+  progressRef.current = merged;
+  sharedProfile = { ...sharedProfile, progress: merged };
+  emit();
+  // An explicit immediate save (the manual "Save Game" button, a campaign reset, a
+  // tab-hide flush) always bypasses the throttle and returns the real write promise.
+  if (opts?.immediate) {
+    if (pendingTimer) { clearTimeout(pendingTimer); pendingTimer = null; }
+    return writeProgress();
+  }
+  // Rate-limit the network write, but never DROP it: schedule a trailing flush
+  // so the last value within a throttle window is still persisted.
+  const elapsed = now - saveThrottleAt;
+  if (elapsed >= 1500) {
+    if (pendingTimer) { clearTimeout(pendingTimer); pendingTimer = null; }
+    return writeProgress();
+  }
+  if (!pendingTimer) {
+    return new Promise<void>((resolve) => {
+      pendingTimer = setTimeout(() => {
+        pendingTimer = null;
+        writeProgress().then(resolve);
+      }, 1500 - elapsed);
+    });
+  }
+  return Promise.resolve();
+}
+
+function updateProfileShared(fields: Partial<Omit<PlayerProfile, 'progress' | 'uid' | 'createdAt'>>) {
+  if (!sharedProfile) return;
+  const ref = doc(db, 'players', sharedProfile.uid);
+  setSharedProfile({ ...sharedProfile, ...fields });
+  setDoc(ref, { ...fields, updatedAt: serverTimestamp() }, { merge: true })
+    .catch((e: any) => { console.warn('[profile] update failed:', e?.code || e?.message || e); });
+}
+
+async function loadProfileOnce(autoCreate: boolean) {
+  if (loadStarted) return;
+  loadStarted = true;
+  installFlushListeners();
+  try {
+    // Attempt anonymous auth; if disabled, wait for a non-anonymous user (Google/email)
+    const user = await ensureAnonAuth();
+    const ref = doc(db, 'players', user.uid);
+    const snap = await getDoc(ref);
+    if (snap.exists()) {
+      const data = snap.data() as any;
+      const progress: PlayerProgress = {
+        heroPosition: { q: 0, r: 0 },
+        lastLogin: Date.now(),
+        hero: { level: 1, xp: 0, traits: [], unlockedSkillIds: [], unlockOrder: [] },
+        pet: { level: 1, xp: 0 },
+        skillTokens: { earned: 0, spent: 0, remaining: 0 },
+        avatar: { parts: {}, colors: { primary:'#00A37A', secondary:'#F5F5F5', skin:'#c58b66' }, updatedAt: Date.now() },
+        ...data.progress,
+      };
+      setSharedProfile({
+        uid: user.uid,
+        displayName: data.displayName,
+        email: data.email,
+        avatarUrl: data.avatarUrl,
+        faction: data.faction,
+        createdAt: data.createdAt || Date.now(),
+        progress,
+      });
+    } else if (autoCreate) {
+      // Only include identity fields that exist — Firestore rejects `undefined`
+      // values outright (anon users have neither email nor displayName).
+      const initial: PlayerProfile = {
+        uid: user.uid,
+        ...(user.email ? { email: user.email } : {}),
+        ...(user.displayName ? { displayName: user.displayName } : {}),
+        createdAt: Date.now(),
+        progress: {
+          heroPosition: { q: 0, r: 0 },
+          lastLogin: Date.now(),
+          hero: { level:1, traits:[], unlockedSkillIds:[], unlockOrder:[], xp: 0 },
+          pet: { level:1, xp: 0 },
+          skillTokens: { earned:0, spent:0, remaining:0 },
+          avatar: { parts:{}, colors:{ primary:'#00A37A', secondary:'#F5F5F5', skin:'#c58b66' }, updatedAt: Date.now() }
+        }
+      };
+      await setDoc(ref, { ...initial, createdAt: serverTimestamp() });
+      setSharedProfile(initial);
+    } else {
+      setSharedProfile(null);
+    }
+  } catch (e: any) {
+    sharedError = e.message || 'Failed to load profile';
+  } finally {
+    sharedLoading = false;
+    emit();
+  }
+}
+
 export function usePlayerProfile(opts: UsePlayerProfileOptions = {}) {
   const { autoCreate = true } = opts;
-  const [profile, setProfile] = useState<PlayerProfile | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
-  const saveThrottle = useRef<number>(0);
-  // Trailing-flush throttle state: the network write is rate-limited, but local
-  // state is ALWAYS updated and the latest value is eventually persisted.
-  const pendingTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const progressRef = useRef<PlayerProgress | null>(null);
-  const uidRef = useRef<string | null>(null);
+  const [, force] = useReducer((x: number) => x + 1, 0);
+  // Local mirrors so React re-renders this instance when the shared store changes.
+  const [profile, setProfileLocal] = useState<PlayerProfile | null>(sharedProfile);
 
   useEffect(() => {
-    let cancelled = false;
-    (async () => {
-      try {
-        // Attempt anonymous auth; if disabled, wait for a non-anonymous user (Google/email)
-        const user = await ensureAnonAuth();
-        if (cancelled) return;
-        const ref = doc(db, 'players', user.uid);
-        const snap = await getDoc(ref);
-        if (snap.exists()) {
-          const data = snap.data() as any;
-          const progress: PlayerProgress = {
-            heroPosition: { q: 0, r: 0 },
-            lastLogin: Date.now(),
-            hero: { level: 1, xp: 0, traits: [], unlockedSkillIds: [], unlockOrder: [] },
-            pet: { level: 1, xp: 0 },
-            skillTokens: { earned: 0, spent: 0, remaining: 0 },
-            avatar: { parts: {}, colors: { primary:'#00A37A', secondary:'#F5F5F5', skin:'#c58b66' }, updatedAt: Date.now() },
-            ...data.progress,
-          };
-          setProfile({ 
-            uid: user.uid, 
-            displayName: data.displayName, 
-            email: data.email, 
-            avatarUrl: data.avatarUrl, 
-            faction: data.faction, 
-            createdAt: data.createdAt || Date.now(), 
-            progress 
-          });
-        } else if (autoCreate) {
-          // Only include identity fields that exist — Firestore rejects `undefined`
-          // values outright (anon users have neither email nor displayName).
-          const initial: PlayerProfile = {
-            uid: user.uid,
-            ...(user.email ? { email: user.email } : {}),
-            ...(user.displayName ? { displayName: user.displayName } : {}),
-            createdAt: Date.now(),
-            progress: {
-              heroPosition: { q: 0, r: 0 },
-              lastLogin: Date.now(),
-              hero: { level:1, traits:[], unlockedSkillIds:[], unlockOrder:[], xp: 0 },
-              pet: { level:1, xp: 0 },
-              skillTokens: { earned:0, spent:0, remaining:0 },
-              avatar: { parts:{}, colors:{ primary:'#00A37A', secondary:'#F5F5F5', skin:'#c58b66' }, updatedAt: Date.now() }
-            }
-          };
-          await setDoc(ref, { ...initial, createdAt: serverTimestamp() });
-          if (!cancelled) setProfile(initial);
-        } else {
-          setProfile(null);
-        }
-      } catch (e: any) {
-        if (!cancelled) setError(e.message || 'Failed to load profile');
-      } finally {
-        if (!cancelled) setLoading(false);
-      }
-    })();
-    return () => { cancelled = true; };
+    const listener = () => { setProfileLocal(sharedProfile); force(); };
+    listeners.add(listener);
+    // Keep in sync in case the store changed between render and effect.
+    listener();
+    loadProfileOnce(autoCreate);
+    return () => { listeners.delete(listener); };
   }, [autoCreate]);
 
-  // Migration: if user later signs in with Google/email (non-anon) and we have an anon profile loaded, copy progress over
+  // Migration: if user later signs in with Google/email (non-anon) and we have an anon
+  // profile loaded, copy progress over. Module-guarded so only one instance migrates.
   useEffect(() => {
     if (!profile) return;
     if (!auth.currentUser) return;
-    if (!auth.currentUser.isAnonymous) {
-      // Already non-anonymous; ensure profile uid matches
-      if (profile.uid !== auth.currentUser.uid) {
-        // Need to load new profile document (might not exist yet) and migrate old data
-        (async () => {
-          const newUid = auth.currentUser!.uid;
-          const newRef = doc(db, 'players', newUid);
-          const existing = await getDoc(newRef);
-            const oldData = profile.progress;
-            if (!existing.exists()) {
-              await setDoc(newRef, { 
-                progress: oldData, 
-                migratedFrom: profile.uid, 
-                email: auth.currentUser!.email,
-                displayName: auth.currentUser!.displayName,
-                createdAt: serverTimestamp(), 
-                updatedAt: serverTimestamp() 
-              }, { merge: true });
-            }
-            // Remove old anonymous sessions tree
-            try {
-              await rtdbHelpers.remove(rtdbHelpers.ref(rtdb, `sessions/${profile.uid}`));
-            } catch {}
-            setProfile(p => p ? { ...p, uid: newUid, email: auth.currentUser!.email || p.email, displayName: auth.currentUser!.displayName || p.displayName } : p);
-        })();
-      } else {
-        // Update email/displayName if they've changed
-        if ((auth.currentUser.email && auth.currentUser.email !== profile.email) || 
-            (auth.currentUser.displayName && auth.currentUser.displayName !== profile.displayName)) {
-          const ref = doc(db, 'players', profile.uid);
-          const updates = {
-            ...(auth.currentUser.email && { email: auth.currentUser.email }),
-            ...(auth.currentUser.displayName && { displayName: auth.currentUser.displayName }),
+    if (auth.currentUser.isAnonymous) return;
+    const key = `${profile.uid}->${auth.currentUser.uid}`;
+    if (migrationHandled.has(key)) return;
+    migrationHandled.add(key);
+    if (profile.uid !== auth.currentUser.uid) {
+      (async () => {
+        const newUid = auth.currentUser!.uid;
+        const newRef = doc(db, 'players', newUid);
+        const existing = await getDoc(newRef);
+        const oldData = profile.progress;
+        if (!existing.exists()) {
+          await setDoc(newRef, {
+            progress: oldData,
+            migratedFrom: profile.uid,
+            email: auth.currentUser!.email,
+            displayName: auth.currentUser!.displayName,
+            createdAt: serverTimestamp(),
             updatedAt: serverTimestamp()
-          };
-          setDoc(ref, updates, { merge: true }).catch(() => {});
-          setProfile(p => p ? { ...p, ...updates } : p);
+          }, { merge: true });
         }
+        // Remove old anonymous sessions tree
+        try {
+          await rtdbHelpers.remove(rtdbHelpers.ref(rtdb, `sessions/${profile.uid}`));
+        } catch {}
+        setSharedProfile(sharedProfile ? { ...sharedProfile, uid: newUid, email: auth.currentUser!.email || sharedProfile.email, displayName: auth.currentUser!.displayName || sharedProfile.displayName } : sharedProfile);
+      })();
+    } else {
+      // Update email/displayName if they've changed
+      if ((auth.currentUser.email && auth.currentUser.email !== profile.email) ||
+          (auth.currentUser.displayName && auth.currentUser.displayName !== profile.displayName)) {
+        const ref = doc(db, 'players', profile.uid);
+        const updates = {
+          ...(auth.currentUser.email && { email: auth.currentUser.email }),
+          ...(auth.currentUser.displayName && { displayName: auth.currentUser.displayName }),
+          updatedAt: serverTimestamp()
+        };
+        setDoc(ref, updates, { merge: true }).catch(() => {});
+        setSharedProfile(sharedProfile ? { ...sharedProfile, ...updates } as PlayerProfile : sharedProfile);
       }
     }
   }, [profile]);
 
-  // One-time skill store hydration from profile hero progress
-  const hydratedRef = useRef(false);
+  // One-time skill store hydration from profile hero progress (module-guarded — with
+  // many hook instances mounted, only the first successful hydration should run).
   useEffect(() => {
-    if (!profile || hydratedRef.current) return;
+    if (!profile || skillStoreHydrated) return;
     const hero = profile.progress.hero;
     const hasSkillData = hero && (hero.unlockedSkillIds?.length || hero.unlockOrder?.length || hero.level > 1);
     const hasAbilityLoadout = profile.progress.abilityLoadout;
@@ -188,103 +299,20 @@ export function usePlayerProfile(opts: UsePlayerProfileOptions = {}) {
           unlockOrder: hero?.unlockOrder,
           abilityLoadout: hasAbilityLoadout ? profile.progress.abilityLoadout : undefined,
         });
-        hydratedRef.current = true;
+        skillStoreHydrated = true;
       } catch {
         // ignore hydration errors
       }
     }
   }, [profile]);
 
-  // Persist the latest accumulated progress to Firestore (bypasses throttle). Returns
-  // a promise that resolves once the write actually lands, so callers that need a
-  // guarantee (e.g. an explicit "Save Game" action) can await it.
-  const writeProgress = useCallback((): Promise<void> => {
-    const uid = uidRef.current;
-    const merged = progressRef.current;
-    if (!uid || !merged) return Promise.resolve();
-    saveThrottle.current = Date.now();
-    return setDoc(doc(db, 'players', uid), { progress: stripUndefinedDeep(merged), updatedAt: serverTimestamp() }, { merge: true })
-      .catch(() => {/* swallow */});
+  const saveProgress = useCallback((partial: ProgressPatch, opts2?: { immediate?: boolean }): Promise<void> => {
+    return saveProgressShared(partial, opts2);
   }, []);
 
-  const saveProgress = useCallback((partial: ProgressPatch, opts?: { immediate?: boolean }): Promise<void> => {
-    if (!profile) return Promise.resolve();
-    const now = Date.now();
-    // Merge onto the freshest progress (progressRef is updated synchronously so
-    // rapid successive saves in the same tick accumulate instead of clobbering).
-    const base = progressRef.current ?? profile.progress;
-    const merged = mergeProgress({ ...base }, { ...partial, lastLogin: now });
-    progressRef.current = merged;
-    uidRef.current = profile.uid;
-    // Always update local state immediately so the UI (and profileRef consumers
-    // such as useCollectibles) reflect the new XP without waiting on the throttle.
-    setProfile(prev => (prev ? { ...prev, progress: merged } : prev));
-    // An explicit immediate save (the manual "Save Game" button, a campaign reset, a
-    // tab-hide flush) always bypasses the throttle and returns the real write promise —
-    // without this, a save right before exiting to the Dashboard could still be sitting
-    // in the trailing-flush timer when the next screen re-fetches the profile, making a
-    // real save look like it "didn't take" (a fresh campaign on return).
-    if (opts?.immediate) {
-      if (pendingTimer.current) { clearTimeout(pendingTimer.current); pendingTimer.current = null; }
-      return writeProgress();
-    }
-    // Rate-limit the network write, but never DROP it: schedule a trailing flush
-    // so the last value within a throttle window is still persisted.
-    const elapsed = now - saveThrottle.current;
-    if (elapsed >= 1500) {
-      if (pendingTimer.current) { clearTimeout(pendingTimer.current); pendingTimer.current = null; }
-      return writeProgress();
-    }
-    if (!pendingTimer.current) {
-      return new Promise<void>((resolve) => {
-        pendingTimer.current = setTimeout(() => {
-          pendingTimer.current = null;
-          writeProgress().then(resolve);
-        }, 1500 - elapsed);
-      });
-    }
-    return Promise.resolve();
-  }, [profile, writeProgress]);
-
-  // Keep progressRef aligned with externally-driven profile changes, and flush
-  // any pending write on unmount so in-flight XP isn't lost.
-  useEffect(() => { if (profile) { progressRef.current = profile.progress; uidRef.current = profile.uid; } }, [profile]);
-  useEffect(() => () => {
-    if (pendingTimer.current) {
-      clearTimeout(pendingTimer.current);
-      pendingTimer.current = null;
-      writeProgress();
-    }
-  }, [writeProgress]);
-
-  // Flush any pending throttled write immediately when the tab is hidden or the page
-  // is closed/refreshed — otherwise up to 1.5s (or, stacked with a caller's own
-  // debounce, several seconds) of progress can be silently lost, which is the classic
-  // "autosave doesn't save my last few actions" complaint.
-  useEffect(() => {
-    const flush = () => {
-      if (pendingTimer.current) {
-        clearTimeout(pendingTimer.current);
-        pendingTimer.current = null;
-        writeProgress();
-      }
-    };
-    const onVisibility = () => { if (document.visibilityState === 'hidden') flush(); };
-    document.addEventListener('visibilitychange', onVisibility);
-    window.addEventListener('pagehide', flush);
-    return () => {
-      document.removeEventListener('visibilitychange', onVisibility);
-      window.removeEventListener('pagehide', flush);
-    };
-  }, [writeProgress]);
-
   const updateProfile = useCallback((fields: Partial<Omit<PlayerProfile, 'progress' | 'uid' | 'createdAt'>>) => {
-    if (!profile) return;
-    const ref = doc(db, 'players', profile.uid);
-    const next: PlayerProfile = { ...profile, ...fields };
-    setProfile(next);
-    setDoc(ref, { ...fields, updatedAt: serverTimestamp() }, { merge: true }).catch(()=>{});
-  }, [profile]);
+    updateProfileShared(fields);
+  }, []);
 
-  return { profile, loading, error, saveProgress, updateProfile };
+  return { profile, loading: sharedLoading, error: sharedError, saveProgress, updateProfile };
 }

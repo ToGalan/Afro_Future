@@ -1134,12 +1134,14 @@ function TouchControls() {
         <TouchButton kbdKey="d" label="▶" hold size="h-11 w-11 text-base" />
         <span /><TouchButton kbdKey="s" label="▼" hold size="h-11 w-11 text-base" /><span />
       </div>
-      {/* Action buttons */}
+      {/* Action buttons: basic attack, collect, and QUICK ATTACKS 1+2 (first two
+          offensive ability slots, Q/E). Capture and aid don't need buttons here —
+          outposts and camps show their own on-screen choice buttons when nearby. */}
       <div className="grid grid-cols-2 gap-2">
         <TouchButton kbdKey="f" label="⚔️" size="h-12 w-12 text-xl" />
         <TouchButton kbdKey="c" label="✋" size="h-12 w-12 text-xl" />
-        <TouchButton kbdKey="h" label="🤝" size="h-12 w-12 text-xl" />
-        <TouchButton kbdKey="g" label="🚩" size="h-12 w-12 text-xl" />
+        <TouchButton kbdKey="q" label={<span className="leading-none">⚡<b className="text-[11px] align-top">1</b></span>} size="h-12 w-12 text-xl" />
+        <TouchButton kbdKey="e" label={<span className="leading-none">⚡<b className="text-[11px] align-top">2</b></span>} size="h-12 w-12 text-xl" />
       </div>
     </div>
   );
@@ -1263,10 +1265,10 @@ const VictoryTrackChips = React.memo(function VictoryTrackChips({
             key={t}
             onClick={() => onToggle(t)}
             title={`${def.label}, ${def.blurb}. Click for details.`}
-            className={`flex items-center gap-1.5 px-2 py-1 rounded-lg ring-1 transition ${active ? 'bg-white/12 ring-white/35' : 'ring-transparent hover:bg-white/[0.07] hover:ring-white/15'}`}
+            className={`flex items-center gap-1 sm:gap-1.5 px-1.5 sm:px-2 py-1 rounded-lg ring-1 transition ${active ? 'bg-white/12 ring-white/35' : 'ring-transparent hover:bg-white/[0.07] hover:ring-white/15'}`}
           >
-            <span className="text-lg leading-none">{def.icon}</span>
-            <div className="flex flex-col gap-0.5 w-11">
+            <span className="text-base sm:text-lg leading-none">{def.icon}</span>
+            <div className="flex flex-col gap-0.5 w-8 sm:w-11">
               <div className="relative h-1 rounded-full bg-black/50 overflow-hidden ring-1 ring-white/10">
                 <div className="absolute inset-y-0 left-0 rounded-full transition-[width] duration-300" style={{ width: `${frac * 100}%`, background: col }} />
               </div>
@@ -1678,7 +1680,7 @@ function hexBoundaryR(a: number, R: number) {
   const d = ((a % sector) + sector) % sector - sector / 2;
   return (R * Math.cos(Math.PI / 6)) / Math.cos(d);
 }
-type ReliefKind = 'mountain' | 'hills' | 'desert' | 'plains';
+type ReliefKind = 'mountain' | 'hills' | 'desert' | 'plains' | 'water';
 const RELIEF_SPECS: Record<ReliefKind, { amp: number; peak: number; freq: number; low: string; high: string; ridged?: boolean; dome?: boolean; snow?: string; snowFrom?: number }> = {
   // amp/peak are in units of hexSize; freq is noise cycles across a tile.
   // `dome` = relief peaks at the tile CENTER — only allowed on impassable terrain.
@@ -1688,6 +1690,9 @@ const RELIEF_SPECS: Record<ReliefKind, { amp: number; peak: number; freq: number
   hills:    { amp: 0.28, peak: 0.14, freq: 2.1, low: '#7ba244', high: '#a9d162' },
   desert:   { amp: 0.12, freq: 2.6, peak: 0, low: '#c5a55c', high: '#e6cd8c' },
   plains:   { amp: 0.09, freq: 2.4, peak: 0, low: '#7dab4c', high: '#9cc968' },
+  // Gentle noise swells tinted deep→light blue, rendered with the translucent
+  // water material below (replaces the old procedural rings/foam water).
+  water:    { amp: 0.07, freq: 3.1, peak: 0, low: '#1e6f9c', high: '#7fd4f2' },
 };
 const reliefGeoCache = new Map<string, THREE.BufferGeometry>();
 function hexReliefGeo(kind: ReliefKind, R: number, seed: number): THREE.BufferGeometry {
@@ -1753,14 +1758,79 @@ function reliefCenterHeight(kind: ReliefKind, R: number, seed: number): number {
   return Math.max(0.012, R * (spec.amp * nVal + spec.peak));
 }
 let reliefMatCache: THREE.MeshStandardMaterial | null = null;
-function sharedReliefMat() {
+let waterReliefMatCache: THREE.MeshStandardMaterial | null = null;
+function sharedReliefMat(kind: ReliefKind) {
+  if (kind === 'water') {
+    if (!waterReliefMatCache) {
+      waterReliefMatCache = new THREE.MeshStandardMaterial({ vertexColors: true, flatShading: true, roughness: 0.18, metalness: 0.35, transparent: true, opacity: 0.9 });
+      // GPU waves: displace water vertices by two travelling sine bands in WORLD space
+      // (so the swell rolls continuously across tile boundaries). One shared shader +
+      // one uniform driven by WaterWaveClock — no per-tile animation cost.
+      waterReliefMatCache.onBeforeCompile = (shader) => {
+        shader.uniforms.uWaveTime = { value: 0 };
+        shader.vertexShader = shader.vertexShader
+          .replace('#include <common>', '#include <common>\nuniform float uWaveTime;')
+          .replace('#include <begin_vertex>', `#include <begin_vertex>
+  vec3 afWorldPos = (modelMatrix * vec4(transformed, 1.0)).xyz;
+  transformed.y += sin(uWaveTime * 1.5 + afWorldPos.x * 1.2 + afWorldPos.z * 1.6) * 0.045
+                 + sin(uWaveTime * 2.4 + afWorldPos.x * 2.8 - afWorldPos.z * 0.9) * 0.02;`);
+        waterReliefMatCache!.userData.shader = shader;
+      };
+    }
+    return waterReliefMatCache;
+  }
   if (!reliefMatCache) reliefMatCache = new THREE.MeshStandardMaterial({ vertexColors: true, flatShading: true, roughness: 0.95, metalness: 0.02 });
   return reliefMatCache;
+}
+
+/** Drives the shared water material's wave clock — mount ONCE inside the Canvas. */
+function WaterWaveClock() {
+  useFrame(({ clock }) => {
+    const sh = waterReliefMatCache?.userData.shader;
+    if (sh) sh.uniforms.uWaveTime.value = clock.getElapsedTime();
+  });
+  return null;
+}
+
+// World angle toward each axialNeighbors() entry (flat-top layout), for shoreline props.
+const NEIGHBOR_ANGLES = [Math.PI / 6, (7 * Math.PI) / 6, Math.PI / 2, (3 * Math.PI) / 2, (11 * Math.PI) / 6, (5 * Math.PI) / 6];
+
+/** Shoreline rocks: nature-pack rock models scattered along a water tile's land-facing
+ *  edges (seeded per tile). Waves lap around them via the shared water shader. */
+function ShoreRocks({ size, seed, landAngles }: { size: number; seed: number; landAngles: number[] }) {
+  const rng = useMemo(() => seededRand(seed), [seed]);
+  const items = useMemo(() => {
+    const arr: Array<{ url: string; x: number; z: number; s: number; rot: number }> = [];
+    const ap = hexApothem(size);
+    for (const a of landAngles) {
+      const n = rng() < 0.55 ? 1 : rng() < 0.5 ? 2 : 0; // some edges stay bare
+      for (let i = 0; i < n; i++) {
+        const ang = a + (rng() - 0.5) * 0.55;
+        const rad = ap * (0.68 + rng() * 0.24); // hug the shoreline edge
+        arr.push({
+          url: NATURE_ASSETS.rocks[Math.floor(rng() * NATURE_ASSETS.rocks.length)],
+          x: Math.cos(ang) * rad, z: Math.sin(ang) * rad,
+          s: size * (0.16 + rng() * 0.16), rot: rng() * Math.PI * 2,
+        });
+      }
+    }
+    return arr;
+  }, [rng, size, landAngles]);
+  if (!items.length) return null;
+  return (
+    <group>
+      {items.map((it, i) => (
+        <group key={i} position={[it.x, -0.02, it.z]}>
+          <FbxProp url={it.url} tex={NATURE_TEX} size={it.s} rotation={it.rot} />
+        </group>
+      ))}
+    </group>
+  );
 }
 /** One noise-displaced relief mesh, sitting on a tile top. */
 function TerrainRelief({ kind, size, seed }: { kind: ReliefKind; size: number; seed: number }) {
   const geo = useMemo(() => hexReliefGeo(kind, size, seed), [kind, size, seed]);
-  return <mesh geometry={geo} material={sharedReliefMat()} castShadow={kind === 'mountain'} receiveShadow />;
+  return <mesh geometry={geo} material={sharedReliefMat(kind)} castShadow={kind === 'mountain'} receiveShadow />;
 }
 
 function HillsDeco({ size, seed = 1 }: { size: number; seed?: number }) {
@@ -1822,75 +1892,9 @@ function MountainDeco({ size, seed=1 }: { size: number; seed?: number }) {
   );
 }
 
-function LakeDeco({ size }: { size: number }) {
-  return (
-    <group>
-      {/* Hex water surface */}
-      <mesh rotation={[-Math.PI/2,0,0]} position={[0, 0.08, 0]} receiveShadow>
-        <circleGeometry args={[hexApothem(size) * 0.98, 6]} />
-        <meshStandardMaterial color="#82d7ff" transparent opacity={0.9} roughness={0.3} metalness={0.1} />
-      </mesh>
-    </group>
-  );
-}
-
-// Animated 3D wave rings on water tiles — three concentric ripple rings offset in time/scale.
-function WaterWaves({ size }: { size: number }) {
-  const ring1 = React.useRef<THREE.Mesh>(null);
-  const ring2 = React.useRef<THREE.Mesh>(null);
-  const ring3 = React.useRef<THREE.Mesh>(null);
-  useFrame(({ clock }) => {
-    const t = clock.getElapsedTime();
-    // Each ring pulses opacity and scales in/out at different phases
-    const animate = (ref: React.RefObject<THREE.Mesh | null>, phase: number) => {
-      if (!ref.current) return;
-      const s = 0.55 + 0.45 * Math.abs(Math.sin(t * 0.7 + phase));
-      ref.current.scale.setScalar(s);
-      const mat = ref.current.material as THREE.MeshBasicMaterial;
-      mat.opacity = 0.15 + 0.40 * (1 - Math.abs(Math.sin(t * 0.7 + phase)));
-    };
-    animate(ring1, 0);
-    animate(ring2, Math.PI * 0.65);
-    animate(ring3, Math.PI * 1.3);
-  });
-  const ap = hexApothem(size);
-  const surfRef = React.useRef<THREE.Mesh>(null);
-  useFrame(({ clock }) => {
-    if (surfRef.current) surfRef.current.position.y = 0.12 + Math.sin(clock.getElapsedTime() * 1.3) * 0.03; // gentle swell
-  });
-  return (
-    <group>
-      {/* Deep-water floor — darker, slightly recessed to give the tile depth */}
-      <mesh rotation={[-Math.PI/2,0,0]} position={[0, -0.04, 0]} receiveShadow>
-        <circleGeometry args={[ap * 0.98, 6]} />
-        <meshStandardMaterial color="#1e6f9c" roughness={0.55} metalness={0.2} />
-      </mesh>
-      {/* Reflective translucent surface (gently swells up/down) */}
-      <mesh ref={surfRef} rotation={[-Math.PI/2,0,0]} position={[0, 0.12, 0]}>
-        <circleGeometry args={[ap * 0.9, 6]} />
-        <meshStandardMaterial color="#4ab8e8" transparent opacity={0.82} roughness={0.12} metalness={0.55} />
-      </mesh>
-      {/* Foam shoreline ring hugging the hex edge */}
-      <mesh rotation={[-Math.PI/2,0,0]} position={[0, 0.13, 0]}>
-        <ringGeometry args={[ap * 0.88, ap * 0.99, 6]} />
-        <meshStandardMaterial color="#d6f2ff" roughness={0.7} transparent opacity={0.85} />
-      </mesh>
-      {/* Animated ripple rings */}
-      <mesh ref={ring1} rotation={[-Math.PI/2,0,0]} position={[0, 0.15, 0]}>
-        <ringGeometry args={[ap * 0.18, ap * 0.30, 24]} />
-        <meshBasicMaterial color="#bfeaff" transparent opacity={0.45} depthWrite={false} />
-      </mesh>
-      <mesh ref={ring2} rotation={[-Math.PI/2,0,0]} position={[0, 0.16, 0]}>
-        <ringGeometry args={[ap * 0.36, ap * 0.50, 24]} />
-        <meshBasicMaterial color="#bfeaff" transparent opacity={0.35} depthWrite={false} />
-      </mesh>
-      <mesh ref={ring3} rotation={[-Math.PI/2,0,0]} position={[0, 0.17, 0]}>
-        <ringGeometry args={[ap * 0.56, ap * 0.70, 24]} />
-        <meshBasicMaterial color="#e2f6ff" transparent opacity={0.25} depthWrite={false} />
-      </mesh>
-    </group>
-  );
-}
+// (The old procedural water — LakeDeco flat disc + WaterWaves floor/surface/foam/ripple
+// rings — was removed: water tiles now render through the same noise TerrainRelief
+// pipeline as every other terrain type, with a water-specific translucent material.)
 
 // Pokemon-style grass tile: cute isometric leaf-blade tufts + occasional flower clusters.
 // Overall scale reduced 0.5x vs previous iteration (S = size * 0.5 applied throughout).
@@ -5321,7 +5325,22 @@ export default function SoloMissionMap3D({
               <group position={[0, tileTop, 0]}><HillsDeco size={hexSize} seed={t.q * 31 + t.r * 17} /></group>
             )}
             {(inVision || explored) && t.type === 'water' && (
-              <group position={[0, tileTop, 0]}><WaterWaves size={hexSize} /></group>
+              <group position={[0, tileTop, 0]}>
+                <TerrainRelief kind="water" size={hexSize} seed={t.q * 31 + t.r * 17} />
+                {/* Rocks along the edges that border land (shoreline dressing) */}
+                {(() => {
+                  const landAngles: number[] = [];
+                  axialNeighbors(t).forEach((n, i) => {
+                    const nt = tilesByKey.get(`${n.q},${n.r}`);
+                    if (nt && nt.type !== 'water') landAngles.push(NEIGHBOR_ANGLES[i]);
+                  });
+                  return landAngles.length ? (
+                    <Suspense fallback={null}>
+                      <ShoreRocks size={hexSize} seed={t.q * 53 + t.r * 29} landAngles={landAngles} />
+                    </Suspense>
+                  ) : null;
+                })()}
+              </group>
             )}
             {/* Gentle noise relief so open ground rolls instead of sitting flat
                 (kept low-amplitude — actors still anchor to the flat tile top). */}
@@ -5393,7 +5412,7 @@ export default function SoloMissionMap3D({
   ), [culledTiles, terraformedTiles, heroVisible, petVisible, decoBlockedKeys,
       collectibleFlowers, collectibleMushrooms, collectibleResources,
       outpostTerritory, zoneBoundary, showOutpostZones, outposts,
-      heroColors.primary, hexSize, exploredCount]);
+      heroColors.primary, hexSize, exploredCount, tilesByKey]);
 
   return (
   <div className="relative w-screen h-screen bg-[#111827] overflow-hidden">
@@ -5406,6 +5425,7 @@ export default function SoloMissionMap3D({
   {/* The limiter drives demand-mode rendering at the player's chosen cap (🎞 button,
       30/60/120). No auto-tuning: quality changes only via the ✨ Hi/Lo button. */}
   <FrameLimiter maxFps={fpsCap} />
+  <WaterWaveClock />
   {import.meta.env.DEV && <FpsProbe counter={fpsCounterRef} />}
   <MapCameraController
     bounds={mapBounds}
@@ -5701,8 +5721,8 @@ export default function SoloMissionMap3D({
                 const label = isBoss ? `${en.faction} Commander` : `${en.faction} ${DOCTRINE[en.faction].label}`;
                 const verb = paaPlayer ? 'to pacify' : 'to attack';
                 return (
-                  <div className="fixed top-20 left-1/2 -translate-x-1/2 z-40">
-                    <div className={`px-4 py-2 rounded-xl bg-rose-900/85 border-2 text-sm font-bold text-rose-100 backdrop-blur-sm shadow-lg flex items-center gap-2 ${isBoss ? 'border-amber-400/80' : 'border-rose-400/70'}`}>
+                  <div className="fixed top-24 sm:top-20 left-1/2 -translate-x-1/2 z-40 max-w-[94vw]">
+                    <div className={`px-3 sm:px-4 py-2 rounded-xl bg-rose-900/85 border-2 text-xs sm:text-sm font-bold text-rose-100 backdrop-blur-sm shadow-lg flex items-center gap-2 flex-wrap justify-center ${isBoss ? 'border-amber-400/80' : 'border-rose-400/70'}`}>
                       <span style={{ color: isBoss ? '#ffd24a' : DOCTRINE[en.faction].color }}>{isBoss ? '👑' : '⚔️'} {label}</span>
                       <span className="opacity-80">Lv {en.level} · {Math.ceil(en.hp)}/{en.maxHp} HP</span>
                       <span className="ml-1 px-1.5 py-0.5 rounded bg-rose-700 font-bold">F</span> {verb}
@@ -5712,8 +5732,8 @@ export default function SoloMissionMap3D({
               })()}
               {/* Nearby creep camp — attacking is a deliberate choice (press F) */}
               {!nearbyFactionEnemy && nearbyCreepCamp && (
-                <div className="fixed top-20 left-1/2 -translate-x-1/2 z-40">
-                  <div className="px-4 py-2 rounded-xl bg-rose-900/80 border border-rose-400/60 text-sm font-bold text-rose-100 backdrop-blur-sm shadow-lg flex items-center gap-2">
+                <div className="fixed top-24 sm:top-20 left-1/2 -translate-x-1/2 z-40 max-w-[94vw]">
+                  <div className="px-3 sm:px-4 py-2 rounded-xl bg-rose-900/80 border border-rose-400/60 text-xs sm:text-sm font-bold text-rose-100 backdrop-blur-sm shadow-lg flex items-center gap-2 flex-wrap justify-center">
                     ⚔️ {nearbyCreepCamp.kind === 'fortify' ? 'Fortify' : 'Raid'} Camp, Lv {nearbyCreepCamp.level} · {nearbyCreepCamp.creeps.filter(c => c.hp > 0).length} left
                     <span className="ml-1 px-1.5 py-0.5 rounded bg-rose-700 font-bold">F</span> to attack
                   </div>
@@ -5722,7 +5742,7 @@ export default function SoloMissionMap3D({
               {/* Faction threat indicator — flags rival units actively hunting the hero.
                   Sits below the victory-tracks bar (top-14) to avoid overlap. */}
               {enemyThreat.hunting > 0 && (
-                <div className="fixed top-[6.25rem] left-1/2 -translate-x-1/2 z-40">
+                <div className="fixed top-[8.75rem] sm:top-[6.25rem] left-1/2 -translate-x-1/2 z-40">
                   <div className="px-3 py-1 rounded-full bg-red-950/85 border border-red-500/60 text-xs font-bold text-red-200 backdrop-blur-sm shadow animate-pulse flex items-center gap-1.5">
                     🚨 {enemyThreat.hunting} enemy {enemyThreat.hunting === 1 ? 'unit' : 'units'} hunting you
                   </div>
@@ -5731,14 +5751,14 @@ export default function SoloMissionMap3D({
 
               {/* Terraformer / outpost prompts */}
               {(nearTerraformer && !terraformDone) && (
-                <div className="fixed top-28 left-1/2 -translate-x-1/2 z-40">
-                  <div className="px-4 py-2 rounded-xl bg-amber-900/80 border border-amber-400/60 text-sm font-bold text-amber-100 backdrop-blur-sm shadow-lg flex items-center gap-2">
+                <div className="fixed top-32 sm:top-28 left-1/2 -translate-x-1/2 z-40 max-w-[94vw]">
+                  <div className="px-3 sm:px-4 py-2 rounded-xl bg-amber-900/80 border border-amber-400/60 text-xs sm:text-sm font-bold text-amber-100 backdrop-blur-sm shadow-lg flex items-center gap-2 flex-wrap justify-center">
                     🌱 Terraformer {terraformProgress}%, press <span className="px-1.5 py-0.5 rounded bg-amber-700 font-bold">Y</span> to invest a resource
                   </div>
                 </div>
               )}
               {nearbyOutpost && (
-                <div className="fixed top-28 left-1/2 -translate-x-1/2 z-40 max-w-[94vw] pointer-events-auto">
+                <div className="fixed top-32 sm:top-28 left-1/2 -translate-x-1/2 z-40 max-w-[94vw] pointer-events-auto">
                   <div className="px-4 py-2.5 rounded-xl bg-[#0c1219]/90 border border-white/15 text-xs sm:text-sm backdrop-blur-sm shadow-lg text-center space-y-2">
                     <div className="font-bold">🚩 Neutral Outpost, choose your approach</div>
                     {/* GDD: outposts are taken via stealth, combat, or tactical diplomacy */}
@@ -5762,8 +5782,8 @@ export default function SoloMissionMap3D({
                 const held = localHeroInventory.filter(i => i.type === c.required.resource).reduce((s, i) => s + (i.quantity || 0), 0);
                 const resLbl = RESOURCE_DEFS[c.required.resource]?.label ?? '';
                 return (
-                  <div className="fixed top-40 left-1/2 -translate-x-1/2 z-40 max-w-[94vw] pointer-events-auto">
-                    <div className="px-4 py-2.5 rounded-xl border bg-[#0c1219]/90 border-white/15 text-xs sm:text-sm backdrop-blur-sm shadow-lg text-center space-y-2">
+                  <div className="fixed top-44 sm:top-40 left-1/2 -translate-x-1/2 z-40 max-w-[94vw] pointer-events-auto">
+                    <div className="px-3 sm:px-4 py-2.5 rounded-xl border bg-[#0c1219]/90 border-white/15 text-xs sm:text-sm backdrop-blur-sm shadow-lg text-center space-y-2">
                       <div className="font-bold flex flex-wrap items-center justify-center gap-x-2">
                         <span>{c.mission.icon} {c.mission.title}</span>
                         <span className="opacity-70 font-normal">
@@ -6095,7 +6115,7 @@ export default function SoloMissionMap3D({
 
               {/* Rival raid alert — a faction AI retook one of your outposts (go defend/recapture). */}
               {raidBanner && (
-                <div className="fixed top-24 left-1/2 -translate-x-1/2 z-40 pointer-events-none">
+                <div className="fixed top-32 sm:top-24 left-1/2 -translate-x-1/2 z-40 pointer-events-none max-w-[94vw]">
                   <div className="px-4 py-2 rounded-xl bg-rose-950/90 ring-1 ring-rose-500/60 text-center shadow-xl flex items-center gap-2">
                     <span className="text-lg">⚑</span>
                     <span className="text-sm font-bold text-rose-200" style={{ color: FACTION_COLORS[raidBanner.faction]?.label ?? '#fecaca' }}>
@@ -6353,7 +6373,7 @@ export default function SoloMissionMap3D({
 
               {/* Nearby collectible prompt (flower / mushroom / resource node) */}
               {(nearbyFlower || nearbyMushroom || nearbyResource) && (
-                <div className="fixed bottom-56 left-1/2 -translate-x-1/2 animate-bounce">
+                <div className="fixed bottom-[19rem] sm:bottom-56 left-1/2 -translate-x-1/2 animate-bounce max-w-[94vw]">
                   <div className="relative px-6 py-3 rounded-xl bg-emerald-900/80 border border-emerald-400/60 text-sm font-semibold text-emerald-100 backdrop-blur-sm shadow-lg overflow-hidden">
                     {(collectingFlower || collectingMushroom || collectingResource) && (
                       <div className="absolute inset-0 rounded-xl pointer-events-none" style={{

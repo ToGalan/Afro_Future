@@ -18,7 +18,7 @@ import { PetIcon } from '../assets/assetPaths';
  * species identity, level & XP, bonding tier, derived (species-differentiated) stats,
  * and the three bonding-gated abilities with lock state.
  */
-export const PetPanel: React.FC = () => {
+export const PetPanel: React.FC<{ petType?: string; petName?: string }> = ({ petType, petName }) => {
   const { profile } = usePlayerProfile();
   // Minimized = header strip only (portrait + name + level). Persisted per browser.
   const [minimized, setMinimized] = React.useState<boolean>(() => {
@@ -32,15 +32,22 @@ export const PetPanel: React.FC = () => {
   const pet = profile?.progress?.pet;
   if (!pet) return null;
 
-  const species = getPetSpecies(pet.type);
+  // Species comes from the SELECTED loadout pet (what the HUD shows), not from
+  // progress.pet — fresh profiles never store a type there, which made this card
+  // always show the Cyber-Dog even for Cyber-Cat players. Level/XP/bond stay on
+  // the persisted progress (the live values the HUD tracks). Normalize the type
+  // since loadouts may store 'CAT'/'DOG' while petSpecies keys are CYBER_*.
+  const rawType = petType ?? pet.type;
+  const type = rawType && String(rawType).toUpperCase().includes('CAT') ? 'CYBER_CAT' : 'CYBER_DOG';
+  const species = getPetSpecies(type);
   const level = pet.level ?? 1;
   const xp = pet.xp ?? 0;
   const bond = pet.bond ?? 0;
-  const stats = derivePetStats(pet.type, level);
+  const stats = derivePetStats(type, level);
   const xpPct = Math.round(getPetLevelProgress(xp, level) * 100);
   const tierIdx = bondTierIndex(bond);
   const bondPct = Math.round(bondTierProgress(bond) * 100);
-  const abilities = petAbilitiesWithState(pet.type, level, bond);
+  const abilities = petAbilitiesWithState(type, level, bond);
 
   return (
     <div
@@ -62,8 +69,8 @@ export const PetPanel: React.FC = () => {
           style={{ width: minimized ? 30 : 44, height: minimized ? 30 : 44, objectFit: 'contain', borderRadius: 8, background: 'rgba(255,255,255,0.06)' }}
         />
         <div style={{ minWidth: 0 }}>
-          <div style={{ fontSize: 14, fontWeight: 700, lineHeight: 1.1 }}>{species.name}</div>
-          {!minimized && <div style={{ fontSize: 11, opacity: 0.7 }}>{species.tagline}</div>}
+          <div style={{ fontSize: 14, fontWeight: 700, lineHeight: 1.1 }}>{petName || species.name}</div>
+          {!minimized && <div style={{ fontSize: 11, opacity: 0.7 }}>{petName ? `${species.name} · ${species.tagline}` : species.tagline}</div>}
         </div>
         <div style={{ marginLeft: 'auto', textAlign: 'right' }}>
           <div style={{ fontSize: 10, opacity: 0.6 }}>LVL</div>

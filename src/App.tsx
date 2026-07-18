@@ -1068,7 +1068,7 @@ function MissionScreen({ onExit, onOpenSkillTree, activeLoadout, autoMultiplayer
           combatStats={{ atk: heroStats.total.atk, def: heroStats.total.def, spd: heroStats.total.spd }}
           heroAvatar={activeLoadout}
         />
-        <PetPanel />
+        <PetPanel petType={(loadout as any)?.pet?.type} petName={(loadout as any)?.pet?.name} />
       </div>
       {/* Skill tree as an in-mission overlay — the game keeps running underneath, so
           spending points after a level-up continues the session instead of restarting. */}

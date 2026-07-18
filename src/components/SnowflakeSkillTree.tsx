@@ -98,6 +98,22 @@ export default function SnowflakeSkillTree({ initialLevel = 1 }: SnowflakeSkillT
   const holdingRef = useRef(false);
   const rafRef = useRef<number | null>(null);
   const holdStartRef = useRef<number | null>(null);
+  const stepRef = useRef<() => void>(() => {});
+  // Press-and-hold on the node itself (touch equivalent of hovering + holding 'U').
+  const startNodeHold = (id: string) => {
+    if (unlockReason(id) !== 'Unlockable' || holdingRef.current) return;
+    holdingRef.current = true;
+    holdStartRef.current = performance.now();
+    setHoldTarget(id);
+    holdTargetRef.current = id;
+    setHoldProgress(0);
+    rafRef.current = requestAnimationFrame(() => stepRef.current());
+  };
+  const endNodeHold = () => {
+    holdingRef.current = false; holdStartRef.current = null;
+    setHoldTarget(null); holdTargetRef.current = null; setHoldProgress(0);
+    if (rafRef.current) cancelAnimationFrame(rafRef.current);
+  };
   // Branch cores that are next unlockable (locked core nodes with satisfied requirements)
   const nextCores = useMemo(() => {
     return laid.filter(n => n.id.endsWith('_core') && !unlocked.includes(n.id) && canUnlock(n.id)).map(n => n.id);
@@ -154,6 +170,9 @@ export default function SnowflakeSkillTree({ initialLevel = 1 }: SnowflakeSkillT
         }
       }
     }
+    // Touch/pointer path: press-and-hold directly on a node (started by the node's
+    // onPointerDown below) drives the same hold loop — phones have no hover or 'U' key.
+    stepRef.current = step;
     function keyUp(e: KeyboardEvent) {
       if (e.key.toLowerCase() === 'u') {
         holdingRef.current = false; holdStartRef.current = null; setHoldTarget(null); holdTargetRef.current = null; setHoldProgress(0);
@@ -171,9 +190,18 @@ export default function SnowflakeSkillTree({ initialLevel = 1 }: SnowflakeSkillT
         <div className="text-xl font-semibold">Skills &amp; Traits Map</div>
         <div className="text-sm opacity-80">Spent: {spent} • Points Left: {ptsLeft}</div>
       </div>
-      <div className="grid grid-cols-12 gap-4 flex-1 min-h-0">
-        <div className="col-span-9 h-full min-h-0">
+      {/* Mobile: tree and side panel STACK (the 12-col grid squeezed the tree into a
+          sliver on phones); the whole view scrolls. Desktop keeps the side-by-side grid. */}
+      <div className="grid grid-cols-1 md:grid-cols-12 gap-4 flex-1 min-h-0 overflow-y-auto md:overflow-visible no-scrollbar">
+        <div className="md:col-span-9 h-[55vh] md:h-full min-h-0 shrink-0">
           <div className="relative mx-auto select-none w-full h-full" onWheel={onWheel}>
+            {/* Zoom buttons — the only zoom path on touch (no wheel), handy everywhere */}
+            <div className="absolute top-2 right-2 z-10 flex flex-col gap-1">
+              <button onClick={() => setScale(s => clamp(s + 0.35, 1.0, 2.5))} aria-label="Zoom in"
+                className="h-9 w-9 rounded-lg bg-white/10 hover:bg-white/20 ring-1 ring-white/15 text-lg font-bold">+</button>
+              <button onClick={() => setScale(s => clamp(s - 0.35, 1.0, 2.5))} aria-label="Zoom out"
+                className="h-9 w-9 rounded-lg bg-white/10 hover:bg-white/20 ring-1 ring-white/15 text-lg font-bold">−</button>
+            </div>
             <svg width="100%" height="100%" viewBox={`0 0 ${size} ${size}`} preserveAspectRatio="xMidYMid meet" onPointerDown={onPointerDown} onPointerMove={onPointerMove} onPointerUp={onPointerUp} style={{ cursor: dragging ? 'grabbing' : scale > 1.02 ? 'grab' : 'default' }}>
               <defs>
                 <filter id="glow" x="-50%" y="-50%" width="200%" height="200%">
@@ -199,6 +227,16 @@ export default function SnowflakeSkillTree({ initialLevel = 1 }: SnowflakeSkillT
                       transform={`translate(${n.x},${n.y})`}
                       onMouseEnter={() => setHoverId(n.id)}
                       onMouseLeave={() => { if (!dragging) setHoverId(h => h === n.id ? null : h); }}
+                      onPointerDown={(e) => {
+                        // Tap selects (shows the preview card); press-and-hold unlocks —
+                        // the touch path for devices with no hover and no 'U' key.
+                        e.stopPropagation();
+                        setHoverId(n.id);
+                        startNodeHold(n.id);
+                      }}
+                      onPointerUp={endNodeHold}
+                      onPointerLeave={endNodeHold}
+                      onPointerCancel={endNodeHold}
                       style={{ pointerEvents: 'all' }}
                     >
                       <circle r={r + 5} fill="#0b1220" stroke="#1f2937" strokeWidth={2} />
@@ -244,7 +282,7 @@ export default function SnowflakeSkillTree({ initialLevel = 1 }: SnowflakeSkillT
                 {unlockReason(hoverId) === 'Unlockable' && !unlocked.includes(hoverId) && (
                   <div className="flex items-center gap-3">
                     <div className="flex flex-col gap-1">
-                      <span className="text-emerald-300 font-semibold">Hold key 'U' to Unlock</span>
+                      <span className="text-emerald-300 font-semibold">Hold 'U' or press &amp; hold the node to Unlock</span>
                       <span className="opacity-70">{holdTarget === hoverId ? `${((HOLD_DURATION / 1000) * (1 - holdProgress)).toFixed(1)}s remaining` : `${(HOLD_DURATION / 1000).toFixed(1)}s required`}</span>
                       <div className="h-2 w-full bg-white/10 rounded-full overflow-hidden">
                         <div className="h-full bg-emerald-500 transition-all duration-100 ease-linear" style={{ width: `${(holdProgress * 100).toFixed(1)}%`, backgroundColor: holdProgress > 0.8 ? '#22c55e' : '#10b981' }} />
@@ -260,7 +298,7 @@ export default function SnowflakeSkillTree({ initialLevel = 1 }: SnowflakeSkillT
             )}
           </div>
         </div>
-        <div className="col-span-3 h-full min-h-0 overflow-y-auto">
+        <div className="md:col-span-3 md:h-full min-h-0 md:overflow-y-auto pb-4">
           <div className="rounded-2xl p-4 bg-white/5 border border-white/10">
             <div className="text-lg font-semibold">Traits</div>
             <div className="mt-2 text-sm">Primary Path: <span className="opacity-80">{traitsTopBranch ?? ', '}</span></div>
