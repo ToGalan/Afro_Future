@@ -124,16 +124,32 @@ export const CREEP_ASSETS = {
   wolf: '/assets/creeps/fbx/wolf.fbx',
 } as const;
 
-// Elephant — static (non-rigged, no animations) low-poly glTF (Sketchfab "Low poly
-// elephant" by MrEliptik, CC-BY-4.0). Ships as .gltf+.bin with two flat baseColorFactor
-// materials, no external texture — loaded via GltfRawProp (drei's useGLTF), not the
-// FBX animated/textured pipeline the other creep species use.
+// Elephant/camel/rhino — static (non-rigged, no animations) low-poly glTF megafauna,
+// same shape as each other (.gltf+.bin, flat baseColorFactor materials, no external
+// texture) — loaded via GltfRawProp (drei's useGLTF), not the FBX animated/textured
+// pipeline the other creep species use.
 export const ELEPHANT_ASSET = '/assets/creeps/gltf/elephant/scene.gltf';
+export const CAMEL_ASSET = '/assets/creeps/gltf/camel/scene.gltf';
+export const RHINO_ASSET = '/assets/creeps/gltf/rhino/scene.gltf';
 
 // House variations for the base's growing city. The manifest is user-editable: drop
 // model files into /public/assets/houses and list them there — the sprawl picks
 // variants per building, falling back to procedural buildings while the list is empty.
 export const HOUSE_MANIFEST_URL = '/assets/houses/manifest.json';
+
+// Themed standalone house models NOT part of the general sprawl-house manifest pool —
+// used for specific map features instead of generic city buildings.
+export const DESERT_OUTPOST_ASSET = '/assets/houses/house_dessert_outpost.glb';
+
+// Faction relic masks (GDD "collect and defend your mask" questline) — one per faction.
+// Each ships its own FBX + a single diffuse texture; source textures were 4096² (15-33MB)
+// per mask, resized to 512² for a small decorative prop (see repo scripts history).
+// Rendered via FbxProp (own atlasMat, NOT the shared military/nature atlas).
+export const MASK_ASSETS: Record<'PAA' | 'ASF' | 'WC', { url: string; tex: string }> = {
+  PAA: { url: '/assets/masks/mask_paa.fbx', tex: '/assets/masks/mask_paa_diffuse.png' },
+  ASF: { url: '/assets/masks/mask_asf.fbx', tex: '/assets/masks/mask_asf_diffuse.png' },
+  WC:  { url: '/assets/masks/mask_wc.fbx', tex: '/assets/masks/mask_wc_diffuse.png' },
+};
 
 // One material per (atlas, tint) — clones share it, keeping draw state minimal.
 const matCache = new Map<string, THREE.MeshStandardMaterial>();

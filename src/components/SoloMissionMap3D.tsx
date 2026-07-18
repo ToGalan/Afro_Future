@@ -9,9 +9,9 @@ import * as THREE from 'three';
 import { Canvas, useThree, useFrame } from '@react-three/fiber';
 import { OrbitControls, Text, Sky, ContactShadows } from '@react-three/drei';
 import { ImprovedNoise } from 'three/examples/jsm/math/ImprovedNoise.js';
-import { FbxProp, FbxPbrProp, FbxRawProp, GltfRawProp, FbxAnimatedProp, FbxAnimatedTexturedProp, NATURE_ASSETS, NATURE_TEX, MILITARY_ASSETS, MILITARY_TEX, PBR_PROP_ASSETS, PBR_PROP_TEX, MUSHROOM_ASSET, MUSHROOM_TEX, MINING_ASSETS, PET_ASSETS, WC_NPC_ASSET, WC_NPC_TEX, CREEP_ASSETS, CREEP_TEX, ELEPHANT_ASSET, HOUSE_MANIFEST_URL } from './FbxProps';
+import { FbxProp, FbxPbrProp, FbxRawProp, GltfRawProp, FbxAnimatedProp, FbxAnimatedTexturedProp, NATURE_ASSETS, NATURE_TEX, MILITARY_ASSETS, MILITARY_TEX, PBR_PROP_ASSETS, PBR_PROP_TEX, MUSHROOM_ASSET, MUSHROOM_TEX, MINING_ASSETS, PET_ASSETS, WC_NPC_ASSET, WC_NPC_TEX, CREEP_ASSETS, CREEP_TEX, ELEPHANT_ASSET, CAMEL_ASSET, RHINO_ASSET, HOUSE_MANIFEST_URL, DESERT_OUTPOST_ASSET, MASK_ASSETS } from './FbxProps';
 import { EffectComposer, Bloom, Vignette } from '@react-three/postprocessing';
-import { arcFor, beatReady, storyNpc, storyText, type StoryBeat, type StoryChoice, type StoryWorldState } from '../services/storyline';
+import { arcFor, beatReady, storyNpc, storyText, MASK_LORE, MAIN_MISSIONS, FACTION_MOTIVATION, type StoryBeat, type StoryChoice, type StoryWorldState } from '../services/storyline';
 import { GameAvatar, type AvatarColors } from './GameAvatarMesh';
 import { resolveHeroModel } from '../config/heroModels';
 import { useCreeps, type CreepCamp } from '../hooks/useCreeps';
@@ -384,25 +384,29 @@ function adjacentMountains(tilesByKey: Map<string, Tile>, a: Axial) {
  *  are visibly bulkier. Each creep keeps its HP bar; the camp keeps its level tag. */
 // Species pool for creep-camp critters, in a stable order so the per-creep hash pick
 // below stays deterministic across renders. Most are rigged FBX (played through
-// FbxAnimatedTexturedProp); the elephant is a static glTF (no animation clip) so it's
-// tagged separately and rendered through GltfRawProp instead — CreepBody below picks
-// the right loader per entry.
-type CreepSpeciesEntry = { kind: 'fbx'; url: string } | { kind: 'gltf'; url: string };
+// FbxAnimatedTexturedProp); the megafauna (elephant/camel/rhino) are static glTF (no
+// animation clip) so they're tagged separately and rendered through GltfRawProp
+// instead — CreepBody below picks the right loader per entry. Every exported FBX/glTF
+// species in the pack is wired here (2026-07-18: "use all available").
+type CreepSpeciesEntry = { kind: 'fbx'; url: string; scale?: number } | { kind: 'gltf'; url: string; scale?: number };
 const CREEP_SPECIES: CreepSpeciesEntry[] = [
   ...Object.values(CREEP_ASSETS).map(url => ({ kind: 'fbx' as const, url })),
-  { kind: 'gltf' as const, url: ELEPHANT_ASSET },
+  { kind: 'gltf' as const, url: ELEPHANT_ASSET, scale: 2 },
+  { kind: 'gltf' as const, url: CAMEL_ASSET, scale: 1.3 },
+  { kind: 'gltf' as const, url: RHINO_ASSET, scale: 1.7 },
 ];
 
 /** Renders one creep-camp critter body, picking the loader that matches its export
  *  format (animated FBX vs. static glTF) — shared by both the combat creeps and the
  *  purely-cosmetic ambient wildlife below. */
 function CreepBody({ species, size }: { species: CreepSpeciesEntry; size: number }) {
-  // The elephant (the only static glTF entry) renders at 2x the shared per-species
-  // footprint size so it actually reads as the biggest animal in camp, not uniformly
-  // sized like the rest of the pool.
+  // Megafauna (glTF entries) each carry their own scale so the pool reads as varied
+  // wildlife sizes — elephant biggest, rhino close behind, camel a step up from the
+  // FBX pack's smaller animals — instead of every glTF entry being uniformly 2x.
+  const s = size * (species.scale ?? 1);
   return species.kind === 'gltf'
-    ? <GltfRawProp url={species.url} size={size * 2} />
-    : <FbxAnimatedTexturedProp url={species.url} tex={CREEP_TEX} size={size} />;
+    ? <GltfRawProp url={species.url} size={s} />
+    : <FbxAnimatedTexturedProp url={species.url} tex={CREEP_TEX} size={s} />;
 }
 
 function CreepCampMesh({ camp, size, terrain }: { camp: CreepCamp; size: number; terrain?: string }) {
@@ -1065,18 +1069,82 @@ function Terraformer({ size, progress, done }: { size: number; progress: number;
   );
 }
 
-/** Capturable outpost — the watchtower + garrison props; faction-colored glow when owned. */
-function OutpostMarker({ size, owned, color }: { size: number; owned: boolean; color: string }) {
+/** Capturable outpost — the watchtower + garrison props; faction-colored glow when owned.
+ *  Desert-region outposts (`desert`) swap the generic watchtower for the modeled
+ *  desert-outpost building instead (2026-07-18: "add desert outposts to desert region"),
+ *  keeping the same barrier/hedgehog perimeter dressing either way. */
+function OutpostMarker({ size, owned, color, desert }: { size: number; owned: boolean; color: string; desert?: boolean }) {
   const S = size;
   return (
     <group>
-      {/* Garrison set-dressing from the military FBX pack: watchtower + barrier + tank trap */}
       <Suspense fallback={null}>
-        <group position={[-S * 0.55, 0, -S * 0.35]}><FbxProp url={MILITARY_ASSETS.tower} tex={MILITARY_TEX} size={S * 1.9} rotation={0.6} tint={owned ? color : undefined} /></group>
+        {desert ? (
+          <group position={[-S * 0.42, 0, -S * 0.28]} rotation={[0, 0.5, 0]}>
+            <GltfRawProp url={DESERT_OUTPOST_ASSET} size={S * 2.2} />
+          </group>
+        ) : (
+          /* Garrison set-dressing from the military FBX pack: watchtower + barrier + tank trap */
+          <group position={[-S * 0.55, 0, -S * 0.35]}><FbxProp url={MILITARY_ASSETS.tower} tex={MILITARY_TEX} size={S * 1.9} rotation={0.6} tint={owned ? color : undefined} /></group>
+        )}
         <group position={[S * 0.5, 0, S * 0.45]}><FbxProp url={MILITARY_ASSETS.barriers[0]} tex={MILITARY_TEX} size={S * 0.55} rotation={-0.4} /></group>
         <group position={[-S * 0.15, 0, S * 0.62]}><FbxProp url={MILITARY_ASSETS.hedgehog} tex={MILITARY_TEX} size={S * 0.3} rotation={0.9} /></group>
       </Suspense>
-      <Text position={[0, S * 1.9, 0]} fontSize={S * 0.3} color={owned ? '#bfead0' : '#cfd4da'} anchorX="center" anchorY="middle" outlineWidth={S * 0.03} outlineColor="#000">{owned ? 'Outpost ✓' : 'Outpost'}</Text>
+      <Text position={[0, S * 1.9, 0]} fontSize={S * 0.3} color={owned ? '#bfead0' : '#cfd4da'} anchorX="center" anchorY="middle" outlineWidth={S * 0.03} outlineColor="#000">{desert ? '🏜️ ' : ''}{owned ? 'Outpost ✓' : 'Outpost'}</Text>
+    </group>
+  );
+}
+
+/** The faction relic mask itself — a slow idle spin so it reads as a display piece,
+ *  not scenery, at both the field shrine and the base pedestal. */
+function MaskProp({ faction, size }: { faction: 'PAA' | 'ASF' | 'WC'; size: number }) {
+  const ref = React.useRef<THREE.Group>(null);
+  useFrame(({ clock }) => { if (ref.current) ref.current.rotation.y = clock.getElapsedTime() * 0.5; });
+  const asset = MASK_ASSETS[faction];
+  return (
+    <group ref={ref}>
+      <FbxProp url={asset.url} tex={asset.tex} size={size} />
+    </group>
+  );
+}
+
+/** Field shrine holding an UNCLAIMED faction mask (GDD "collect and defend your
+ *  mask") — a stone pedestal + the mask prop + a soft ground glow. Walking adjacent
+ *  auto-claims it (see the mask-collect effect in the main component), no keypress. */
+function MaskShrine({ faction, size }: { faction: 'PAA' | 'ASF' | 'WC'; size: number }) {
+  const glowRef = React.useRef<THREE.Mesh>(null);
+  useFrame(({ clock }) => { if (glowRef.current) (glowRef.current.material as THREE.MeshBasicMaterial).opacity = 0.35 + Math.sin(clock.getElapsedTime() * 1.8) * 0.15; });
+  const S = size;
+  const color = FACTION_COLORS[faction]?.primary ?? '#e5c07b';
+  return (
+    <group>
+      <mesh ref={glowRef} rotation={[-Math.PI / 2, 0, 0]} position={[0, 0.02, 0]}>
+        <circleGeometry args={[S * 0.9, 20]} /><meshBasicMaterial color={color} transparent opacity={0.4} depthWrite={false} />
+      </mesh>
+      <mesh castShadow position={[0, S * 0.34, 0]}><cylinderGeometry args={[S * 0.32, S * 0.42, S * 0.68, 8]} /><meshStandardMaterial color="#4a4438" roughness={0.9} flatShading /></mesh>
+      <mesh castShadow position={[0, S * 0.7, 0]}><cylinderGeometry args={[S * 0.4, S * 0.34, S * 0.06, 8]} /><meshStandardMaterial color="#5c5646" roughness={0.85} flatShading /></mesh>
+      <Suspense fallback={
+        <mesh position={[0, S * 1.05, 0]}><octahedronGeometry args={[S * 0.28, 0]} /><meshStandardMaterial color={color} roughness={0.4} metalness={0.3} flatShading /></mesh>
+      }>
+        <group position={[0, S * 1.0, 0]}><MaskProp faction={faction} size={S * 0.85} /></group>
+      </Suspense>
+      <Text position={[0, S * 1.8, 0]} fontSize={S * 0.28} color={color} anchorX="center" anchorY="middle" outlineWidth={S * 0.02} outlineColor="#000">🎭 {MASK_LORE[faction].title}</Text>
+    </group>
+  );
+}
+
+/** Mask display at the base once claimed — a small plinth showing the relic is home
+ *  (and, per GDD, now a target rivals will raid). */
+function MaskPedestal({ faction, size }: { faction: 'PAA' | 'ASF' | 'WC'; size: number }) {
+  const S = size;
+  const color = FACTION_COLORS[faction]?.primary ?? '#e5c07b';
+  return (
+    <group>
+      <mesh castShadow position={[0, S * 0.22, 0]}><cylinderGeometry args={[S * 0.24, S * 0.3, S * 0.44, 8]} /><meshStandardMaterial color="#4a4438" roughness={0.9} flatShading /></mesh>
+      <Suspense fallback={
+        <mesh position={[0, S * 0.58, 0]}><octahedronGeometry args={[S * 0.2, 0]} /><meshStandardMaterial color={color} roughness={0.4} metalness={0.3} flatShading /></mesh>
+      }>
+        <group position={[0, S * 0.55, 0]}><MaskProp faction={faction} size={S * 0.6} /></group>
+      </Suspense>
     </group>
   );
 }
@@ -2957,7 +3025,8 @@ export default function SoloMissionMap3D({
   onDrainEP?: (amount: number) => void;
   /** Hero attack stat — creep-camp combat damage per tick. */
   heroAttack?: number;
-  /** Combat stats (atk/def/spd) shown in the in-game menu overview. */
+  /** Combat stats (atk/def/spd) — shown in the in-game menu overview AND drives real
+   *  gameplay: def mitigates incoming damage (applyIncomingDamage), spd sets move speed. */
   combatStats?: { atk: number; def: number; spd: number };
   /** Active loadout passed from App — used as the source of truth for avatar data
    *  so changes in the configurator reflect immediately without a page reload. */
@@ -3117,6 +3186,7 @@ export default function SoloMissionMap3D({
     itemSlots, setItemSlots,
     handleCollect,
     handleItemUse,
+    petFetch,
   } = collectibles;
 
   // ── Hero XP + progression ─────────────────────────────────────────────────────
@@ -3489,6 +3559,23 @@ export default function SoloMissionMap3D({
     setStoryLineIdx(0);
   }, []);
 
+  // ── Faction mask (GDD "collect and defend your mask") — ONE main objective, additional
+  // to the base: a relic sits at a fixed field shrine away from spawn; walking adjacent
+  // auto-claims it (no separate keybind), after which it's displayed at the base AND
+  // becomes a strategic raid target for rival AI (reuses the outpost-raid machinery below
+  // via a synthetic 'mask-vault' strategic target) — lose it and it returns to the shrine.
+  const maskFieldAxial = React.useMemo(() => ({ q: centerAxial.q - 7, r: centerAxial.r + 5 }), [centerAxial]);
+  const [maskHeld, setMaskHeld] = useState(false);
+  const maskHeldRef = React.useRef(false); maskHeldRef.current = maskHeld;
+  const maskIntroSeenRef = React.useRef(false);
+  const [maskDialogOpen, setMaskDialogOpen] = useState(false);
+  const closeMaskDialog = React.useCallback(() => {
+    setMaskDialogOpen(false);
+    maskIntroSeenRef.current = true;
+    saveProgress({ solo: { maskIntroSeen: true } } as any);
+  }, [saveProgress]);
+  const [missionsOpen, setMissionsOpen] = useState(false);
+
   // Outpost ownership snapshot the rival-faction AI reads to contest the player's territory
   // (solo only — MOBA/duel run their own authoritative outpost systems).
   const outpostStrategicTargets = React.useMemo(
@@ -3527,13 +3614,29 @@ export default function SoloMissionMap3D({
     heroHpFrac,
     incomingDamageScale: combatIncomingScale * petIncomingDamageMult,
     enabled: !autoMultiplayer, // solo PvE only — duels are handled by useDuel
-    paused: !!inputPaused || !!activeStoryBeat, // freeze combat during skill tree AND story dialogs
+    paused: !!inputPaused || !!activeStoryBeat || maskDialogOpen, // freeze combat during skill tree AND story/mask dialogs
     getHeroStealthed: () => heroStealthRef.current, // Stealth branch shrinks enemy detection
     getDetectionScale: () => petDetectionScaleRef.current, // Cyber-Cat Sneak / Ghost Protocol
-    // Objective awareness: rival factions march on & raid the player's outposts (solo only).
-    strategicTargets: (!autoMultiplayer && !mobaMode) ? outpostStrategicTargets : undefined,
+    // Objective awareness: rival factions march on & raid the player's outposts (solo
+    // only) — PLUS the mask vault at base once the mask has been claimed.
+    strategicTargets: (!autoMultiplayer && !mobaMode)
+      ? (maskHeld ? [...outpostStrategicTargets, { key: 'mask-vault', q: baseAxial.q, r: baseAxial.r, owner: 'player' as const }] : outpostStrategicTargets)
+      : undefined,
     onRaidOutpost: (key: string, fk: string) => {
       if (autoMultiplayer || mobaMode) return;
+      // The mask vault isn't a real outpost — steal it back to the field shrine instead
+      // of touching the outposts map.
+      if (key === 'mask-vault') {
+        if (!maskHeldRef.current) return;
+        maskHeldRef.current = false; setMaskHeld(false);
+        saveProgress({ solo: { maskHeld: false } } as any);
+        bumpSoloVictoryRef.current?.(fk as Faction, 'domination', VICTORY_POINTS.raid);
+        markRivalPressure();
+        const w = axialToWorld(baseAxial, hexSize);
+        spawnCombatText(w.x, w.z, '🎭 Mask stolen!', '#ff5555');
+        showRivalBanner(fk, `raided the vault and stole your mask! Recover it from the old shrine.`);
+        return;
+      }
       // An ascendant rival (any track ≥ 50) PLANTS ITS FLAG on the raided outpost —
       // you must ride out and reconquer it; a weaker rival only breaks your hold.
       const rv = soloVictoryRef.current[fk as Faction];
@@ -3604,6 +3707,16 @@ export default function SoloMissionMap3D({
     // counts until the hero is actually standing where the game put them.
     if (!heroPlacedRef.current) return;
     let dmg = Math.max(0, amt);
+    // Permanent DEF (faction base + level growth + skill-tree investment + faction-
+    // ability/trait bonus — combatStats.def, the SAME total driving the HUD's DEF
+    // stat) mitigates ALL incoming damage via a diminishing-returns curve (doubling
+    // DEF halves damage taken, never fully zeroes it). This was previously a NO-OP:
+    // combatStats was computed with every bonus folded in but only ever READ for the
+    // in-game menu display, so investing in Defense skills or picking a tanky faction
+    // had zero effect on damage actually taken — only a temporary defBuff skill cast
+    // (heroDefBonusRef, below) mattered.
+    const permDef = combatStats?.def ?? 0;
+    if (permDef > 0) dmg = dmg * (100 / (100 + permDef));
     if (heroDefBonusRef.current > 0) dmg = Math.max(1, dmg - heroDefBonusRef.current);
     if (heroShieldRef.current > 0 && dmg > 0) {
       const absorbed = Math.min(heroShieldRef.current, dmg);
@@ -3611,7 +3724,7 @@ export default function SoloMissionMap3D({
       if (absorbed > 0) { const hw = axialToWorld({ q: heroPosRef.current.q, r: heroPosRef.current.r }, hexSize); spawnCombatText(hw.x, hw.z, `🛡️ -${Math.round(absorbed)}`, '#7aa2ff'); }
     }
     if (dmg > 0) onDamageHP?.(Math.round(dmg));
-  }, [hexSize, onDamageHP]);
+  }, [hexSize, onDamageHP, combatStats?.def]);
   const applyIncomingDamageRef = React.useRef(applyIncomingDamage); applyIncomingDamageRef.current = applyIncomingDamage;
 
   // Apply a self-targeted skill effect as a timed hero buff.
@@ -3768,7 +3881,10 @@ export default function SoloMissionMap3D({
       // claim against their broadcast). Reject hits from out of melee range.
       const myPos = heroPosRef.current;
       if (at && axialDistance(myPos, at) > 2) { console.warn('[duel] rejected out-of-range hit', at); return; }
-      onDamageHP?.(dmg);
+      // Route through applyIncomingDamage — the attacker only knows their own ATK, so
+      // the defender's own DEF/shield/buffs must mitigate here on the receiving side,
+      // same as PvE damage, or defense investment would be meaningless in PvP.
+      applyIncomingDamageRef.current(dmg);
       const hw = axialToWorld({ q: myPos.q, r: myPos.r }, hexSize);
       spawnCombatText(hw.x, hw.z, `-${dmg}`, '#ff5555');
     },
@@ -3804,7 +3920,8 @@ export default function SoloMissionMap3D({
     onHit: (dmg, at) => {
       const myPos = heroPosRef.current;
       if (at && axialDistance(myPos, at) > 2) { return; }
-      onDamageHP?.(dmg);
+      // Same rationale as the duel onHit above — mitigate on the receiving side.
+      applyIncomingDamageRef.current(dmg);
       const hw = axialToWorld({ q: myPos.q, r: myPos.r }, hexSize);
       spawnCombatText(hw.x, hw.z, `-${dmg}`, '#ff5555');
     },
@@ -3969,6 +4086,8 @@ export default function SoloMissionMap3D({
       setResourcesCollected(solo.resourcesCollected);
     }
     explorationRewardedRef.current = !!solo.explorationRewarded;
+    maskHeldRef.current = !!solo.maskHeld; setMaskHeld(!!solo.maskHeld);
+    maskIntroSeenRef.current = !!solo.maskIntroSeen;
     // Victory race: restore every faction's track points (missing keys default to 0).
     if (solo.victory) {
       const v = emptyVictory();
@@ -4026,6 +4145,29 @@ export default function SoloMissionMap3D({
     return () => clearTimeout(t);
   }, [soloEnabled, soloHydrated, activeStoryBeat, storyArc, storyBeatIdx, outpostControl.owned, rivalPressureSeen, soloVictory, playerFactionKey]);
 
+  // ── Faction mask lore intro — fires once, after the player has engaged with the
+  // first story beat (so it doesn't pile onto the tutorial + beat-1 dialog on spawn).
+  React.useEffect(() => {
+    if (!soloEnabled || !soloHydrated || maskIntroSeenRef.current || maskDialogOpen) return;
+    if (storyBeatIdx < 1) return;
+    const t = setTimeout(() => setMaskDialogOpen(true), 900);
+    return () => clearTimeout(t);
+  }, [soloEnabled, soloHydrated, storyBeatIdx, maskDialogOpen]);
+
+  // ── Faction mask auto-collect — walking adjacent to the field shrine claims it
+  // (no separate keybind; matches how exploration reveals passively on movement).
+  React.useEffect(() => {
+    if (!soloEnabled || !soloHydrated || maskHeldRef.current) return;
+    if (axialDistance(hero.pos, maskFieldAxial) > 1) return;
+    maskHeldRef.current = true; setMaskHeld(true);
+    saveProgress({ solo: { maskHeld: true } } as any);
+    awardHeroXp(40);
+    awardFactionPoints(10);
+    awardShardsRef.current(10);
+    const w = axialToWorld(maskFieldAxial, hexSize);
+    spawnCombatText(w.x, w.z, `🎭 ${MASK_LORE[playerFactionKey].title} reclaimed!`, '#ffd24a');
+  }, [soloEnabled, soloHydrated, hero.pos.q, hero.pos.r, maskFieldAxial, saveProgress, awardHeroXp, awardFactionPoints, hexSize, spawnCombatText, playerFactionKey]);
+
   // Apply a story choice: effects route through the systems that already exist
   // (reputation/victory via recordPlaystyle, FP, shards, XP), then persist the arc.
   const chooseStory = React.useCallback((beat: StoryBeat, choice: StoryChoice) => {
@@ -4060,6 +4202,7 @@ export default function SoloMissionMap3D({
       solo: {
         outpostsOwned: [], rivalOutposts: {}, storyBeat: 0, terraformProgress: 0, refugeeCampsDone: [],
         victory: emptyVictory(), victoryResult: null, victorySeen: false, explorationRewarded: false,
+        maskHeld: false, maskIntroSeen: false,
       },
     } as any, { immediate: true }).finally(() => window.location.reload());
   }, [saveProgress]);
@@ -4083,6 +4226,8 @@ export default function SoloMissionMap3D({
     victorySeen: victorySeenRef.current,
     explorationRewarded: explorationRewardedRef.current,
     resourcesCollected: resourcesCollectedRef.current,
+    maskHeld: maskHeldRef.current,
+    maskIntroSeen: maskIntroSeenRef.current,
   });
   // Debounced auto-save of the solo world state whenever it changes (solo only, post-hydration).
   React.useEffect(() => {
@@ -4325,19 +4470,36 @@ export default function SoloMissionMap3D({
     return () => clearInterval(iv);
   }, [isDog, petUnlockedAbilities, duelActive, hexSize, spawnCombatText]);
 
-  // Pet fetch (GDD): the companion periodically carries a supply from base to the field.
+  // Pet auto-gather focus — set via the pet card's Auto-Gather buttons; 'auto' (default)
+  // picks whatever's nearest of any kind, matching the old always-flower interval's
+  // "just grab something" spirit, but from what's actually around instead of thin air.
+  const petFetchFocus = ((profile?.progress?.pet as any)?.fetchFocus as 'auto' | 'flower' | 'mushroom' | ResourceType | undefined) || 'auto';
+  const petFetchFocusRef = React.useRef(petFetchFocus); petFetchFocusRef.current = petFetchFocus;
+
+  // Pet auto-gather (GDD: the companion "carries a supply... from the field" while
+  // exploring). Replaces a bug where a flat interval force-grew a single hero-inventory
+  // 'flower' slot forever, regardless of pet type or what was actually nearby — now the
+  // pet searches real collectibles around the hero and credits its OWN pack, species-
+  // differentiated: Cyber-Cat is fast/light (speed) — fetches often, one item per trip,
+  // wider search range. Cyber-Dog is slow/heavy (quantity) — fetches less often but
+  // hauls up to two items per trip. Numbers are tuned for near-parity total yield
+  // (~5 items/min either way) so neither pet is strictly better, just different pacing.
   React.useEffect(() => {
+    const radius = isDog ? 4 : 6;
+    const maxPicks = isDog ? 2 : 1;
+    const intervalMs = isDog ? 22000 : 12000;
     const iv = setInterval(() => {
-      setLocalHeroInventory(prev => {
-        const ex = prev.find(i => i.type === 'flower');
-        return ex
-          ? prev.map(i => (i.type === 'flower' ? { ...i, quantity: i.quantity + 1 } : i))
-          : [...prev, { id: 'flower-fetch', type: 'flower', quantity: 1, effect: 'heal', value: 20, icon: '🌸' }];
-      });
-      console.log(`[pet] ${isDog ? 'Dog' : 'Cat'} fetched a healing flower from base`);
-    }, 30000);
+      const focus = petFetchFocusRef.current === 'auto' ? null : petFetchFocusRef.current;
+      const got = petFetch(heroPosRef.current.q, heroPosRef.current.r, radius, maxPicks, focus);
+      if (!got.length) return;
+      const icon = isDog ? '🐕' : '🐈';
+      for (const g of got) {
+        const w = axialToWorld({ q: g.q, r: g.r }, hexSize);
+        spawnCombatText(w.x, w.z, `${icon} fetched`, isDog ? '#ffb454' : '#c084fc');
+      }
+    }, intervalMs);
     return () => clearInterval(iv);
-  }, [setLocalHeroInventory, isDog]);
+  }, [isDog, hexSize, spawnCombatText, petFetch]);
 
   // Pet-pack supplies are used via the number-key hotbar (1–8), which merges the
   // hero and pet inventories so each carried item gets its own key (see
@@ -5078,12 +5240,13 @@ export default function SoloMissionMap3D({
   const openTutorial = React.useCallback(() => { setTutorialPage(0); setTutorialOpen(true); }, []);
   const tutorialPages = React.useMemo(() => [
     { icon: '🎯', title: 'Current Objective', body: storyArc[storyBeatIdx]?.objective ?? 'Fill any victory track to win the campaign.' },
+    { icon: '🌍', title: `Why We Fight — ${FACTION_MOTIVATION[playerFactionKey].ethos}`, body: FACTION_MOTIVATION[playerFactionKey].why },
     { icon: '🕹️', title: 'Getting Around', body: 'Move with WASD. Pan the camera with the arrow keys or by dragging, and zoom with the mouse wheel.' },
     { icon: '🚩', title: 'Capturing Outposts', body: 'Walk next to an outpost and press G to assault it, or use its buttons to Infiltrate 🥷 or Negotiate 🕊️ (skill-gated). Captured outposts claim territory and feed the Control track.' },
     { icon: '⚔️', title: 'Combat & Abilities', body: 'Press F to attack an adjacent enemy or camp. Offensive abilities are on Q / E / R / T, defensive on Z / X / C / V. Tab swaps the active set.' },
     { icon: '🌱', title: 'Economy & Aid', body: 'Pick up resources as you explore. Invest them at the Terraformer with T, aid refugee camps with H, and use items with 1-8.' },
     { icon: '🏆', title: 'Winning', body: 'Fill any of the four victory tracks in the top bar (Domination, Control, Prosperity, Exploitation) before a rival faction fills theirs. Your base and borders grow as you level.' },
-  ], [storyArc, storyBeatIdx]);
+  ], [storyArc, storyBeatIdx, playerFactionKey]);
   const toggleGfx = React.useCallback(() => setGfxHigh(v => {
     const n = !v;
     try { localStorage.setItem('afrofuture.gfxHigh', n ? '1' : '0'); } catch {}
@@ -5641,6 +5804,7 @@ export default function SoloMissionMap3D({
         if (!exploredRef.current.has(okey) && !heroVisible.has(okey)) return null;
         if (axialDistance({ q: o.q, r: o.r }, hero.pos) > RENDER_RADIUS) return null;
         const ow = axialToWorld({ q: o.q, r: o.r }, hexSize);
+        const isDesert = tilesByKey.get(okey)?.type === 'desert';
         return (
           <group key={`outpost-${o.key}`} position={[ow.x, tileTopAt(o.q, o.r), ow.z]} frustumCulled={false}>
             {(() => {
@@ -5650,19 +5814,19 @@ export default function SoloMissionMap3D({
               if (mobaActive) {
                 const owned = !!mobaOwner && mobaOwner !== 'neutral';
                 const color = owned ? (FACTION_COLORS[mobaOwner as string]?.primary ?? heroColors.primary) : heroColors.primary;
-                return <OutpostMarker size={hexSize} owned={owned} color={color} />;
+                return <OutpostMarker size={hexSize} owned={owned} color={color} desert={isDesert} />;
               }
               // Solo: a rival empire's outpost flies THEIR colours — visible threat.
               const rivalOwner = o.owner !== 'player' && o.owner !== 'neutral' ? o.owner : null;
               return <OutpostMarker size={hexSize} owned={o.owner === 'player' || !!rivalOwner}
-                color={rivalOwner ? (FACTION_COLORS[rivalOwner]?.primary ?? '#8a8f96') : heroColors.primary} />;
+                color={rivalOwner ? (FACTION_COLORS[rivalOwner]?.primary ?? '#8a8f96') : heroColors.primary} desert={isDesert} />;
             })()}
           </group>
         );
       })}
     </>
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  ), [outposts, mobaActive, mobaOutpostOwner, heroColors.primary, heroVisible, hero.pos.q, hero.pos.r, hexSize, tileTopAt, exploredCount]);
+  ), [outposts, mobaActive, mobaOutpostOwner, heroColors.primary, heroVisible, hero.pos.q, hero.pos.r, hexSize, tileTopAt, tilesByKey, exploredCount]);
 
   const regionLabelField = React.useMemo(() => (
     <>
@@ -5842,6 +6006,13 @@ export default function SoloMissionMap3D({
                 {(() => { const bw = axialToWorld(baseAxial, hexSize); return (
                   <group key="base" position={[bw.x, tileTopAt(baseAxial.q, baseAxial.r), bw.z]} frustumCulled={false}>
                     <CommandCenter size={hexSize} color={heroColors.primary} tier={baseTier} stage={baseCityStage} playstyle={dominantStyle} hqUrl={baseTier <= 1 && baseHqUrl ? baseHqUrl : hqHouseForTier(houseVariants, baseTier, BASE_TIER_NAMES.length)} />
+                    {/* Faction mask, once claimed — additional to the base (GDD "collect and
+                        defend your mask"); also a rival raid target while it's here. */}
+                    {maskHeld && (
+                      <group position={[hexSize * 1.35, 0, hexSize * 0.75]}>
+                        <MaskPedestal faction={playerFactionKey} size={hexSize} />
+                      </group>
+                    )}
                   </group>
                 ); })()}
                 <CityBuildingsMesh spots={cityBuildingSpots} size={hexSize} tier={baseTier} color={heroColors.primary} houses={houseVariants} />
@@ -5851,6 +6022,13 @@ export default function SoloMissionMap3D({
                   <group key="terraformer" position={[tw.x, tileTopAt(terraformAxial.q, terraformAxial.r), tw.z]} frustumCulled={false}>
                     <Terraformer size={hexSize} progress={terraformProgress} done={terraformDone} />
                     {terraformDone && <GrassCluster size={hexSize} seed={terraformAxial.q * 7 + terraformAxial.r} />}
+                  </group>
+                ); })()}
+                {/* Faction mask field shrine — the "collect" half of the mask objective;
+                    disappears once claimed (see the mask pedestal in the base group). */}
+                {!maskHeld && (() => { const mw = axialToWorld(maskFieldAxial, hexSize); return (
+                  <group key="mask-shrine" position={[mw.x, tileTopAt(maskFieldAxial.q, maskFieldAxial.r), mw.z]} frustumCulled={false}>
+                    <MaskShrine faction={playerFactionKey} size={hexSize} />
                   </group>
                 ); })()}
                 {/* Outposts (fog-gated) */}
@@ -6038,6 +6216,9 @@ export default function SoloMissionMap3D({
                     <div className="hidden sm:flex items-center gap-1" title="Regions controlled"><span>🗺️</span><span className="font-semibold tabular-nums">{outpostControl.regionsControlled}/{outpostControl.regionCount}</span></div>
                     <div className="hidden sm:flex items-center gap-1" title="Territory held"><span>🟩</span><span className="font-semibold tabular-nums">{outpostControl.tilePct}%</span></div>
                     <div className="hidden sm:flex items-center gap-1" title="Refugee camps completed"><span>⛺</span><span className="font-semibold tabular-nums">{refugeeProgress.done}/{refugeeProgress.total}</span></div>
+                    <div className="flex items-center gap-1" title={maskHeld ? 'Your faction mask is held at the base — defend it from raiders' : 'Your faction mask awaits at the old shrine — go claim it'}>
+                      <span>🎭</span><span className={`font-semibold ${maskHeld ? 'text-emerald-300' : 'text-amber-300'}`}>{maskHeld ? 'Held' : 'Field'}</span>
+                    </div>
                     {localPetInventory.length > 0 && (
                       <div className="hidden sm:flex items-center gap-1" title="Pet pack supplies (hotkeys 1–8)"><span>🐾</span><span className="font-semibold tabular-nums">{localPetInventory.reduce((s, i) => s + (i.quantity || 0), 0)}</span></div>
                     )}
@@ -6122,6 +6303,13 @@ export default function SoloMissionMap3D({
                           fpsCap >= 120 ? 'bg-[#141b26]/90 ring-emerald-400/50 text-emerald-200 hover:ring-emerald-300' : 'bg-[#141b26]/90 ring-white/15 text-gray-300 hover:ring-white/40'
                         }`}
                       ><span>🎞</span><span className="hidden sm:inline tabular-nums">{fpsCap}</span></button>
+                      {soloEnabled && (
+                        <button
+                          onClick={() => setMissionsOpen(o => !o)}
+                          title="Main missions, the four winning paths"
+                          className="flex items-center gap-1 px-2.5 py-1 rounded-md text-[12px] font-bold ring-1 ring-white/15 bg-[#141b26]/90 text-gray-300 hover:ring-amber-400/60 shadow transition"
+                        ><span>🎖️</span><span className="hidden sm:inline">Missions</span></button>
+                      )}
                       <button
                         onClick={openTutorial}
                         title="How to play + current objective"
@@ -6176,6 +6364,64 @@ export default function SoloMissionMap3D({
                           className="px-3 py-1.5 rounded-lg text-[12px] font-bold ring-1 ring-emerald-400/40 bg-emerald-700/80 hover:bg-emerald-600/80">Got it ✓</button>
                       )}
                     </div>
+                  </div>
+                </div>
+              )}
+
+              {/* ── Main Missions panel — the four winning paths (🎖️ button reopens). Purely
+                  a presentation layer over the live victory-track race: no separate
+                  completion logic, so it can never desync from the real win condition. */}
+              {soloEnabled && missionsOpen && (
+                <div className="fixed inset-0 z-40 flex items-center justify-center pointer-events-none">
+                  <div className="pointer-events-auto w-[min(30rem,92vw)] max-h-[80vh] overflow-y-auto rounded-2xl bg-[#0c1219]/95 ring-1 ring-white/15 shadow-2xl text-gray-100 p-5 relative">
+                    <button onClick={() => setMissionsOpen(false)} title="Close" aria-label="Close main missions"
+                      className="absolute top-2.5 right-2.5 h-7 w-7 rounded-md bg-white/5 hover:bg-white/15 ring-1 ring-white/10 text-gray-300 text-sm font-bold">✕</button>
+                    <div className="font-bold text-base mb-3">🎖️ Main Missions, the Four Winning Paths</div>
+                    <div className="space-y-3">
+                      {MAIN_MISSIONS.map(m => {
+                        const def = VICTORY_TRACK_DEFS[m.track];
+                        const value = soloVictory[playerFactionKey]?.[m.track] ?? 0;
+                        const pct = Math.max(0, Math.min(100, Math.round((value / def.threshold) * 100)));
+                        const won = soloVictoryResult?.track === m.track;
+                        return (
+                          <div key={m.track} className={`rounded-lg ring-1 p-3 ${won ? 'ring-amber-400/50 bg-amber-950/30' : 'ring-white/10 bg-white/5'}`}>
+                            <div className="flex items-center gap-2 mb-1">
+                              <span>{def.icon}</span>
+                              <span className="font-bold text-sm">{m.title}</span>
+                              {won ? (
+                                <span className="ml-auto text-[11px] font-bold text-amber-300">WON ✓</span>
+                              ) : def.natural === playerFactionKey ? (
+                                <span className="ml-auto text-[10px] opacity-60">Your faction's lean</span>
+                              ) : null}
+                            </div>
+                            <div className="text-[12px] opacity-70 mb-2">{m.description}</div>
+                            <div className="h-1.5 rounded-full bg-white/10 overflow-hidden">
+                              <div className="h-full rounded-full bg-emerald-500" style={{ width: `${pct}%` }} />
+                            </div>
+                            <div className="text-[11px] opacity-60 mt-1 tabular-nums">{Math.round(value)}/{def.threshold}</div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {/* ── Faction mask lore — one-time intro dialog (GDD "collect and defend your
+                  mask"), fires once after story beat 1. Single acknowledgement, no choices. */}
+              {soloEnabled && maskDialogOpen && (
+                <div className="fixed inset-0 z-50 flex items-end justify-center pb-64 sm:pb-24 bg-black/45 backdrop-blur-[2px] pointer-events-auto">
+                  <div className="relative w-[min(34rem,94vw)] p-5 rounded-2xl bg-[#0c1219]/97 ring-1 ring-white/15 shadow-2xl text-gray-100">
+                    <div className="flex items-center gap-2 mb-1">
+                      <span className="w-2.5 h-2.5 rounded-full shrink-0" style={{ background: FACTION_COLORS[playerFactionKey]?.primary ?? '#8a8f96' }} />
+                      <span className="text-[11px] uppercase tracking-wider opacity-60">🎭 {MASK_LORE[playerFactionKey].title}</span>
+                    </div>
+                    <div className="font-bold mb-2" style={{ color: FACTION_COLORS[playerFactionKey]?.label ?? '#e5e7eb' }}>
+                      {storyNpc(playerFactionKey, heroGender ?? 'FEMALE')}
+                    </div>
+                    <div className="text-sm leading-relaxed opacity-90 mb-2 bg-black/30 rounded-lg px-3 py-2">“{storyText(MASK_LORE[playerFactionKey].lines[0], playerFactionKey, heroGender ?? 'FEMALE')}”</div>
+                    <div className="text-sm leading-relaxed opacity-90 mb-4 bg-black/30 rounded-lg px-3 py-2">“{storyText(MASK_LORE[playerFactionKey].lines[1], playerFactionKey, heroGender ?? 'FEMALE')}”</div>
+                    <button onClick={closeMaskDialog} className="w-full py-2 rounded-lg bg-emerald-700 hover:bg-emerald-600 font-bold">Understood</button>
                   </div>
                 </div>
               )}

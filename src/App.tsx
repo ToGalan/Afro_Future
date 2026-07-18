@@ -23,6 +23,7 @@ import GoogleSignInButton from './components/auth/GoogleSignInButton';
 import SoloMissionMap3D from './components/SoloMissionMap3D';
 import GameHUD from './components/gameHUD';
 import type { MinimapData } from './components/gameHUD';
+import { FACTION_MOTIVATION } from './services/storyline';
 import PetPanel from './components/PetPanel';
 import { useAutoSyncSkills } from './hooks/useAutoSyncSkills';
 import { useSkillsProgress } from './hooks/useSkillsProgress';
@@ -1438,6 +1439,19 @@ function FirstTimeFlow({ faction, archetype, pet, onFaction, onArchetype, onPet,
                   <div className="mt-2 space-y-1">
                     <div className="text-emerald-300 font-medium">Lore:</div>
                     <div className="opacity-80 text-xs sm:text-sm md:text-[17px] leading-snug whitespace-pre-line">{factionDetails[chosenFaction].lore}</div>
+                  </div>
+                  <div className="mt-2 space-y-1">
+                    <div className="text-emerald-300 font-medium">Why We Fight:</div>
+                    <div className="opacity-80 text-xs sm:text-sm md:text-[17px] leading-snug whitespace-pre-line">{FACTION_MOTIVATION[chosenFaction].why}</div>
+                  </div>
+                  <div className="mt-2 space-y-1.5">
+                    <div className="text-emerald-300 font-medium">Rivals:</div>
+                    {(Object.entries(FACTION_MOTIVATION[chosenFaction].stance) as [Faction, string][]).map(([rival, text]) => (
+                      <div key={rival} className="opacity-80 text-xs sm:text-sm md:text-[16px] leading-snug">
+                        <span className="font-semibold" style={{ color: rival === 'ASF' ? '#f59e0b' : rival === 'WC' ? '#60a5fa' : '#34d399' }}>{factionDetails[rival].name.split(' – ')[0]}: </span>
+                        {text}
+                      </div>
+                    ))}
                   </div>
                 </div>
               ) : (

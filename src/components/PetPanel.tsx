@@ -11,6 +11,18 @@ import {
 } from '../services/petSpecies';
 import { PetIcon } from '../assets/assetPaths';
 
+/** What the pet should auto-gather (petFetch in useCollectibles) — 'auto' (default)
+ *  picks whatever's nearest of any kind; the others restrict to one resource type. */
+export type PetFetchFocus = 'auto' | 'flower' | 'mushroom' | 'ore' | 'energy' | 'bio';
+const FETCH_FOCUS_OPTIONS: Array<{ key: PetFetchFocus; icon: string; label: string }> = [
+  { key: 'auto',     icon: '🎯', label: 'Auto (whatever\'s around)' },
+  { key: 'ore',      icon: '⬢', label: 'Ore' },
+  { key: 'energy',   icon: '⚡', label: 'Energy' },
+  { key: 'bio',      icon: '🌿', label: 'Bio' },
+  { key: 'flower',   icon: '🌸', label: 'Flowers' },
+  { key: 'mushroom', icon: '🍄', label: 'Mushrooms' },
+];
+
 /**
  * Pet companion management panel (GDD "Pet Companion Feature").
  *
@@ -19,7 +31,7 @@ import { PetIcon } from '../assets/assetPaths';
  * and the three bonding-gated abilities with lock state.
  */
 export const PetPanel: React.FC<{ petType?: string; petName?: string }> = ({ petType, petName }) => {
-  const { profile } = usePlayerProfile();
+  const { profile, saveProgress } = usePlayerProfile();
   // Minimized = header strip only (portrait + name + level). Persisted per browser.
   const [minimized, setMinimized] = React.useState<boolean>(() => {
     try { return localStorage.getItem('afrofuture.petCardMin') === '1'; } catch { return false; }
@@ -48,6 +60,8 @@ export const PetPanel: React.FC<{ petType?: string; petName?: string }> = ({ pet
   const tierIdx = bondTierIndex(bond);
   const bondPct = Math.round(bondTierProgress(bond) * 100);
   const abilities = petAbilitiesWithState(type, level, bond);
+  const fetchFocus: PetFetchFocus = (pet.fetchFocus as PetFetchFocus) || 'auto';
+  const setFetchFocus = (f: PetFetchFocus) => saveProgress({ pet: { fetchFocus: f } } as any);
 
   return (
     <div
@@ -133,6 +147,30 @@ export const PetPanel: React.FC<{ petType?: string; petName?: string }> = ({ pet
             )}
           </div>
         ))}
+      </div>
+
+      {/* Auto-gather focus — what the pet should range out and fetch while exploring
+          (default: whatever's nearest, of any kind). Cyber-Cat fetches often but one at
+          a time (speed); Cyber-Dog fetches less often but grabs more per trip (quantity) —
+          see petFetch/pet-fetch effects in SoloMissionMap3D. */}
+      <div style={{ marginTop: 8 }}>
+        <div style={{ fontSize: 10, opacity: 0.6, textTransform: 'uppercase', letterSpacing: 0.6, marginBottom: 4 }}>Auto-Gather Focus</div>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 4 }}>
+          {FETCH_FOCUS_OPTIONS.map(o => (
+            <button
+              key={o.key}
+              onClick={() => setFetchFocus(o.key)}
+              title={o.label}
+              style={{
+                display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 3,
+                fontSize: 11, padding: '4px 2px', borderRadius: 6, cursor: 'pointer',
+                border: fetchFocus === o.key ? '1px solid rgba(56,189,248,0.7)' : '1px solid rgba(255,255,255,0.1)',
+                background: fetchFocus === o.key ? 'rgba(56,189,248,0.18)' : 'rgba(255,255,255,0.05)',
+                color: '#fff',
+              }}
+            >{o.icon}</button>
+          ))}
+        </div>
       </div>
       </>)}
     </div>

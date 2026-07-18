@@ -13,6 +13,8 @@
  * persists progress in `progress.solo.storyBeat` / `storyChoices`.
  */
 
+import type { VictoryTrack } from './mobaMatch';
+
 export type StoryFaction = 'PAA' | 'ASF' | 'WC';
 
 /**
@@ -309,3 +311,90 @@ export const STORY_ARCS: Record<StoryFaction, StoryBeat[]> = {
 export function arcFor(faction: string): StoryBeat[] {
   return STORY_ARCS[(faction === 'ASF' || faction === 'WC' ? faction : 'PAA') as StoryFaction];
 }
+
+// ─── Faction motivation — the "why" behind each faction's GDD goal ───────────────
+// Per the GDD's "Storyline goals": PAA aids the WC, mediates peace, and works to defeat
+// the militant ASF; ASF defends Africa and works to defeat BOTH the WC and the PAA
+// (whom it sees as traitors); WC secures Africa's resources to rebuild, negotiating
+// with or defeating whichever African faction it's up against. `why` is the founding
+// wound/ideology behind the faction's ethos; `stance` is how it specifically regards
+// EACH of the other two and why, so the rivalry reads as motivated, not generic.
+export interface FactionMotivation {
+  ethos: string;
+  why: string;
+  stance: Partial<Record<StoryFaction, string>>;
+}
+
+export const FACTION_MOTIVATION: Record<StoryFaction, FactionMotivation> = {
+  PAA: {
+    ethos: 'Heal and Unite',
+    why: 'The Pan-African Alliance rose from the continental unity movements that survived WWIII intact enough to remember why they organized in the first place: division let outsiders carve up the continent for centuries, and division nearly finished the job during the collapse. The Alliance\'s non-lethal, diplomacy-first doctrine isn\'t naivety, it\'s policy, because every war they refuse to escalate is one more region still standing to rebuild. They carry ancestral cooperation and advanced tech side by side, certain that survival without domination isn\'t just possible, it\'s the only kind of survival worth having.',
+    stance: {
+      ASF: 'The Alliance sees the Sovereignty Front as kin gone to fever, warriors who mistook permanent war-footing for strength and will bleed Africa dry defending it from itself if no one stops them. PAA forces are ordered to defeat the Front militarily where they must, but every commander keeps the door open for the ASF to stand down.',
+      WC: 'The Coalition is a wound the Alliance still knows how to dress: displaced and dangerous, but not yet an enemy. PAA policy is to aid and mediate first, spending resources to keep the WC from collapsing into raiding, because a starving Coalition is a far worse neighbor than a stable one.',
+    },
+  },
+  ASF: {
+    ethos: 'Africa First',
+    why: 'The Sovereignty Front was forged by people who watched "cooperation" and "aid" get used as the same old leash in a new coat, and swore the continent would never again owe its survival to anyone else\'s mercy. Every Front doctrine, guerrilla defense, offensive cybernetics, total independence, traces back to one certainty: the moment Africa looks vulnerable again, someone will move on it. History gives them reason to believe that. What makes them dangerous is that they\'ve stopped distinguishing a rival from a threat.',
+    stance: {
+      PAA: 'The Front views the Alliance as the more dangerous of its two enemies precisely because PAA looks reasonable: diplomats who invite the Coalition to the table are, in ASF doctrine, traitors softening Africa up for the next takeover. Defeating the PAA isn\'t optional in Front strategy, it\'s preventative.',
+      WC: 'The Coalition is simpler: outsiders on African soil, full stop. The Front extends no mediation and expects none, and every WC outpost still standing is unfinished business.',
+    },
+  },
+  WC: {
+    ethos: 'Survival at Any Cost',
+    why: 'The World Coalition is what survived of the old order after the structures that used to guarantee its comfort, governments, markets, supply chains, burned down with everything else. It has no ideology left except the one every desperate institution eventually adopts: hold what you can take, trade for what you cannot, and never again get caught without leverage. Africa\'s resources aren\'t conquest to the Coalition, they\'re the last functioning ledger left, and the WC intends to stay solvent even against two factions that would rather it simply left.',
+    stance: {
+      PAA: 'The Alliance is the Coalition\'s best chance at a soft landing, healers who\'ll trade fairly if the WC lets them, and WC field agents are under real pressure to keep that door open even when command back home won\'t admit they need it.',
+      ASF: 'The Front is the Coalition\'s worst case given form: no interest in trade, no patience for negotiation. Every WC outpost near Sovereignty Front territory is budgeted, internally, as a loss waiting to happen.',
+    },
+  },
+};
+
+// ─── Faction masks — GDD relic questline: "collect and defend your mask" ─────────
+// A one-time main objective, additional to the 5-beat arc above: each faction has an
+// ancestral relic mask sitting at a fixed shrine away from base. The player must reach
+// it to claim it (auto-collect on approach — no separate keybind), after which it's
+// displayed at the base... and becomes a target rival raiders will march on, same as
+// a captured outpost. Losing it sends it back to the shrine to be reclaimed.
+export const MASK_LORE: Record<StoryFaction, { title: string; lines: [string, string] }> = {
+  PAA: {
+    title: 'The Unity Mask',
+    lines: [
+      'Before the collapse, this mask sat in the Alliance archive — carved by hands that believed unity outlives any single leader.',
+      'Scouts traced it to an old shrine away from here. Bring it home, {player}. Let it watch over what we build.',
+    ],
+  },
+  ASF: {
+    title: 'The Sovereign Mask',
+    lines: [
+      'Every Front commander since the founding has sworn their oath before this mask. It was looted once. Never again.',
+      'Recover it, {player}, and plant it at our hearth where every rival can see it and think twice.',
+    ],
+  },
+  WC: {
+    title: 'The Ledger Mask',
+    lines: [
+      'Coalition records call it an asset beyond price, a pre-collapse relic worth more in legitimacy than in gold.',
+      'Retrieve it, {player}. And once it is home, do not let anyone write it off our books.',
+    ],
+  },
+};
+
+// ─── The four winning-path main missions ──────────────────────────────────────────
+// One narrative mission per victory track (GDD's four winning paths). These are a
+// presentation layer over the SAME victory-track race SoloMissionMap3D already runs
+// (the campaign is won the instant a track hits its threshold) — no separate
+// completion/reward bookkeeping here, so this can never desync from the real result.
+export interface MainMission {
+  track: VictoryTrack;
+  title: string;
+  description: string;
+}
+export const MAIN_MISSIONS: MainMission[] = [
+  { track: 'domination', title: 'The Iron Path', description: 'Break rival forces and seize their ground. Defeat enemies and raid outposts until Domination fills.' },
+  { track: 'control', title: 'The Wide Claim', description: 'Hold the map, not just fight for it. Capture outposts and secure whole regions until Control fills.' },
+  { track: 'prosperity', title: 'The Green Path', description: 'Rebuild what the collapse took. Terraform the land and aid every refugee camp until Prosperity fills.' },
+  { track: 'exploitation', title: 'The Long Ledger', description: 'Outlast everyone through supply. Gather resources, raid caches, and explore fully until Exploitation fills.' },
+];

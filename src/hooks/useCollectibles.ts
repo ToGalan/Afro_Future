@@ -182,6 +182,15 @@ export function useCollectibles({
     collectingResourceRef.current = collectingResource;
   }, [nearbyFlower, nearbyMushroom, nearbyResource, collectingFlower, collectingMushroom, collectingResource]);
 
+  // Live snapshots of the full collectible maps (not just the hero's own tile) — read
+  // by petFetch below, which runs from a setInterval closure that must never go stale.
+  const collectibleFlowersRef = useRef<Set<string>>(new Set());
+  const collectibleMushroomsRef = useRef<Set<string>>(new Set());
+  const collectibleResourcesRef = useRef<Map<string, ResourceType>>(new Map());
+  useEffect(() => { collectibleFlowersRef.current = collectibleFlowers; }, [collectibleFlowers]);
+  useEffect(() => { collectibleMushroomsRef.current = collectibleMushrooms; }, [collectibleMushrooms]);
+  useEffect(() => { collectibleResourcesRef.current = collectibleResources; }, [collectibleResources]);
+
   // ── Generate collectibles when tiles load ─────────────────────────────────
   useEffect(() => {
     if (tiles.length === 0) return;
@@ -252,6 +261,60 @@ export function useCollectibles({
         : [...prev, { id: `${type}-${key}`, type, quantity: 1, effect, value, icon }];
     });
   }, []);
+
+  // Same, but into the PET's own pack — used by petFetch below. Pet-fetched supplies
+  // used to land in the HERO's inventory (a bug: the flower entry sat in hero slot 1
+  // and just grew forever, unrelated to what the pet actually found).
+  const addPetInventoryItem = useCallback((type: string, effect: string, value: number, icon: string, key: string) => {
+    setLocalPetInventory(prev => {
+      const existing = prev.find(i => i.type === type);
+      return existing
+        ? prev.map(i => (i.type === type ? { ...i, quantity: i.quantity + 1 } : i))
+        : [...prev, { id: `${type}-${key}`, type, quantity: 1, effect, value, icon }];
+    });
+  }, []);
+
+  /**
+   * Pet auto-gather: finds up to `maxPicks` collectibles (flowers/mushrooms/resource
+   * nodes, optionally restricted to a single `focus` type) within `radius` tiles of the
+   * hero, removes them from the map, and credits the PET's pack — no animation, no
+   * proximity/keypress requirement (the pet is out ranging, not the hero standing on
+   * it). Replaces the old flat "always +1 flower every 30s" interval (SoloMissionMap3D):
+   * Cyber-Cat calls this often with maxPicks=1 (speed), Cyber-Dog calls it less often
+   * with maxPicks=2+ (quantity/haul) — see the pet-fetch effects there.
+   */
+  const petFetch = useCallback((heroQ2: number, heroR2: number, radius: number, maxPicks: number, focus?: 'flower' | 'mushroom' | ResourceType | null): Array<{ kind: 'flower' | 'mushroom' | ResourceType; q: number; r: number }> => {
+    const axialDist = (q: number, r: number) => (Math.abs(q - heroQ2) + Math.abs(r - heroR2) + Math.abs((q - heroQ2) + (r - heroR2))) / 2;
+    type Cand = { kind: 'flower' | 'mushroom' | ResourceType; key: string; q: number; r: number; d: number };
+    const cands: Cand[] = [];
+    const consider = (key: string, kind: Cand['kind']) => {
+      if (focus && kind !== focus) return;
+      const [q, r] = key.split(',').map(Number);
+      const d = axialDist(q, r);
+      if (d <= radius) cands.push({ kind, key, q, r, d });
+    };
+    collectibleFlowersRef.current.forEach(k => consider(k, 'flower'));
+    collectibleMushroomsRef.current.forEach(k => consider(k, 'mushroom'));
+    collectibleResourcesRef.current.forEach((type, k) => consider(k, type));
+    cands.sort((a, b) => a.d - b.d);
+    const picks = cands.slice(0, Math.max(0, maxPicks));
+    const collected: Array<{ kind: Cand['kind']; q: number; r: number }> = [];
+    for (const c of picks) {
+      if (c.kind === 'flower') {
+        setCollectibleFlowers(prev => { if (!prev.has(c.key)) return prev; const n = new Set(prev); n.delete(c.key); return n; });
+        addPetInventoryItem('flower', 'heal', 20, '🌸', c.key);
+      } else if (c.kind === 'mushroom') {
+        setCollectibleMushrooms(prev => { if (!prev.has(c.key)) return prev; const n = new Set(prev); n.delete(c.key); return n; });
+        addPetInventoryItem('herb', 'buff', 5, '🍄', c.key);
+      } else {
+        const def = RESOURCE_DEFS[c.kind];
+        setCollectibleResources(prev => { if (prev.get(c.key) !== c.kind) return prev; const n = new Map(prev); n.delete(c.key); return n; });
+        addPetInventoryItem(c.kind, def.effect, def.hp || def.ep, def.icon, c.key);
+      }
+      collected.push({ kind: c.kind, q: c.q, r: c.r });
+    }
+    return collected;
+  }, [addPetInventoryItem]);
 
   // Award XP and persist. Patch ONLY xp/level so mergeProgress preserves the existing
   // hero (skills/traits) — a pickup must never wipe skill progression.
@@ -387,5 +450,6 @@ export function useCollectibles({
     // Actions
     handleCollect,
     handleItemUse,
+    petFetch,
   };
 }

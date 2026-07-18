@@ -116,7 +116,22 @@
       "PowerShell(Start-Process -FilePath \"cmd.exe\" -ArgumentList \"/c npx vite --port 5199 --strictPort > `\"$env:TEMP\\\\vite-5199.log`\" 2>&1\" -WindowStyle Hidden; Start-Sleep -Seconds 6; \\(Invoke-WebRequest -Uri \"http://localhost:5199\" -UseBasicParsing -TimeoutSec 10\\).StatusCode; \\(Invoke-WebRequest -Uri \"http://localhost:5199/assets/houses/manifest.json\" -UseBasicParsing -TimeoutSec 10\\).Content; \\(Invoke-WebRequest -Uri \"http://localhost:5199/assets/houses/house_base.glb\" -UseBasicParsing -TimeoutSec 10\\).StatusCode)",
       "Bash(npx @gltf-transform/cli optimize \"assets/houses/dessert_outpost/source/dcb7016ea42dcc802c4ea5b6b3027241.glb\" \"public/assets/houses/house_dessert_outpost.glb\" --compress quantize --texture-compress webp --texture-size 512 --simplify-error 0.01)",
       "Bash(npx @gltf-transform/cli optimize \"assets/houses/trading_post/source/8b581169df8571d85460c7ad46b69b8e.glb\" \"public/assets/houses/house_trading_post.glb\" --compress quantize --texture-compress webp --texture-size 512 --simplify-error 0.01)",
-      "PowerShell(Start-Process -FilePath \"cmd.exe\" -ArgumentList \"/c npx vite --port 5199 --strictPort > `\"$env:TEMP\\\\vite-5199.log`\" 2>&1\" -WindowStyle Hidden; Start-Sleep -Seconds 6; \\(Invoke-WebRequest -Uri \"http://localhost:5199/assets/houses/house_dessert_outpost.glb\" -UseBasicParsing -TimeoutSec 10\\).StatusCode; \\(Invoke-WebRequest -Uri \"http://localhost:5199/assets/houses/house_trading_post.glb\" -UseBasicParsing -TimeoutSec 10\\).StatusCode)"
+      "PowerShell(Start-Process -FilePath \"cmd.exe\" -ArgumentList \"/c npx vite --port 5199 --strictPort > `\"$env:TEMP\\\\vite-5199.log`\" 2>&1\" -WindowStyle Hidden; Start-Sleep -Seconds 6; \\(Invoke-WebRequest -Uri \"http://localhost:5199/assets/houses/house_dessert_outpost.glb\" -UseBasicParsing -TimeoutSec 10\\).StatusCode; \\(Invoke-WebRequest -Uri \"http://localhost:5199/assets/houses/house_trading_post.glb\" -UseBasicParsing -TimeoutSec 10\\).StatusCode)",
+      "Bash(python3 -c ' *)",
+      "Bash(mkdir -p \"../../../public/assets/creeps/gltf/camel\" \"../../../public/assets/creeps/gltf/rhino\")",
+      "Bash(cp camel.gltf \"../../../public/assets/creeps/gltf/camel/scene.gltf\")",
+      "Bash(cp camel.bin \"../../../public/assets/creeps/gltf/camel/scene.bin\")",
+      "Bash(cp rhino.gltf \"../../../public/assets/creeps/gltf/rhino/scene.gltf\")",
+      "Bash(mkdir -p public/assets/masks)",
+      "PowerShell(node \"C:\\\\Users\\\\brian\\\\AppData\\\\Local\\\\Temp\\\\claude\\\\d--Afro-Future--Dev-Backup-New-Dev-2025-v3\\\\84b4b9d8-d8bf-418e-8078-1420d2408561\\\\scratchpad\\\\loadcheck_missions.cjs\")",
+      "Bash(npx @gltf-transform/cli optimize \"assets/houses/01/source/8854bf4bae33007bd961d62cde881e66.glb\" \"public/assets/houses/house_17.glb\" --compress quantize --texture-compress webp --texture-size 512 --simplify-error 0.01)",
+      "Bash(npx @gltf-transform/cli optimize \"assets/houses/02/source/9823e01aa55e859de1c683879c177340.glb\" \"public/assets/houses/house_18.glb\" --compress quantize --texture-compress webp --texture-size 512 --simplify-error 0.01)",
+      "Bash(npx @gltf-transform/cli optimize \"assets/houses/04/source/4a85c237a56eca4484becaf700f81cb6.glb\" \"public/assets/houses/house_19.glb\" --compress quantize --texture-compress webp --texture-size 512 --simplify-error 0.01)",
+      "PowerShell(Get-NetTCPConnection -State Listen -LocalPort 5199)",
+      "PowerShell(Get-Process node -ErrorAction SilentlyContinue)",
+      "PowerShell(node \"C:\\\\Users\\\\brian\\\\AppData\\\\Local\\\\Temp\\\\claude\\\\d--Afro-Future--Dev-Backup-New-Dev-2025-v3\\\\84b4b9d8-d8bf-418e-8078-1420d2408561\\\\scratchpad\\\\loadcheck_lore.cjs\")",
+      "PowerShell(node \"C:\\\\Users\\\\brian\\\\AppData\\\\Local\\\\Temp\\\\claude\\\\d--Afro-Future--Dev-Backup-New-Dev-2025-v3\\\\84b4b9d8-d8bf-418e-8078-1420d2408561\\\\scratchpad\\\\loadcheck_petpanel.cjs\")",
+      "PowerShell(node \"C:\\\\Users\\\\brian\\\\AppData\\\\Local\\\\Temp\\\\claude\\\\d--Afro-Future--Dev-Backup-New-Dev-2025-v3\\\\84b4b9d8-d8bf-418e-8078-1420d2408561\\\\scratchpad\\\\loadcheck_petpanel2.cjs\")"
     ]
   }
 }

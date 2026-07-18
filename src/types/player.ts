@@ -32,6 +32,12 @@ export interface PlayerProgress {
     /** Running count of resources (ore/energy/bio) collected/used — every 100 grants
      *  1 pt on the Exploitation victory track (see bumpResourceCollected). */
     resourcesCollected?: number;
+    /** Faction mask questline (GDD "collect and defend your mask"): true once claimed
+     *  from its field shrine and displayed at the base; false if never claimed OR
+     *  stolen back by a rival raid (see 'mask-vault' strategic target). */
+    maskHeld?: boolean;
+    /** One-time mask-lore dialog already shown this campaign. */
+    maskIntroSeen?: boolean;
   };
   hero?: {
     level: number;
@@ -45,6 +51,9 @@ export interface PlayerProgress {
     level: number;
     xp: number;               // accumulated XP for leveling (starts at 0)
     bond?: number;            // bonding progression (GDD "Bonding and Skills") — gates abilities
+    /** What the pet should auto-gather (petFetch in useCollectibles): 'auto' (default,
+     *  nearest of anything) | 'flower' | 'mushroom' | 'ore' | 'energy' | 'bio'. */
+    fetchFocus?: string;
   };
   skillTokens?: {
     earned: number;
