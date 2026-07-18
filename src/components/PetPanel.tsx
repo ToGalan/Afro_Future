@@ -20,6 +20,15 @@ import { PetIcon } from '../assets/assetPaths';
  */
 export const PetPanel: React.FC = () => {
   const { profile } = usePlayerProfile();
+  // Minimized = header strip only (portrait + name + level). Persisted per browser.
+  const [minimized, setMinimized] = React.useState<boolean>(() => {
+    try { return localStorage.getItem('afrofuture.petCardMin') === '1'; } catch { return false; }
+  });
+  const toggleMinimized = () => setMinimized(m => {
+    const next = !m;
+    try { localStorage.setItem('afrofuture.petCardMin', next ? '1' : '0'); } catch {}
+    return next;
+  });
   const pet = profile?.progress?.pet;
   if (!pet) return null;
 
@@ -35,30 +44,44 @@ export const PetPanel: React.FC = () => {
 
   return (
     <div
+      // top: 64 clears the full-width fixed top HUD bar (it previously overlapped it);
+      // hidden below md — on phones the bottom HUD's pet section covers the essentials.
+      className="hidden md:block"
       style={{
-        position: 'absolute', top: 8, right: 8, width: 244,
+        position: 'absolute', top: 64, right: 8, width: 244,
         background: 'rgba(15,18,26,0.92)', color: '#fff',
         padding: 12, borderRadius: 12, fontFamily: 'sans-serif',
         border: '1px solid rgba(255,255,255,0.1)', boxShadow: '0 8px 24px rgba(0,0,0,0.4)',
       }}
     >
-      {/* Header: portrait + identity */}
-      <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 8 }}>
+      {/* Header: portrait + identity + minimize toggle */}
+      <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: minimized ? 0 : 8 }}>
         <img
           src={PetIcon[species.type]}
           alt={species.name}
-          style={{ width: 44, height: 44, objectFit: 'contain', borderRadius: 8, background: 'rgba(255,255,255,0.06)' }}
+          style={{ width: minimized ? 30 : 44, height: minimized ? 30 : 44, objectFit: 'contain', borderRadius: 8, background: 'rgba(255,255,255,0.06)' }}
         />
         <div style={{ minWidth: 0 }}>
           <div style={{ fontSize: 14, fontWeight: 700, lineHeight: 1.1 }}>{species.name}</div>
-          <div style={{ fontSize: 11, opacity: 0.7 }}>{species.tagline}</div>
+          {!minimized && <div style={{ fontSize: 11, opacity: 0.7 }}>{species.tagline}</div>}
         </div>
         <div style={{ marginLeft: 'auto', textAlign: 'right' }}>
           <div style={{ fontSize: 10, opacity: 0.6 }}>LVL</div>
-          <div style={{ fontSize: 16, fontWeight: 700 }}>{level}</div>
+          <div style={{ fontSize: 16, fontWeight: 700, lineHeight: 1 }}>{level}</div>
         </div>
+        <button
+          onClick={toggleMinimized}
+          title={minimized ? 'Expand pet card' : 'Minimize pet card'}
+          aria-label={minimized ? 'Expand pet card' : 'Minimize pet card'}
+          style={{
+            width: 22, height: 22, borderRadius: 6, border: '1px solid rgba(255,255,255,0.15)',
+            background: 'rgba(255,255,255,0.08)', color: '#fff', cursor: 'pointer',
+            fontSize: 12, fontWeight: 700, lineHeight: 1, padding: 0, flexShrink: 0,
+          }}
+        >{minimized ? '+' : '–'}</button>
       </div>
 
+      {minimized ? null : (<>
       {/* XP bar */}
       <Meter label={`XP ${xpPct}%`} pct={xpPct} color="#38bdf8" />
 
@@ -104,6 +127,7 @@ export const PetPanel: React.FC = () => {
           </div>
         ))}
       </div>
+      </>)}
     </div>
   );
 };

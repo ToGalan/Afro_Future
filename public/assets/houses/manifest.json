@@ -1,0 +1,19 @@
+{
+  "_readme": "House variations for the base's growing city (one building appears per player growth stage). These are the Fab house models, optimized from ~90MB raw exports to <1.2MB each (mesh simplify error 1%, 512px WebP textures, quantized attributes) via @gltf-transform/cli. To add more: drop a .glb/.gltf/.fbx here and append its path. Only list files that actually exist. Source folders 08 and 11 were FBX-only and are not included.",
+  "houses": [
+    "/assets/houses/house_01.glb",
+    "/assets/houses/house_02.glb",
+    "/assets/houses/house_03.glb",
+    "/assets/houses/house_04.glb",
+    "/assets/houses/house_05.glb",
+    "/assets/houses/house_06.glb",
+    "/assets/houses/house_07.glb",
+    "/assets/houses/house_09.glb",
+    "/assets/houses/house_10.glb",
+    "/assets/houses/house_12.glb",
+    "/assets/houses/house_13.glb",
+    "/assets/houses/house_14.glb",
+    "/assets/houses/house_15.glb",
+    "/assets/houses/house_16.glb"
+  ]
+}

@@ -12,7 +12,10 @@ const firebaseConfig = {
 
 // We cannot access import.meta.env in service worker static file; expect initialization from messagingSenderId injection via postMessage if needed.
 // Initialize with only messagingSenderId (rest not required for receiving background messages)
-try { firebase.initializeApp({ messagingSenderId: '245168504248' }); } catch(e) {}
+// Sender = current Firebase project `afrofuture` (312560749704). The previous value
+// (245168504248) belonged to the abandoned afro-future-7ed63 project and silently
+// broke background push registration.
+try { firebase.initializeApp({ messagingSenderId: '312560749704' }); } catch(e) {}
 try { firebase.messaging(); } catch(e) {}
 
 // Background messages (compat) handler placeholder

@@ -129,6 +129,11 @@ export const CREEP_ASSETS = {
 // FBX animated/textured pipeline the other creep species use.
 export const ELEPHANT_ASSET = '/assets/creeps/gltf/elephant/scene.gltf';
 
+// House variations for the base's growing city. The manifest is user-editable: drop
+// model files into /public/assets/houses and list them there — the sprawl picks
+// variants per building, falling back to procedural buildings while the list is empty.
+export const HOUSE_MANIFEST_URL = '/assets/houses/manifest.json';
+
 // One material per (atlas, tint) — clones share it, keeping draw state minimal.
 const matCache = new Map<string, THREE.MeshStandardMaterial>();
 function atlasMat(map: THREE.Texture, tint?: string) {

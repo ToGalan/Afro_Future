@@ -103,16 +103,33 @@ export async function signInWithGoogleCredential(idToken: string): Promise<void>
 export async function ensureAnonAuth(): Promise<User> {
   if (auth.currentUser) return auth.currentUser;
 
-  // If a Google token is present, signInWithGoogleCredential() will resolve auth.
-  // Wait indefinitely — never fall through to signInAnonymously (which would 400
-  // on projects where anonymous auth is disabled).
+  // Let Firebase finish restoring any persisted session (anon or Google) first —
+  // a returning player resolves here without any new sign-in.
+  const restored = await new Promise<User | null>((resolve) => {
+    const unsub = onAuthStateChanged(auth, (u) => { unsub(); resolve(u); });
+  });
+  if (restored) return restored;
+
+  // If a Google token is present, signInWithGoogleCredential() is (or was) in
+  // flight — give it a grace window. But do NOT wait forever: when the credential
+  // sign-in fails (Google provider not enabled on the project, expired token, …)
+  // an indefinite wait leaves the app with NO user at all, so the profile never
+  // loads and every save silently no-ops — the classic "my progress restarts every
+  // launch" failure. After the grace window, fall through to anonymous sign-in so
+  // progress lands on a PERSISTENT anon uid; usePlayerProfile migrates that
+  // progress onto the Google uid automatically once real sign-in starts working.
   const hasGoogleToken = !!localStorage.getItem('afrofuture.idToken');
   if (hasGoogleToken) {
-    return new Promise<User>((resolve, reject) => {
+    const viaGoogle = await new Promise<User | null>((resolve) => {
+      let timer: ReturnType<typeof setTimeout> | null = null;
       const unsub = onAuthStateChanged(auth, (u) => {
-        if (u) { unsub(); resolve(u); }
-      }, reject);
+        if (u) { if (timer) clearTimeout(timer); unsub(); resolve(u); }
+      });
+      timer = setTimeout(() => { unsub(); resolve(null); }, 6000);
     });
+    if (viaGoogle) return viaGoogle;
+    // eslint-disable-next-line no-console
+    console.warn('[auth] Google credential sign-in did not complete (provider disabled or token expired) — falling back to anonymous auth so progress still persists.');
   }
 
   try {

@@ -9,7 +9,7 @@ import * as THREE from 'three';
 import { Canvas, useThree, useFrame } from '@react-three/fiber';
 import { OrbitControls, Text, Sky, ContactShadows } from '@react-three/drei';
 import { ImprovedNoise } from 'three/examples/jsm/math/ImprovedNoise.js';
-import { FbxProp, FbxPbrProp, FbxRawProp, GltfRawProp, FbxAnimatedProp, FbxAnimatedTexturedProp, NATURE_ASSETS, NATURE_TEX, MILITARY_ASSETS, MILITARY_TEX, PBR_PROP_ASSETS, PBR_PROP_TEX, MUSHROOM_ASSET, MUSHROOM_TEX, MINING_ASSETS, PET_ASSETS, WC_NPC_ASSET, WC_NPC_TEX, CREEP_ASSETS, CREEP_TEX, ELEPHANT_ASSET } from './FbxProps';
+import { FbxProp, FbxPbrProp, FbxRawProp, GltfRawProp, FbxAnimatedProp, FbxAnimatedTexturedProp, NATURE_ASSETS, NATURE_TEX, MILITARY_ASSETS, MILITARY_TEX, PBR_PROP_ASSETS, PBR_PROP_TEX, MUSHROOM_ASSET, MUSHROOM_TEX, MINING_ASSETS, PET_ASSETS, WC_NPC_ASSET, WC_NPC_TEX, CREEP_ASSETS, CREEP_TEX, ELEPHANT_ASSET, HOUSE_MANIFEST_URL } from './FbxProps';
 import { EffectComposer, Bloom, Vignette } from '@react-three/postprocessing';
 import { arcFor, beatReady, storyNpc, storyText, type StoryBeat, type StoryChoice, type StoryWorldState } from '../services/storyline';
 import { GameAvatar, type AvatarColors } from './GameAvatarMesh';
@@ -837,132 +837,24 @@ function baseZoneRingNextLevel(level: number) {
   return level >= 50 ? Infinity : level >= 25 ? 50 : level >= 10 ? 25 : 10;
 }
 
-/** Player base / command center — the hub the pet fetches from and terraforming ties
- *  to. Grows with `tier` (player level): bigger platform + taller keep each tier,
- *  perimeter walls at 2, watchtowers at 3, annex blocks + comms at 4, shield at 5.
- *  The dominant playstyle recolours the energy core/lights and plants a signature
- *  ornament (healer cross, diplomat banners, scavenger crane, raider braziers,
- *  conqueror obelisk) so YOUR base reflects how you play. */
-function CommandCenter({ size, color = '#3aa37a', tier = 1, stage = 0, playstyle = null }: { size: number; color?: string; tier?: number; stage?: number; playstyle?: Playstyle | null }) {
-  const glowRef = React.useRef<THREE.Mesh>(null);
-  const shieldRef = React.useRef<THREE.Mesh>(null);
-  useFrame(({ clock }) => {
-    const t = clock.getElapsedTime();
-    if (glowRef.current) glowRef.current.rotation.y = t * 0.5;
-    if (shieldRef.current) shieldRef.current.rotation.z = t * 0.25;
-  });
+/** Player base / command center — purely the HQ house model (first entry in the
+ *  houses manifest) plus a floating tier-name label. All procedural three.js
+ *  build-out (platform, walls, towers, annexes, shield, ornaments) was removed per
+ *  design direction; growth reads through the model's tier scaling, the +1%/stage
+ *  scale, the district pads, the sprawl and the territory stroke. */
+function CommandCenter({ size, tier = 1, stage = 0, playstyle = null, hqUrl = null }: { size: number; color?: string; tier?: number; stage?: number; playstyle?: Playstyle | null; hqUrl?: string | null }) {
   const S = size;
-  const plat = S * (1.05 + tier * 0.09);   // platform footprint grows with tier
-  const towerH = S * (0.7 + tier * 0.16);  // keep grows taller with tier
-  const keepBaseY = S * 0.34;
-  const roofY = keepBaseY + towerH + S * 0.26;
-  const accent = playstyle ? PLAYSTYLES[playstyle].color : color; // playstyle tints the tech
   // Continuous growth: +1% overall scale per city growth stage (per level to 10,
-  // then per 5 levels), so the HQ visibly grows EVERY level between tier build-outs.
+  // then per 5 levels), so the HQ visibly grows EVERY level between tier jumps.
   const grow = 1 + Math.min(0.26, stage * 0.01);
   return (
     <group scale={grow}>
-      {/* platform */}
-      <mesh position={[0, S * 0.17, 0]} rotation={[0, Math.PI / 6, 0]} castShadow receiveShadow><cylinderGeometry args={[plat * 0.88, plat, S * 0.34, 6]} /><meshStandardMaterial color="#2a3038" roughness={0.85} flatShading /></mesh>
-      {/* main keep */}
-      <mesh position={[0, keepBaseY + towerH / 2, 0]} castShadow><cylinderGeometry args={[S * 0.48, S * 0.66, towerH, 6]} /><meshStandardMaterial color="#454e57" roughness={0.6} metalness={0.2} flatShading /></mesh>
-      <mesh position={[0, roofY, 0]} castShadow><coneGeometry args={[S * 0.55, S * 0.52, 6]} /><meshStandardMaterial color={color} roughness={0.5} metalness={0.3} flatShading /></mesh>
-      {/* rotating energy core — takes the playstyle accent */}
-      <mesh ref={glowRef} position={[0, keepBaseY + towerH * 0.55, 0]}><icosahedronGeometry args={[S * 0.24, 0]} /><meshStandardMaterial color={accent} emissive={accent} emissiveIntensity={1.2} flatShading /></mesh>
-      {/* antenna + beacon */}
-      <mesh position={[0, roofY + S * 0.5, 0]}><cylinderGeometry args={[S * 0.03, S * 0.03, S * 0.5, 4]} /><meshStandardMaterial color="#888" metalness={0.5} /></mesh>
-      <mesh position={[0, roofY + S * 0.78, 0]}><sphereGeometry args={[S * (tier >= 5 ? 0.11 : 0.08), 6, 6]} /><meshBasicMaterial color={tier >= 5 ? accent : '#ff5555'} /></mesh>
-      {/* playstyle signature ornament on the platform apron */}
-      {playstyle === 'help' && (
-        <group position={[0, S * 0.34, plat * 0.68]}>
-          <mesh position={[0, S * 0.28, 0]}><cylinderGeometry args={[S * 0.03, S * 0.04, S * 0.56, 5]} /><meshStandardMaterial color="#78838d" metalness={0.4} /></mesh>
-          <mesh position={[0, S * 0.62, 0]}><boxGeometry args={[S * 0.3, S * 0.1, S * 0.06]} /><meshStandardMaterial color="#e8f4f0" emissive={accent} emissiveIntensity={0.8} flatShading /></mesh>
-          <mesh position={[0, S * 0.62, 0]}><boxGeometry args={[S * 0.1, S * 0.3, S * 0.06]} /><meshStandardMaterial color="#e8f4f0" emissive={accent} emissiveIntensity={0.8} flatShading /></mesh>
-        </group>
+      {hqUrl && (
+        <Suspense fallback={null}>
+          <HouseVariantModel url={hqUrl} size={S * (1.35 + tier * 0.16)} rotation={Math.PI / 4} />
+        </Suspense>
       )}
-      {playstyle === 'negotiate' && (
-        <group position={[0, S * 0.34, plat * 0.68]}>
-          {[-1, 1].map(sx => (
-            <group key={sx} position={[sx * S * 0.22, 0, 0]}>
-              <mesh position={[0, S * 0.34, 0]}><cylinderGeometry args={[S * 0.025, S * 0.035, S * 0.68, 5]} /><meshStandardMaterial color="#78838d" metalness={0.4} /></mesh>
-              <mesh position={[sx * S * 0.12, S * 0.56, 0]}><boxGeometry args={[S * 0.24, S * 0.16, S * 0.02]} /><meshStandardMaterial color={sx < 0 ? '#f4f7f9' : accent} emissive={sx < 0 ? '#dfe8ee' : accent} emissiveIntensity={0.35} side={THREE.DoubleSide} flatShading /></mesh>
-            </group>
-          ))}
-        </group>
-      )}
-      {playstyle === 'scavenge' && (
-        <group position={[0, S * 0.34, plat * 0.66]}>
-          <mesh position={[-S * 0.14, S * 0.1, 0]} rotation={[0, 0.5, 0]}><dodecahedronGeometry args={[S * 0.14, 0]} /><meshStandardMaterial color="#6a5a3a" roughness={0.9} flatShading /></mesh>
-          <mesh position={[S * 0.08, S * 0.08, S * 0.1]} rotation={[0, 1.1, 0]}><dodecahedronGeometry args={[S * 0.1, 0]} /><meshStandardMaterial color="#7a6a4a" roughness={0.9} flatShading /></mesh>
-          <mesh position={[S * 0.2, S * 0.34, -S * 0.06]} rotation={[0, 0, -0.7]}><cylinderGeometry args={[S * 0.025, S * 0.03, S * 0.7, 5]} /><meshStandardMaterial color={accent} metalness={0.3} roughness={0.6} flatShading /></mesh>
-        </group>
-      )}
-      {playstyle === 'loot' && (
-        <group position={[0, S * 0.34, plat * 0.68]}>
-          {[-1, 1].map(sx => (
-            <group key={sx} position={[sx * S * 0.26, 0, 0]}>
-              <mesh position={[0, S * 0.12, 0]}><cylinderGeometry args={[S * 0.08, S * 0.06, S * 0.24, 6]} /><meshStandardMaterial color="#33261e" roughness={0.9} flatShading /></mesh>
-              <mesh position={[0, S * 0.3, 0]}><coneGeometry args={[S * 0.07, S * 0.18, 6]} /><meshBasicMaterial color={accent} /></mesh>
-            </group>
-          ))}
-          <mesh position={[0, S * 0.16, S * 0.14]} rotation={[0.3, 0, 0]}><coneGeometry args={[S * 0.04, S * 0.34, 4]} /><meshStandardMaterial color="#2a1a16" roughness={0.9} flatShading /></mesh>
-        </group>
-      )}
-      {playstyle === 'dominate' && (
-        <group position={[0, S * 0.34, plat * 0.68]}>
-          <mesh position={[0, S * 0.4, 0]} castShadow><boxGeometry args={[S * 0.14, S * 0.8, S * 0.14]} /><meshStandardMaterial color="#23282e" roughness={0.55} metalness={0.35} flatShading /></mesh>
-          <mesh position={[0, S * 0.86, 0]}><coneGeometry args={[S * 0.1, S * 0.16, 4]} /><meshStandardMaterial color={accent} emissive={accent} emissiveIntensity={0.9} flatShading /></mesh>
-        </group>
-      )}
-      {/* tier 2+: perimeter wall segments + corner pylons */}
-      {tier >= 2 && [0, 1, 2, 3, 4, 5].map(i => {
-        const a = (Math.PI / 3) * i + Math.PI / 6; // edge midpoints of the hex platform
-        return (
-          <mesh key={`wall${i}`} position={[Math.cos(a) * plat * 0.82, S * 0.34 + S * 0.14, Math.sin(a) * plat * 0.82]} rotation={[0, -a + Math.PI / 2, 0]} castShadow>
-            <boxGeometry args={[plat * 0.8, S * 0.28, S * 0.1]} /><meshStandardMaterial color="#3a424c" roughness={0.8} flatShading />
-          </mesh>
-        );
-      })}
-      {tier >= 2 && [0, 1, 2, 3, 4, 5].map(i => {
-        const a = (Math.PI / 3) * i; // hex corners
-        return (
-          <mesh key={`pylon${i}`} position={[Math.cos(a) * plat * 0.92, S * 0.34 + S * 0.2, Math.sin(a) * plat * 0.92]} castShadow>
-            <cylinderGeometry args={[S * 0.07, S * 0.09, S * 0.42, 5]} /><meshStandardMaterial color="#4a545e" roughness={0.7} metalness={0.2} flatShading />
-          </mesh>
-        );
-      })}
-      {/* tier 3+: watchtowers on alternating corners */}
-      {tier >= 3 && [0, 2, 4].map(i => {
-        const a = (Math.PI / 3) * i;
-        const x = Math.cos(a) * plat * 0.92, z = Math.sin(a) * plat * 0.92;
-        return (
-          <group key={`tower${i}`} position={[x, S * 0.34, z]}>
-            <mesh position={[0, S * 0.45, 0]} castShadow><cylinderGeometry args={[S * 0.13, S * 0.17, S * 0.9, 6]} /><meshStandardMaterial color="#4f5a64" roughness={0.65} metalness={0.2} flatShading /></mesh>
-            <mesh position={[0, S * 1.02, 0]} castShadow><coneGeometry args={[S * 0.18, S * 0.24, 6]} /><meshStandardMaterial color={color} roughness={0.5} flatShading /></mesh>
-            <mesh position={[0, S * 1.2, 0]}><sphereGeometry args={[S * 0.045, 5, 5]} /><meshBasicMaterial color={accent} /></mesh>
-          </group>
-        );
-      })}
-      {/* tier 4+: annex blocks (interior districts) + comms dish */}
-      {tier >= 4 && (
-        <>
-          <group position={[plat * 0.42, S * 0.34, -plat * 0.3]}>
-            <mesh position={[0, S * 0.19, 0]} rotation={[0, 0.4, 0]} castShadow><boxGeometry args={[S * 0.52, S * 0.38, S * 0.4]} /><meshStandardMaterial color="#3f4954" roughness={0.7} flatShading /></mesh>
-            <mesh position={[0, S * 0.19, 0]} rotation={[0, 0.4, 0]}><boxGeometry args={[S * 0.53, S * 0.08, S * 0.41]} /><meshStandardMaterial color={color} emissive={color} emissiveIntensity={0.5} flatShading /></mesh>
-          </group>
-          <group position={[-plat * 0.46, S * 0.34, plat * 0.24]}>
-            <mesh position={[0, S * 0.15, 0]} rotation={[0, -0.5, 0]} castShadow><boxGeometry args={[S * 0.44, S * 0.3, S * 0.34]} /><meshStandardMaterial color="#3f4954" roughness={0.7} flatShading /></mesh>
-            <mesh position={[0, S * 0.42, 0]} rotation={[-0.7, 0, 0]}><sphereGeometry args={[S * 0.14, 8, 6, 0, Math.PI * 2, 0, Math.PI / 2]} /><meshStandardMaterial color="#aab6c0" metalness={0.5} roughness={0.4} side={THREE.DoubleSide} /></mesh>
-          </group>
-        </>
-      )}
-      {/* tier 5: citadel energy-shield ring */}
-      {tier >= 5 && (
-        <mesh ref={shieldRef} position={[0, S * 0.95, 0]} rotation={[-Math.PI / 2, 0, 0]}>
-          <torusGeometry args={[plat * 1.12, S * 0.035, 6, 48]} /><meshBasicMaterial color={accent} transparent opacity={0.55} />
-        </mesh>
-      )}
-      <Text position={[0, roofY + S * 1.15, 0]} fontSize={S * 0.4} color="#cfe8ff" anchorX="center" anchorY="middle" outlineWidth={S * 0.03} outlineColor="#000">{BASE_TIER_NAMES[Math.min(tier, 5) - 1]}{playstyle ? ` ${PLAYSTYLES[playstyle].icon}` : ''}</Text>
+      <Text position={[0, S * (1.65 + tier * 0.18), 0]} fontSize={S * 0.4} color="#cfe8ff" anchorX="center" anchorY="middle" outlineWidth={S * 0.03} outlineColor="#000">{BASE_TIER_NAMES[Math.min(tier, 5) - 1]}{playstyle ? ` ${PLAYSTYLES[playstyle].icon}` : ''}</Text>
     </group>
   );
 }
@@ -1018,33 +910,53 @@ function BaseDistrictMesh({ size, kind, color }: { size: number; kind: BaseDistr
 /** One sprawl building per city growth stage (per level to 10, per 5 levels to 100).
  *  Spots are precomputed by the parent (deterministic spiral inside the home zone);
  *  kind 0 = hut, 1 = house with faction roof, 2 = lit tower block. */
-interface CitySpot { x: number; y: number; z: number; kind: number; rot: number; h: number }
-function CityBuildingsMesh({ spots, size, tier, color }: { spots: CitySpot[]; size: number; tier: number; color: string }) {
+interface CitySpot { x: number; y: number; z: number; kind: number; rot: number; h: number; v: number }
+/** A single house model variant, routed by file extension (.fbx vs .glb/.gltf). */
+function HouseVariantModel({ url, size, rotation }: { url: string; size: number; rotation: number }) {
+  return url.toLowerCase().endsWith('.fbx')
+    ? <FbxRawProp url={url} size={size} rotation={rotation} />
+    : <GltfRawProp url={url} size={size} rotation={rotation} />;
+}
+function CityBuildingsMesh({ spots, size, tier, color, houses }: { spots: CitySpot[]; size: number; tier: number; color: string; houses?: string[] }) {
   const S = size * (0.92 + tier * 0.04); // the whole city's scale creeps up with tier
   return (
     <group>
-      {spots.map((s, i) => (
-        <group key={i} position={[s.x, s.y, s.z]} rotation={[0, s.rot, 0]}>
-          {s.kind === 0 && (
-            <>
-              <mesh position={[0, S * 0.12 * s.h, 0]} castShadow><cylinderGeometry args={[S * 0.16, S * 0.19, S * 0.24 * s.h, 6]} /><meshStandardMaterial color="#8a7458" roughness={0.9} flatShading /></mesh>
-              <mesh position={[0, S * 0.3 * s.h, 0]} castShadow><coneGeometry args={[S * 0.22, S * 0.2 * s.h, 6]} /><meshStandardMaterial color="#6a5138" roughness={0.9} flatShading /></mesh>
-            </>
-          )}
-          {s.kind === 1 && (
-            <>
-              <mesh position={[0, S * 0.15 * s.h, 0]} castShadow><boxGeometry args={[S * 0.3, S * 0.3 * s.h, S * 0.26]} /><meshStandardMaterial color="#9c8264" roughness={0.85} flatShading /></mesh>
-              <mesh position={[0, S * 0.38 * s.h, 0]} rotation={[0, Math.PI / 4, 0]} castShadow><coneGeometry args={[S * 0.24, S * 0.18 * s.h, 4]} /><meshStandardMaterial color={color} roughness={0.7} flatShading /></mesh>
-            </>
-          )}
-          {s.kind === 2 && (
-            <>
-              <mesh position={[0, S * 0.3 * s.h, 0]} castShadow><boxGeometry args={[S * 0.24, S * 0.6 * s.h, S * 0.24]} /><meshStandardMaterial color="#57616c" roughness={0.6} metalness={0.2} flatShading /></mesh>
-              <mesh position={[0, S * 0.34 * s.h, 0]}><boxGeometry args={[S * 0.26, S * 0.07, S * 0.26]} /><meshStandardMaterial color={color} emissive={color} emissiveIntensity={0.4} flatShading /></mesh>
-            </>
-          )}
-        </group>
-      ))}
+      {spots.map((s, i) => {
+        // Procedural building — the default look AND the Suspense fallback while a
+        // house model variant streams in.
+        const procedural = (
+          <>
+            {s.kind === 0 && (
+              <>
+                <mesh position={[0, S * 0.12 * s.h, 0]} castShadow><cylinderGeometry args={[S * 0.16, S * 0.19, S * 0.24 * s.h, 6]} /><meshStandardMaterial color="#8a7458" roughness={0.9} flatShading /></mesh>
+                <mesh position={[0, S * 0.3 * s.h, 0]} castShadow><coneGeometry args={[S * 0.22, S * 0.2 * s.h, 6]} /><meshStandardMaterial color="#6a5138" roughness={0.9} flatShading /></mesh>
+              </>
+            )}
+            {s.kind === 1 && (
+              <>
+                <mesh position={[0, S * 0.15 * s.h, 0]} castShadow><boxGeometry args={[S * 0.3, S * 0.3 * s.h, S * 0.26]} /><meshStandardMaterial color="#9c8264" roughness={0.85} flatShading /></mesh>
+                <mesh position={[0, S * 0.38 * s.h, 0]} rotation={[0, Math.PI / 4, 0]} castShadow><coneGeometry args={[S * 0.24, S * 0.18 * s.h, 4]} /><meshStandardMaterial color={color} roughness={0.7} flatShading /></mesh>
+              </>
+            )}
+            {s.kind === 2 && (
+              <>
+                <mesh position={[0, S * 0.3 * s.h, 0]} castShadow><boxGeometry args={[S * 0.24, S * 0.6 * s.h, S * 0.24]} /><meshStandardMaterial color="#57616c" roughness={0.6} metalness={0.2} flatShading /></mesh>
+                <mesh position={[0, S * 0.34 * s.h, 0]}><boxGeometry args={[S * 0.26, S * 0.07, S * 0.26]} /><meshStandardMaterial color={color} emissive={color} emissiveIntensity={0.4} flatShading /></mesh>
+              </>
+            )}
+          </>
+        );
+        return (
+          <group key={i} position={[s.x, s.y, s.z]} rotation={[0, s.rot, 0]}>
+            {houses && houses.length > 0 ? (
+              // House model variations (manifest-driven): each growth stage's building is a
+              // deterministic pick from the pool, so the skyline stays stable as it grows.
+              <Suspense fallback={procedural}>
+                <HouseVariantModel url={houses[Math.min(houses.length - 1, Math.floor(s.v * houses.length))]} size={S * (0.5 + 0.24 * s.h)} rotation={0} /></Suspense>
+            ) : procedural}
+          </group>
+        );
+      })}
     </group>
   );
 }
@@ -1797,12 +1709,15 @@ function hexBoundaryR(a: number, R: number) {
   return (R * Math.cos(Math.PI / 6)) / Math.cos(d);
 }
 type ReliefKind = 'mountain' | 'hills' | 'desert' | 'plains';
-const RELIEF_SPECS: Record<ReliefKind, { amp: number; peak: number; freq: number; low: string; high: string; ridged?: boolean; snow?: string; snowFrom?: number }> = {
+const RELIEF_SPECS: Record<ReliefKind, { amp: number; peak: number; freq: number; low: string; high: string; ridged?: boolean; dome?: boolean; snow?: string; snowFrom?: number }> = {
   // amp/peak are in units of hexSize; freq is noise cycles across a tile.
-  mountain: { amp: 1.1, peak: 0.8, freq: 1.7, ridged: true, low: '#59636a', high: '#98a3a9', snow: '#eef4f7', snowFrom: 0.58 },
-  hills:    { amp: 0.34, peak: 0.16, freq: 2.1, low: '#7ba244', high: '#a9d162' },
-  desert:   { amp: 0.14, peak: 0, freq: 2.6, low: '#c5a55c', high: '#e6cd8c' },
-  plains:   { amp: 0.1, peak: 0, freq: 2.4, low: '#7dab4c', high: '#9cc968' },
+  // `dome` = relief peaks at the tile CENTER — only allowed on impassable terrain.
+  // Walkable types instead use a ring profile that is FLAT at the center (where all
+  // actors anchor at tileTop+0.08) and at the edges, so feet never sink into bumps.
+  mountain: { amp: 1.1, peak: 0.8, freq: 1.7, ridged: true, dome: true, low: '#59636a', high: '#98a3a9', snow: '#eef4f7', snowFrom: 0.58 },
+  hills:    { amp: 0.28, peak: 0.14, freq: 2.1, low: '#7ba244', high: '#a9d162' },
+  desert:   { amp: 0.12, freq: 2.6, peak: 0, low: '#c5a55c', high: '#e6cd8c' },
+  plains:   { amp: 0.09, freq: 2.4, peak: 0, low: '#7dab4c', high: '#9cc968' },
 };
 const reliefGeoCache = new Map<string, THREE.BufferGeometry>();
 function hexReliefGeo(kind: ReliefKind, R: number, seed: number): THREE.BufferGeometry {
@@ -1821,7 +1736,12 @@ function hexReliefGeo(kind: ReliefKind, R: number, seed: number): THREE.BufferGe
   const pushVert = (f: number, a: number) => {
     const rB = hexBoundaryR(a, R) * f;
     const x = Math.cos(a) * rB, z = Math.sin(a) * rB;
-    const fall = Math.pow(Math.max(0, 1 - f), 0.55); // 1 at center → 0 at the hex edge
+    // Dome (impassable mountains): 1 at center → 0 at the hex edge. Walkable
+    // terrain: ring profile, flat at BOTH the tile center (actors stand there,
+    // anchored to the flat tileTop) and the edge — relief lives in between.
+    const fall = spec.dome
+      ? Math.pow(Math.max(0, 1 - f), 0.55)
+      : Math.pow(Math.sin(Math.PI * Math.min(1, f)), 1.15);
     const n = reliefFbm((x / R) * spec.freq, (z / R) * spec.freq, seedZ);
     const nVal = spec.ridged ? Math.pow(1 - Math.abs(n), 1.6) : n * 0.5 + 0.5; // ridged fbm = crags
     const y = Math.max(0.012, R * (spec.amp * nVal * fall + spec.peak * fall * fall));
@@ -4818,6 +4738,21 @@ export default function SoloMissionMap3D({
   const baseTier = baseTierFor(heroLevelLive);
   const baseCityStage = baseGrowthStage(heroLevelLive); // +1/level to 10, then +1/5 levels
   const baseZoneRadius = baseZoneRadiusFor(heroLevelLive);
+  // House model variations for the sprawl, from the user-editable manifest (empty →
+  // procedural buildings). Fetched once; bad/missing manifest silently keeps fallback.
+  const [houseVariants, setHouseVariants] = useState<string[]>([]);
+  React.useEffect(() => {
+    let alive = true;
+    fetch(HOUSE_MANIFEST_URL)
+      .then(r => (r.ok ? r.json() : null))
+      .then(j => {
+        if (alive && j && Array.isArray(j.houses)) {
+          setHouseVariants(j.houses.filter((h: unknown): h is string => typeof h === 'string' && h.length > 0));
+        }
+      })
+      .catch(() => {});
+    return () => { alive = false; };
+  }, []);
   // Between ring-ups the border stroke creeps outward toward the next radius jump, so
   // EVERY level visibly pushes the territory line before it snaps to the next ring.
   // (Driven directly by level, not by baseCityStage — that stage only ticks once per
@@ -4846,31 +4781,52 @@ export default function SoloMissionMap3D({
     return baseDistrictTiles.slice(0, Math.min(baseTier - 1, kinds.length))
       .map((t, i) => ({ ...t, kind: kinds[i] }));
   }, [baseDistrictTiles, baseTier]);
-  // City sprawl: one building per growth stage, laid out on a deterministic golden-angle
-  // spiral around the base. Candidates are filtered (buildable tile, inside the home
-  // zone, off district pads, min spacing) with the PRNG consumed per-candidate, so the
-  // layout is stable as the city grows — new stages only append buildings.
+  // City sprawl: one building per growth stage. Each stage builds inside the ring the
+  // TERRITORY STROKE had when that stage unlocked (ring 1 until L10, 2 until L25, 3
+  // until L50, then 4) — so every border expansion opens fresh tiles and the houses
+  // that follow visibly settle them. Placement is append-only stable: a spot's ring
+  // is a function of its stage number (never the current level), the PRNG is consumed
+  // per-attempt, and world landmarks (outposts/camps/terraformer) are excluded by
+  // fixed tile key, so old buildings never move as the city grows.
   const cityBuildingSpots = useMemo(() => {
     const bw = axialToWorld(baseAxial, hexSize);
     const reserved = baseDistrictTiles.map(t => axialToWorld(t, hexSize));
+    const blocked = new Set<string>([`${baseAxial.q},${baseAxial.r}`, `${terraformAxial.q},${terraformAxial.r}`]);
+    for (const k of outposts.keys()) blocked.add(k);
+    for (const k of creepCamps.keys()) blocked.add(k);
+    for (const k of refugeeCamps.keys()) blocked.add(k);
+    // Radial band (units of hexSize) per home-zone ring — outside the previous ring's
+    // band, inside that ring's stroke (min boundary ≈ (1.73·R + 0.87) · hexSize).
+    const BANDS: Array<[number, number]> = [[1.55, 2.4], [2.65, 4.1], [4.35, 5.85], [6.05, 7.55]];
     const rand = seededRand(4242);
     const GA = Math.PI * (3 - Math.sqrt(5)); // golden angle
     const spots: CitySpot[] = [];
-    for (let c = 0; c < 600 && spots.length < baseCityStage; c++) {
-      const jr = rand(), ja = rand(), jk = rand(), jrot = rand(), jh = rand();
-      const ang = c * GA + ja * 0.5;
-      const rad = hexSize * (1.6 + 0.24 * Math.sqrt(c + 1) + jr * 0.18);
-      const x = bw.x + Math.cos(ang) * rad, z = bw.z + Math.sin(ang) * rad;
-      const t = worldToAxial(x, z, hexSize);
-      const tile = tilesByKey.get(`${t.q},${t.r}`);
-      if (!tile || tile.type === 'water' || tile.type === 'mountain') continue;
-      if (axialDistance(t, baseAxial) > baseZoneRadius) continue; // stay inside the border
-      if (reserved.some(n => (x - n.x) ** 2 + (z - n.z) ** 2 < (hexSize * 0.85) ** 2)) continue;
-      if (spots.some(s => (x - s.x) ** 2 + (z - s.z) ** 2 < (hexSize * 0.34) ** 2)) continue;
-      spots.push({ x, y: tileTopAt(t.q, t.r), z, kind: Math.floor(jk * 3), rot: jrot * Math.PI * 2, h: 0.8 + jh * 0.5 });
+    for (let k = 0; k < baseCityStage; k++) {
+      const stage = k + 1;
+      const unlockLevel = stage <= 10 ? stage : 10 + (stage - 10) * 5;
+      const ring = baseZoneRadiusFor(unlockLevel);
+      const [rMin, rMax] = BANDS[ring - 1];
+      for (let a = 0; a < 24; a++) {
+        const jr = rand(), ja = rand(), jk = rand(), jrot = rand(), jh = rand(), jv = rand();
+        const ang = k * GA + a * 0.73 + ja * 0.4;
+        const rad = hexSize * (rMin + (rMax - rMin) * jr);
+        const x = bw.x + Math.cos(ang) * rad, z = bw.z + Math.sin(ang) * rad;
+        const t = worldToAxial(x, z, hexSize);
+        const key = `${t.q},${t.r}`;
+        const tile = tilesByKey.get(key);
+        if (!tile || tile.type === 'water' || tile.type === 'mountain') continue;
+        if (axialDistance(t, baseAxial) > ring) continue; // inside the stroke as of unlock
+        if (blocked.has(key)) continue;                    // never on outposts/camps/objectives
+        if (reserved.some(n => (x - n.x) ** 2 + (z - n.z) ** 2 < (hexSize * 0.85) ** 2)) continue;
+        if (spots.some(s => (x - s.x) ** 2 + (z - s.z) ** 2 < (hexSize * 0.55) ** 2)) continue;
+        // `v` picks a RANDOM house variant per building (seeded, so the pick is
+        // stable across reloads but doesn't cycle the pool in order).
+        spots.push({ x, y: tileTopAt(t.q, t.r), z, kind: Math.floor(jk * 3), rot: jrot * Math.PI * 2, h: 0.8 + jh * 0.5, v: jv });
+        break;
+      }
     }
     return spots;
-  }, [baseAxial, baseCityStage, baseZoneRadius, baseDistrictTiles, tilesByKey, tileTopAt, hexSize]);
+  }, [baseAxial, baseCityStage, baseDistrictTiles, tilesByKey, tileTopAt, hexSize, terraformAxial, outposts, creepCamps, refugeeCamps]);
   // Ribbon triangles along every hex edge of the home zone whose far side is
   // outside it, scaled outward from the base by the per-level creep. Each vertex
   // re-anchors to the tile it lands on, so the stroke hugs terrain even mid-creep.
@@ -5597,7 +5553,7 @@ export default function SoloMissionMap3D({
                     with district pads on adjacent tiles + a stroked home-zone border */}
                 {(() => { const bw = axialToWorld(baseAxial, hexSize); return (
                   <group key="base" position={[bw.x, tileTopAt(baseAxial.q, baseAxial.r), bw.z]} frustumCulled={false}>
-                    <CommandCenter size={hexSize} color={heroColors.primary} tier={baseTier} stage={baseCityStage} playstyle={dominantStyle} />
+                    <CommandCenter size={hexSize} color={heroColors.primary} tier={baseTier} stage={baseCityStage} playstyle={dominantStyle} hqUrl={houseVariants[0] ?? null} />
                   </group>
                 ); })()}
                 {baseDistricts.map(d => { const dw = axialToWorld(d, hexSize); return (
@@ -5605,7 +5561,7 @@ export default function SoloMissionMap3D({
                     <BaseDistrictMesh size={hexSize} kind={d.kind} color={heroColors.primary} />
                   </group>
                 ); })}
-                <CityBuildingsMesh spots={cityBuildingSpots} size={hexSize} tier={baseTier} color={heroColors.primary} />
+                <CityBuildingsMesh spots={cityBuildingSpots} size={hexSize} tier={baseTier} color={heroColors.primary} houses={houseVariants} />
                 <BaseZoneRing positions={baseZoneRingPositions} color={heroColors.primary} />
                 {/* Terraformer objective */}
                 {(() => { const tw = axialToWorld(terraformAxial, hexSize); return (
@@ -5836,9 +5792,11 @@ export default function SoloMissionMap3D({
 
               {/* ── Civ-style top yield bar — full width, yields left, identity right ────── */}
               <div className="fixed top-0 left-0 right-0 z-30 pointer-events-none">
-                <div className="flex items-center justify-between gap-2 px-3 py-2.5 min-h-[3rem] bg-gradient-to-b from-[#0a0f16]/95 to-[#0a0f16]/75 border-b border-white/10 shadow-lg text-[13px] text-gray-100 overflow-x-auto no-scrollbar">
+                {/* Mobile: chips wrap onto extra rows at a smaller size (nothing gets cut
+                    off or needs an unscrollable overflow); desktop keeps the single row. */}
+                <div className="flex flex-wrap md:flex-nowrap items-center justify-between gap-x-2 gap-y-1 px-2 sm:px-3 py-1.5 sm:py-2.5 min-h-[2.75rem] sm:min-h-[3rem] bg-gradient-to-b from-[#0a0f16]/95 to-[#0a0f16]/75 border-b border-white/10 shadow-lg text-[11px] sm:text-[13px] text-gray-100 md:overflow-x-auto no-scrollbar">
                   {/* Left cluster: yields */}
-                  <div className="flex items-center gap-x-3 gap-y-0.5 flex-nowrap">
+                  <div className="flex items-center gap-x-2 sm:gap-x-3 gap-y-0.5 flex-wrap sm:flex-nowrap">
                     <div className="flex items-center gap-1.5" title="4X campaign score, outposts, regions, terraforming & refugee camps">
                       <span>🏆</span><span className="opacity-50 hidden md:inline">Score</span><span className="font-extrabold tabular-nums text-amber-300">{fourXScore}</span>
                     </div>
@@ -5850,11 +5808,11 @@ export default function SoloMissionMap3D({
                     <div className="flex items-center gap-1" title="Tiles explored"><span>🧭</span><span className="opacity-50 hidden md:inline">Explore</span><span className={`font-semibold tabular-nums ${explorationComplete ? 'text-emerald-300' : ''}`}>{exploredCount}/{explorationGoal}{explorationComplete ? ' ✓' : ''}</span></div>
                     <div className="flex items-center gap-1" title="Terraform progress"><span>🌱</span><span className="font-semibold tabular-nums">{terraformDone ? '✓' : `${terraformProgress}%`}</span></div>
                     <div className="flex items-center gap-1" title="Outposts owned"><span>🚩</span><span className="font-semibold tabular-nums">{outpostControl.owned}/{outpostControl.total}</span></div>
-                    <div className="flex items-center gap-1" title="Regions controlled"><span>🗺️</span><span className="font-semibold tabular-nums">{outpostControl.regionsControlled}/{outpostControl.regionCount}</span></div>
-                    <div className="flex items-center gap-1" title="Territory held"><span>🟩</span><span className="font-semibold tabular-nums">{outpostControl.tilePct}%</span></div>
-                    <div className="flex items-center gap-1" title="Refugee camps completed"><span>⛺</span><span className="font-semibold tabular-nums">{refugeeProgress.done}/{refugeeProgress.total}</span></div>
+                    <div className="hidden sm:flex items-center gap-1" title="Regions controlled"><span>🗺️</span><span className="font-semibold tabular-nums">{outpostControl.regionsControlled}/{outpostControl.regionCount}</span></div>
+                    <div className="hidden sm:flex items-center gap-1" title="Territory held"><span>🟩</span><span className="font-semibold tabular-nums">{outpostControl.tilePct}%</span></div>
+                    <div className="hidden sm:flex items-center gap-1" title="Refugee camps completed"><span>⛺</span><span className="font-semibold tabular-nums">{refugeeProgress.done}/{refugeeProgress.total}</span></div>
                     {localPetInventory.length > 0 && (
-                      <div className="flex items-center gap-1" title="Pet pack supplies (hotkeys 1–8)"><span>🐾</span><span className="font-semibold tabular-nums">{localPetInventory.reduce((s, i) => s + (i.quantity || 0), 0)}</span></div>
+                      <div className="hidden sm:flex items-center gap-1" title="Pet pack supplies (hotkeys 1–8)"><span>🐾</span><span className="font-semibold tabular-nums">{localPetInventory.reduce((s, i) => s + (i.quantity || 0), 0)}</span></div>
                     )}
                     {duelActive && (
                       <><span className="w-px h-4 bg-white/15" /><div className="flex items-center gap-1" title="Duel score"><span>⚔️</span><span className="font-semibold tabular-nums">{duel.status === 'connected' ? `${duel.myScore}–${duel.oppScore}` : duel.status}</span></div></>
@@ -5877,10 +5835,10 @@ export default function SoloMissionMap3D({
                   )}
 
                   {/* Right cluster: emergent playstyle identity + faction */}
-                  <div className="flex items-center gap-3 flex-nowrap">
+                  <div className="flex items-center gap-2 sm:gap-3 flex-nowrap">
                     {dominantStyle && (
                       <div className="flex items-center gap-1.5" title={`Your emergent playstyle, ${PLAYSTYLES[dominantStyle].desc}`} style={{ color: PLAYSTYLES[dominantStyle].color }}>
-                        <span>{PLAYSTYLES[dominantStyle].icon}</span><span className="font-bold whitespace-nowrap">{PLAYSTYLES[dominantStyle].title}</span>
+                        <span>{PLAYSTYLES[dominantStyle].icon}</span><span className="font-bold whitespace-nowrap hidden sm:inline">{PLAYSTYLES[dominantStyle].title}</span>
                       </div>
                     )}
                     <span className="w-px h-4 bg-white/15" />
