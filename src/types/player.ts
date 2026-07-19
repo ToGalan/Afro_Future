@@ -38,6 +38,10 @@ export interface PlayerProgress {
     maskHeld?: boolean;
     /** One-time mask-lore dialog already shown this campaign. */
     maskIntroSeen?: boolean;
+    /** 5-tier outpost/fortify-camp specialization system — "q,r" key → { tier: 0..5,
+     *  spec: 'military'|'food'|'medicine'|null }. See services/campUpgrades. */
+    outpostUpgrades?: Record<string, { tier: number; spec: string | null }>;
+    campUpgrades?: Record<string, { tier: number; spec: string | null }>;
   };
   hero?: {
     level: number;

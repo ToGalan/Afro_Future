@@ -131,7 +131,15 @@
       "PowerShell(Get-Process node -ErrorAction SilentlyContinue)",
       "PowerShell(node \"C:\\\\Users\\\\brian\\\\AppData\\\\Local\\\\Temp\\\\claude\\\\d--Afro-Future--Dev-Backup-New-Dev-2025-v3\\\\84b4b9d8-d8bf-418e-8078-1420d2408561\\\\scratchpad\\\\loadcheck_lore.cjs\")",
       "PowerShell(node \"C:\\\\Users\\\\brian\\\\AppData\\\\Local\\\\Temp\\\\claude\\\\d--Afro-Future--Dev-Backup-New-Dev-2025-v3\\\\84b4b9d8-d8bf-418e-8078-1420d2408561\\\\scratchpad\\\\loadcheck_petpanel.cjs\")",
-      "PowerShell(node \"C:\\\\Users\\\\brian\\\\AppData\\\\Local\\\\Temp\\\\claude\\\\d--Afro-Future--Dev-Backup-New-Dev-2025-v3\\\\84b4b9d8-d8bf-418e-8078-1420d2408561\\\\scratchpad\\\\loadcheck_petpanel2.cjs\")"
+      "PowerShell(node \"C:\\\\Users\\\\brian\\\\AppData\\\\Local\\\\Temp\\\\claude\\\\d--Afro-Future--Dev-Backup-New-Dev-2025-v3\\\\84b4b9d8-d8bf-418e-8078-1420d2408561\\\\scratchpad\\\\loadcheck_petpanel2.cjs\")",
+      "PowerShell($scratch = \"C:\\\\Users\\\\brian\\\\AppData\\\\Local\\\\Temp\\\\claude\\\\d--Afro-Future--Dev-Backup-New-Dev-2025-v3\\\\84b4b9d8-d8bf-418e-8078-1420d2408561\\\\scratchpad\"; npx esbuild \"$scratch\\\\campUpgrades-test.ts\" --bundle --platform=node --format=cjs --outfile=\"$scratch\\\\campUpgrades-test.cjs\" --log-level=error; if \\($?\\) { node \"$scratch\\\\campUpgrades-test.cjs\" })",
+      "PowerShell(Start-Process -FilePath \"cmd.exe\" -ArgumentList \"/c npx vite --port 5199 --strictPort > `\"$env:TEMP\\\\vite-verify.log`\" 2>&1\" -WindowStyle Hidden; Start-Sleep -Seconds 6; \\(Invoke-WebRequest -Uri \"http://localhost:5199\" -UseBasicParsing -TimeoutSec 10\\).StatusCode)",
+      "PowerShell(node \"C:\\\\Users\\\\brian\\\\AppData\\\\Local\\\\Temp\\\\claude\\\\d--Afro-Future--Dev-Backup-New-Dev-2025-v3\\\\84b4b9d8-d8bf-418e-8078-1420d2408561\\\\scratchpad\\\\verify_part1_onboarding.cjs\")",
+      "PowerShell(node \"C:\\\\Users\\\\brian\\\\AppData\\\\Local\\\\Temp\\\\claude\\\\d--Afro-Future--Dev-Backup-New-Dev-2025-v3\\\\84b4b9d8-d8bf-418e-8078-1420d2408561\\\\scratchpad\\\\verify_part1b_scroll.cjs\")",
+      "PowerShell(node \"C:\\\\Users\\\\brian\\\\AppData\\\\Local\\\\Temp\\\\claude\\\\d--Afro-Future--Dev-Backup-New-Dev-2025-v3\\\\84b4b9d8-d8bf-418e-8078-1420d2408561\\\\scratchpad\\\\verify_part2_mission.cjs\")",
+      "PowerShell(node \"C:\\\\Users\\\\brian\\\\AppData\\\\Local\\\\Temp\\\\claude\\\\d--Afro-Future--Dev-Backup-New-Dev-2025-v3\\\\84b4b9d8-d8bf-418e-8078-1420d2408561\\\\scratchpad\\\\verify_part3_domination.cjs\")",
+      "PowerShell(node \"C:\\\\Users\\\\brian\\\\AppData\\\\Local\\\\Temp\\\\claude\\\\d--Afro-Future--Dev-Backup-New-Dev-2025-v3\\\\84b4b9d8-d8bf-418e-8078-1420d2408561\\\\scratchpad\\\\verify_part3b_reroute.cjs\")",
+      "PowerShell(node \"C:\\\\Users\\\\brian\\\\AppData\\\\Local\\\\Temp\\\\claude\\\\d--Afro-Future--Dev-Backup-New-Dev-2025-v3\\\\84b4b9d8-d8bf-418e-8078-1420d2408561\\\\scratchpad\\\\verify_part3c_continue.cjs\")"
     ]
   }
 }

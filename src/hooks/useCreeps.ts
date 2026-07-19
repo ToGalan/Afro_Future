@@ -81,7 +81,7 @@ export function useCreeps({
       const dist = axialDist(t.q, t.r, centerQ, centerR);
       if (dist < 5) continue;                    // keep spawn area safe
       const h = hash(t.q, t.r);
-      if (h >= 0.028) continue;                  // ~2.8% of eligible tiles
+      if (h >= 0.014) continue;                  // ~1.4% of eligible tiles (halved 2026-07-19 per user)
       if (placed.some(p => axialDist(t.q, t.r, p.q, p.r) < MIN_SPACING)) continue; // too close to another camp
       placed.push({ q: t.q, r: t.r });
       const level = 1 + Math.floor(dist / 7);    // farther = tougher

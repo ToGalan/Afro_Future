@@ -12,6 +12,7 @@ import { ImprovedNoise } from 'three/examples/jsm/math/ImprovedNoise.js';
 import { FbxProp, FbxPbrProp, FbxRawProp, GltfRawProp, FbxAnimatedProp, FbxAnimatedTexturedProp, NATURE_ASSETS, NATURE_TEX, MILITARY_ASSETS, MILITARY_TEX, PBR_PROP_ASSETS, PBR_PROP_TEX, MUSHROOM_ASSET, MUSHROOM_TEX, MINING_ASSETS, PET_ASSETS, WC_NPC_ASSET, WC_NPC_TEX, CREEP_ASSETS, CREEP_TEX, ELEPHANT_ASSET, CAMEL_ASSET, RHINO_ASSET, HOUSE_MANIFEST_URL, DESERT_OUTPOST_ASSET, MASK_ASSETS } from './FbxProps';
 import { EffectComposer, Bloom, Vignette } from '@react-three/postprocessing';
 import { arcFor, beatReady, storyNpc, storyText, MASK_LORE, MAIN_MISSIONS, FACTION_MOTIVATION, type StoryBeat, type StoryChoice, type StoryWorldState } from '../services/storyline';
+import { nextUpgradeCost, militaryDefendChance, raidWeight, passiveIncome, SPEC_INFO, CAMP_UPGRADE_MAX_TIER, type CampSpecialization, type CampUpgradeState } from '../services/campUpgrades';
 import { GameAvatar, type AvatarColors } from './GameAvatarMesh';
 import { resolveHeroModel } from '../config/heroModels';
 import { useCreeps, type CreepCamp } from '../hooks/useCreeps';
@@ -910,15 +911,19 @@ function CommandCenter({ size, tier = 1, stage = 0, playstyle = null, hqUrl = nu
   const S = size;
   // Continuous growth: +1% overall scale per city growth stage (per level to 10,
   // then per 5 levels), so the HQ visibly grows EVERY level between tier jumps.
-  const grow = 1 + Math.min(0.26, stage * 0.01);
+  // 2026-07-19 (user: "keep the same fixed base, only make it bigger"): the HQ model
+  // itself no longer swaps per tier (see the call site — hqUrl is always the ONE fixed
+  // base model now); to keep growth reading clearly across all 11 tiers without a model
+  // swap to lean on, the per-tier/per-stage scale coefficients were raised accordingly.
+  const grow = 1 + Math.min(0.4, stage * 0.014);
   return (
     <group scale={grow}>
       {hqUrl && (
         <Suspense fallback={null}>
-          <HouseVariantModel url={hqUrl} size={S * (1.35 + tier * 0.16)} rotation={Math.PI / 4} />
+          <HouseVariantModel url={hqUrl} size={S * (1.35 + tier * 0.24)} rotation={Math.PI / 4} />
         </Suspense>
       )}
-      <Text position={[0, S * (1.65 + tier * 0.18), 0]} fontSize={S * 0.4} color="#cfe8ff" anchorX="center" anchorY="middle" outlineWidth={S * 0.03} outlineColor="#000">{BASE_TIER_NAMES[Math.min(tier, BASE_TIER_NAMES.length) - 1]}{playstyle ? ` ${PLAYSTYLES[playstyle].icon}` : ''}</Text>
+      <Text position={[0, S * (1.65 + tier * 0.26), 0]} fontSize={S * 0.4} color="#cfe8ff" anchorX="center" anchorY="middle" outlineWidth={S * 0.03} outlineColor="#000">{BASE_TIER_NAMES[Math.min(tier, BASE_TIER_NAMES.length) - 1]}{playstyle ? ` ${PLAYSTYLES[playstyle].icon}` : ''}</Text>
     </group>
   );
 }
@@ -998,15 +1003,6 @@ function houseForSpot(houses: string[], kind: number, v: number): string {
   const end = kind >= 2 ? n : Math.min(n, start + bucket);
   const len = Math.max(1, end - start);
   return houses[start + Math.floor(v * len) % len];
-}
-
-/** Picks the HQ's own house model to track its build-out TIER (1..maxTier) — the
- *  command center upgrades to a grander model as the base advances through its named
- *  states, not just scale. */
-function hqHouseForTier(houses: string[], tier: number, maxTier: number): string | null {
-  if (!houses.length) return null;
-  const idx = Math.min(houses.length - 1, Math.round(((tier - 1) / Math.max(1, maxTier - 1)) * (houses.length - 1)));
-  return houses[idx];
 }
 
 /** MODEL-ONLY sprawl: every building is a house model from the manifest pool, or a
@@ -1094,6 +1090,16 @@ function OutpostMarker({ size, owned, color, desert }: { size: number; owned: bo
   );
 }
 
+// Fixed field-shrine offset (from map center) per faction — the SAME three offsets
+// regardless of which faction the player picked, so "mine" vs "rival" is purely which
+// offset matches playerFactionKey. Spaced well apart so a hero near one is never also
+// near another.
+const MASK_OFFSETS: Record<'PAA' | 'ASF' | 'WC', { dq: number; dr: number }> = {
+  PAA: { dq: -7, dr: 5 },
+  ASF: { dq: 9, dr: -6 },
+  WC:  { dq: -3, dr: -10 },
+};
+
 /** The faction relic mask itself — a slow idle spin so it reads as a display piece,
  *  not scenery, at both the field shrine and the base pedestal. */
 function MaskProp({ faction, size }: { faction: 'PAA' | 'ASF' | 'WC'; size: number }) {
@@ -1129,6 +1135,47 @@ function MaskShrine({ faction, size }: { faction: 'PAA' | 'ASF' | 'WC'; size: nu
       </Suspense>
       <Text position={[0, S * 1.8, 0]} fontSize={S * 0.28} color={color} anchorX="center" anchorY="middle" outlineWidth={S * 0.02} outlineColor="#000">🎭 {MASK_LORE[faction].title}</Text>
     </group>
+  );
+}
+
+/** Upgrade prompt content for a player-secured outpost or cleared fortify camp — pick a
+ *  specialization (locked in on first upgrade) or advance the chosen one, showing cost
+ *  and affordability against the hero's current ore/energy/bio. Shared by both prompt
+ *  sites (nearbyOutpost when owned, nearbyFortifiedCamp) so the two 5-tier systems stay
+ *  visually and mechanically identical. */
+function UpgradePanelContent({ title, icon, current, heroInventory, onUpgrade }: {
+  title: string; icon: string; current: CampUpgradeState;
+  heroInventory: Array<{ type: string; quantity: number }>;
+  onUpgrade: (spec: CampSpecialization) => void;
+}) {
+  const have = (type: 'ore' | 'energy' | 'bio') => heroInventory.find(i => i.type === type)?.quantity ?? 0;
+  if (current.tier >= CAMP_UPGRADE_MAX_TIER && current.spec) {
+    return (
+      <div className="px-4 py-2.5 rounded-xl bg-[#0c1219]/90 border border-emerald-400/40 text-xs sm:text-sm backdrop-blur-sm shadow-lg text-center space-y-1">
+        <div className="font-bold">{icon} {title}</div>
+        <div className="text-emerald-300 font-semibold">{SPEC_INFO[current.spec].icon} {SPEC_INFO[current.spec].label} · Max Tier {CAMP_UPGRADE_MAX_TIER}</div>
+      </div>
+    );
+  }
+  const specs: CampSpecialization[] = current.spec ? [current.spec] : ['military', 'food', 'medicine'];
+  return (
+    <div className="px-4 py-2.5 rounded-xl bg-[#0c1219]/90 border border-white/15 text-xs sm:text-sm backdrop-blur-sm shadow-lg text-center space-y-2">
+      <div className="font-bold">{icon} {title}{current.spec ? ` · ${SPEC_INFO[current.spec].icon} ${SPEC_INFO[current.spec].label} Tier ${current.tier}` : ' · Undeveloped'}</div>
+      <div className="flex flex-wrap items-center justify-center gap-2">
+        {specs.map(s => {
+          const cost = nextUpgradeCost(current, s);
+          const afford = have('ore') >= cost.ore && have('energy') >= cost.energy && have('bio') >= cost.bio;
+          return (
+            <button key={s} onClick={() => onUpgrade(s)} disabled={!afford}
+              title={`${SPEC_INFO[s].desc} Costs ⬢${cost.ore} ⚡${cost.energy} 🌿${cost.bio}.`}
+              className={`px-3 py-1.5 rounded-lg font-bold ring-1 ${afford ? 'bg-emerald-700/80 hover:bg-emerald-600 ring-emerald-400/40' : 'bg-gray-800/70 ring-white/10 opacity-50 cursor-not-allowed'}`}>
+              {SPEC_INFO[s].icon} {current.spec ? `Tier ${current.tier + 1}` : SPEC_INFO[s].label}
+            </button>
+          );
+        })}
+      </div>
+      <div className="text-[10px] opacity-60">reinforces the faction (military) · attracts looters (food) · invites negotiation (medicine)</div>
+    </div>
   );
 }
 
@@ -3249,12 +3296,20 @@ export default function SoloMissionMap3D({
       setLevelUpBanner(lvl);
       const hw = axialToWorld({ q: heroPosRef.current.q, r: heroPosRef.current.r }, hexSize);
       spawnCombatText(hw.x, hw.z, `⭐ LEVEL ${lvl}`, '#8fe38f');
-      const t = setTimeout(() => setLevelUpBanner(null), 2600);
-      return () => clearTimeout(t);
     } else if (lvl < prevHeroLevelRef.current) {
       prevHeroLevelRef.current = lvl;
     }
   }, [heroXpLive, hexSize, spawnCombatText]);
+  // Dismiss timer lives in its OWN effect, keyed only on levelUpBanner — it used to sit
+  // inside the heroXpLive effect above, so ANY further XP gain within the 2600ms window
+  // (extremely common right after leveling up) re-ran that effect, which cancelled the
+  // pending dismiss via cleanup without rescheduling one (the level-up condition was now
+  // false), leaving the banner stuck on screen forever. This is immune to that.
+  React.useEffect(() => {
+    if (levelUpBanner === null) return;
+    const t = setTimeout(() => setLevelUpBanner(null), 2600);
+    return () => clearTimeout(t);
+  }, [levelUpBanner]);
 
   // Award Faction Points (persisted) — earned from faction activities (creep clears, resources).
   const awardFactionPoints = React.useCallback((amount: number) => {
@@ -3559,13 +3614,21 @@ export default function SoloMissionMap3D({
     setStoryLineIdx(0);
   }, []);
 
-  // ── Faction mask (GDD "collect and defend your mask") — ONE main objective, additional
-  // to the base: a relic sits at a fixed field shrine away from spawn; walking adjacent
-  // auto-claims it (no separate keybind), after which it's displayed at the base AND
-  // becomes a strategic raid target for rival AI (reuses the outpost-raid machinery below
-  // via a synthetic 'mask-vault' strategic target) — lose it and it returns to the shrine.
-  const maskFieldAxial = React.useMemo(() => ({ q: centerAxial.q - 7, r: centerAxial.r + 5 }), [centerAxial]);
-  const [maskHeld, setMaskHeld] = useState(false);
+  // ── Faction masks (GDD "collect and defend your mask") — one per faction, each at its
+  // own fixed field shrine (same offsets regardless of which faction the PLAYER picked,
+  // so "mine" vs "rival" is just which offset matches playerFactionKey). Press-to-collect
+  // (G, not auto — 2026-07-19), each claim shows a storyline beat. Claiming YOUR OWN homes
+  // it at base (a main objective, additional to the base) and makes it a strategic raid
+  // target for rival AI (reuses the outpost-raid machinery via a synthetic 'mask-vault'
+  // target). 2026-07-19 user directive: "domination victory should be by capturing
+  // another faction's mask (same for domination loss)" — claiming a RIVAL's mask is an
+  // instant Domination win; a rival stealing yours is an instant Domination loss (no more
+  // "recoverable" theft).
+  const maskAxialFor = React.useCallback((f: 'PAA' | 'ASF' | 'WC') => {
+    const o = MASK_OFFSETS[f];
+    return { q: centerAxial.q + o.dq, r: centerAxial.r + o.dr };
+  }, [centerAxial]);
+  const [maskHeld, setMaskHeld] = useState(false); // MY OWN mask is home at base
   const maskHeldRef = React.useRef(false); maskHeldRef.current = maskHeld;
   const maskIntroSeenRef = React.useRef(false);
   const [maskDialogOpen, setMaskDialogOpen] = useState(false);
@@ -3574,14 +3637,130 @@ export default function SoloMissionMap3D({
     maskIntroSeenRef.current = true;
     saveProgress({ solo: { maskIntroSeen: true } } as any);
   }, [saveProgress]);
+  // The "you just claimed/captured/lost a mask" storyline beat — kind drives which
+  // flavor renders; text is resolved AT RENDER (heroGender-dependent, see storyText),
+  // never inside a callback (heroGender is declared later in this component — TDZ).
+  const [maskClaimEvent, setMaskClaimEvent] = useState<{ kind: 'own' | 'rival' | 'lost'; faction: 'PAA' | 'ASF' | 'WC' } | null>(null);
+  const closeMaskClaimEvent = React.useCallback(() => setMaskClaimEvent(null), []);
+  // Which shrine (if any) the hero is standing adjacent to right now — drives the
+  // "Press G to claim" prompt. My own shrine only counts while still unclaimed.
+  const nearbyMask = useMemo(() => {
+    const candidates: Array<'PAA' | 'ASF' | 'WC'> = maskHeld
+      ? (['PAA', 'ASF', 'WC'] as const).filter(f => f !== playerFactionKey)
+      : (['PAA', 'ASF', 'WC'] as const);
+    for (const f of candidates) { if (axialDistance(hero.pos, maskAxialFor(f)) <= 1) return f; }
+    return null;
+  }, [hero.pos.q, hero.pos.r, maskHeld, maskAxialFor, playerFactionKey]);
+  const nearbyMaskRef = React.useRef<typeof nearbyMask>(null); nearbyMaskRef.current = nearbyMask;
+  const claimMask = React.useCallback(() => {
+    const target = nearbyMaskRef.current;
+    if (!target || soloResolvedRef.current) return;
+    if (target === playerFactionKey) {
+      if (maskHeldRef.current) return; // already home
+      maskHeldRef.current = true; setMaskHeld(true);
+      saveProgress({ solo: { maskHeld: true } } as any);
+      awardHeroXp(40);
+      awardFactionPoints(10);
+      awardShardsRef.current(10);
+      setMaskClaimEvent({ kind: 'own', faction: target });
+    } else {
+      // Capturing a RIVAL faction's mask — instant Domination victory, no threshold needed.
+      setMaskClaimEvent({ kind: 'rival', faction: target });
+      resolveSoloRef.current({ faction: playerFactionKey as Faction, track: 'domination' });
+    }
+  }, [playerFactionKey, saveProgress, awardHeroXp, awardFactionPoints]);
+  const claimMaskRef = React.useRef(claimMask); claimMaskRef.current = claimMask;
   const [missionsOpen, setMissionsOpen] = useState(false);
 
+  // ── Camp/outpost 5-tier specialization system (2026-07-19 user directive) ──────────
+  // Player-secured ground (captured outposts + cleared FORTIFY creep camps) develops
+  // along ONE specialization (military/food/medicine, locked in on the first upgrade),
+  // paid for with ore/energy/bio from the hero's inventory. See services/campUpgrades
+  // for the cost/effect math; this component owns the persisted state and wires the
+  // effects into the existing raid/strategic-target systems below.
+  const [outpostUpgrades, setOutpostUpgrades] = useState<Map<string, CampUpgradeState>>(new Map());
+  const outpostUpgradesRef = React.useRef(outpostUpgrades); outpostUpgradesRef.current = outpostUpgrades;
+  const [campUpgrades, setCampUpgrades] = useState<Map<string, CampUpgradeState>>(new Map());
+  const campUpgradesRef = React.useRef(campUpgrades); campUpgradesRef.current = campUpgrades;
+  const upgradeLocation = React.useCallback((kind: 'outpost' | 'camp', key: string, q: number, r: number, spec: CampSpecialization) => {
+    const map = kind === 'outpost' ? outpostUpgradesRef.current : campUpgradesRef.current;
+    const cur = map.get(key) ?? { tier: 0, spec: null };
+    if (cur.tier >= CAMP_UPGRADE_MAX_TIER) return;
+    if (cur.spec && cur.spec !== spec) return; // locked to its first-chosen specialization
+    const cost = nextUpgradeCost(cur, spec);
+    const have = (type: 'ore' | 'energy' | 'bio') => localHeroInventory.find(i => i.type === type)?.quantity ?? 0;
+    const w = axialToWorld({ q, r }, hexSize);
+    if (have('ore') < cost.ore || have('energy') < cost.energy || have('bio') < cost.bio) {
+      spawnCombatText(w.x, w.z, '⚠️ Not enough resources', '#ff8888');
+      return;
+    }
+    setLocalHeroInventory(prev => prev.map(i => {
+      if (i.type === 'ore') return { ...i, quantity: i.quantity - cost.ore };
+      if (i.type === 'energy') return { ...i, quantity: i.quantity - cost.energy };
+      if (i.type === 'bio') return { ...i, quantity: i.quantity - cost.bio };
+      return i;
+    }).filter(i => i.quantity > 0));
+    const next: CampUpgradeState = { tier: cur.tier + 1, spec };
+    if (kind === 'outpost') setOutpostUpgrades(prevMap => { const n = new Map(prevMap); n.set(key, next); return n; });
+    else setCampUpgrades(prevMap => { const n = new Map(prevMap); n.set(key, next); return n; });
+    const info = SPEC_INFO[spec];
+    spawnCombatText(w.x, w.z, `${info.icon} ${info.label} Tier ${next.tier}`, '#7fd66b');
+    // Ties the specialization choice into the SAME playstyle-reputation system driving
+    // the victory tracks ("as per playstyle" per the user's ask): military ~ dominate,
+    // food ~ loot, medicine ~ negotiate.
+    recordPlaystyleRef.current(spec === 'military' ? 'dominate' : spec === 'food' ? 'loot' : 'negotiate', { victory: false });
+  }, [localHeroInventory, setLocalHeroInventory, hexSize, spawnCombatText]);
+  const upgradeLocationRef = React.useRef(upgradeLocation); upgradeLocationRef.current = upgradeLocation;
+  // Passive income from food/medicine-specialized holdings (food → bio trickle,
+  // medicine → Faction Point trickle) — military's payoff is defensive, see
+  // militaryDefendChance in the raid handler below instead.
+  React.useEffect(() => {
+    // Inlined rather than the `soloEnabled` const (declared later in this component —
+    // referencing it here in a dependency array would be a TDZ error, not just deferred
+    // closure access).
+    if (autoMultiplayer || mobaMode) return;
+    const iv = setInterval(() => {
+      let bioGain = 0, fpGain = 0;
+      for (const [key, st] of outpostUpgradesRef.current) {
+        if (outposts.get(key)?.owner !== 'player') continue;
+        const inc = passiveIncome(st);
+        bioGain += inc.bio; fpGain += inc.fp;
+      }
+      for (const [key, st] of campUpgradesRef.current) {
+        if (!creepCamps.get(key)?.cleared) continue;
+        const inc = passiveIncome(st);
+        bioGain += inc.bio; fpGain += inc.fp;
+      }
+      if (bioGain > 0) grantResourceRef.current('bio', bioGain);
+      if (fpGain > 0) awardFactionPoints(fpGain);
+    }, 30000);
+    return () => clearInterval(iv);
+  }, [autoMultiplayer, mobaMode, outposts, creepCamps, awardFactionPoints]);
+
   // Outpost ownership snapshot the rival-faction AI reads to contest the player's territory
-  // (solo only — MOBA/duel run their own authoritative outpost systems).
+  // (solo only — MOBA/duel run their own authoritative outpost systems) — weighted by
+  // any food/medicine specialization (food attracts raiders, medicine deters them).
   const outpostStrategicTargets = React.useMemo(
-    () => Array.from(outposts.values()).map(o => ({ key: o.key, q: o.q, r: o.r, owner: o.owner })),
-    [outposts],
+    () => Array.from(outposts.values()).map(o => ({ key: o.key, q: o.q, r: o.r, owner: o.owner, weight: raidWeight(outpostUpgrades.get(o.key) ?? { tier: 0, spec: null }) })),
+    [outposts, outpostUpgrades],
   );
+  // Cleared, UPGRADED fortify camps are strategic targets too (only once developed —
+  // an un-upgraded cleared camp isn't worth AI attention). Treated as player-owned
+  // ground for raid purposes (only the player can clear/upgrade a camp, solo).
+  const campStrategicTargets = React.useMemo(
+    () => Array.from(creepCamps.values())
+      .filter(c => c.cleared && c.kind === 'fortify' && (campUpgrades.get(c.key)?.tier ?? 0) > 0)
+      .map(c => ({ key: c.key, q: c.q, r: c.r, owner: 'player', weight: raidWeight(campUpgrades.get(c.key)!) })),
+    [creepCamps, campUpgrades],
+  );
+  // The cleared fortify camp the hero is adjacent to right now, if any — drives the
+  // camp-upgrade prompt (same UpgradePanelContent the outpost prompt uses).
+  const nearbyFortifiedCamp = useMemo(() => {
+    for (const c of creepCamps.values()) {
+      if (c.cleared && c.kind === 'fortify' && axialDistance(hero.pos, c) <= 1) return c;
+    }
+    return null;
+  }, [creepCamps, hero.pos.q, hero.pos.r]);
   const [raidBanner, setRaidBanner] = useState<{ faction: string; at: number; text?: string } | null>(null);
   const raidBannerTimerRef = React.useRef<ReturnType<typeof setTimeout> | null>(null);
   React.useEffect(() => () => { if (raidBannerTimerRef.current) clearTimeout(raidBannerTimerRef.current); }, []);
@@ -3614,27 +3793,54 @@ export default function SoloMissionMap3D({
     heroHpFrac,
     incomingDamageScale: combatIncomingScale * petIncomingDamageMult,
     enabled: !autoMultiplayer, // solo PvE only — duels are handled by useDuel
-    paused: !!inputPaused || !!activeStoryBeat || maskDialogOpen, // freeze combat during skill tree AND story/mask dialogs
+    paused: !!inputPaused || !!activeStoryBeat || maskDialogOpen || !!maskClaimEvent, // freeze combat during skill tree AND story/mask dialogs
     getHeroStealthed: () => heroStealthRef.current, // Stealth branch shrinks enemy detection
     getDetectionScale: () => petDetectionScaleRef.current, // Cyber-Cat Sneak / Ghost Protocol
-    // Objective awareness: rival factions march on & raid the player's outposts (solo
-    // only) — PLUS the mask vault at base once the mask has been claimed.
+    // Objective awareness: rival factions march on & raid the player's outposts AND
+    // developed fortify camps (solo only) — PLUS the mask vault at base once claimed.
     strategicTargets: (!autoMultiplayer && !mobaMode)
-      ? (maskHeld ? [...outpostStrategicTargets, { key: 'mask-vault', q: baseAxial.q, r: baseAxial.r, owner: 'player' as const }] : outpostStrategicTargets)
+      ? [
+          ...outpostStrategicTargets,
+          ...campStrategicTargets,
+          ...(maskHeld ? [{ key: 'mask-vault', q: baseAxial.q, r: baseAxial.r, owner: 'player' as const, weight: 1 }] : []),
+        ]
       : undefined,
     onRaidOutpost: (key: string, fk: string) => {
       if (autoMultiplayer || mobaMode) return;
-      // The mask vault isn't a real outpost — steal it back to the field shrine instead
-      // of touching the outposts map.
+      // The mask vault isn't a real outpost. A successful steal is now an INSTANT
+      // Domination LOSS for the player (2026-07-19: "domination victory should be by
+      // capturing another faction's mask, same for domination loss") — no more sending
+      // it back to the shrine to recover.
       if (key === 'mask-vault') {
-        if (!maskHeldRef.current) return;
+        if (!maskHeldRef.current || soloResolvedRef.current) return;
         maskHeldRef.current = false; setMaskHeld(false);
         saveProgress({ solo: { maskHeld: false } } as any);
-        bumpSoloVictoryRef.current?.(fk as Faction, 'domination', VICTORY_POINTS.raid);
-        markRivalPressure();
         const w = axialToWorld(baseAxial, hexSize);
         spawnCombatText(w.x, w.z, '🎭 Mask stolen!', '#ff5555');
-        showRivalBanner(fk, `raided the vault and stole your mask! Recover it from the old shrine.`);
+        showRivalBanner(fk, `raided the vault and stole your mask, Domination is theirs!`);
+        setMaskClaimEvent({ kind: 'lost', faction: fk as 'PAA' | 'ASF' | 'WC' });
+        resolveSoloRef.current({ faction: fk as Faction, track: 'domination' });
+        return;
+      }
+      // Military-tier defense (either an outpost or a cleared fortify camp): a growing
+      // chance to fully repel the raid before it lands at all.
+      const outUpg = outpostUpgradesRef.current.get(key);
+      const campUpg = campUpgradesRef.current.get(key);
+      const upg = outUpg ?? campUpg;
+      if (upg && Math.random() < militaryDefendChance(upg)) {
+        const pos = outposts.get(key) ?? creepCamps.get(key);
+        if (pos) { const w = axialToWorld({ q: pos.q, r: pos.r }, hexSize); spawnCombatText(w.x, w.z, '🛡️ Raid repelled!', '#7aa2ff'); }
+        return;
+      }
+      // A developed fortify camp being raided (camps have no owner field to flip) loses
+      // a tier of investment instead — the "attract looters" downside of food/medicine.
+      if (campUpg && creepCamps.get(key)?.cleared) {
+        const nextTier = Math.max(0, campUpg.tier - 1);
+        setCampUpgrades(prevMap => { const n = new Map(prevMap); n.set(key, { tier: nextTier, spec: nextTier > 0 ? campUpg.spec : null }); return n; });
+        const c = creepCamps.get(key);
+        if (c) { const w = axialToWorld({ q: c.q, r: c.r }, hexSize); spawnCombatText(w.x, w.z, '⚠️ Camp raided!', '#ff5555'); }
+        showRivalBanner(fk, 'raided a developed camp, its investment took damage.');
+        markRivalPressure();
         return;
       }
       // An ascendant rival (any track ≥ 50) PLANTS ITS FLAG on the raided outpost —
@@ -4088,6 +4294,16 @@ export default function SoloMissionMap3D({
     explorationRewardedRef.current = !!solo.explorationRewarded;
     maskHeldRef.current = !!solo.maskHeld; setMaskHeld(!!solo.maskHeld);
     maskIntroSeenRef.current = !!solo.maskIntroSeen;
+    if (solo.outpostUpgrades) {
+      const m = new Map<string, CampUpgradeState>();
+      for (const [k, v] of Object.entries(solo.outpostUpgrades as Record<string, { tier: number; spec: CampSpecialization | null }>)) m.set(k, v);
+      outpostUpgradesRef.current = m; setOutpostUpgrades(m);
+    }
+    if (solo.campUpgrades) {
+      const m = new Map<string, CampUpgradeState>();
+      for (const [k, v] of Object.entries(solo.campUpgrades as Record<string, { tier: number; spec: CampSpecialization | null }>)) m.set(k, v);
+      campUpgradesRef.current = m; setCampUpgrades(m);
+    }
     // Victory race: restore every faction's track points (missing keys default to 0).
     if (solo.victory) {
       const v = emptyVictory();
@@ -4154,19 +4370,8 @@ export default function SoloMissionMap3D({
     return () => clearTimeout(t);
   }, [soloEnabled, soloHydrated, storyBeatIdx, maskDialogOpen]);
 
-  // ── Faction mask auto-collect — walking adjacent to the field shrine claims it
-  // (no separate keybind; matches how exploration reveals passively on movement).
-  React.useEffect(() => {
-    if (!soloEnabled || !soloHydrated || maskHeldRef.current) return;
-    if (axialDistance(hero.pos, maskFieldAxial) > 1) return;
-    maskHeldRef.current = true; setMaskHeld(true);
-    saveProgress({ solo: { maskHeld: true } } as any);
-    awardHeroXp(40);
-    awardFactionPoints(10);
-    awardShardsRef.current(10);
-    const w = axialToWorld(maskFieldAxial, hexSize);
-    spawnCombatText(w.x, w.z, `🎭 ${MASK_LORE[playerFactionKey].title} reclaimed!`, '#ffd24a');
-  }, [soloEnabled, soloHydrated, hero.pos.q, hero.pos.r, maskFieldAxial, saveProgress, awardHeroXp, awardFactionPoints, hexSize, spawnCombatText, playerFactionKey]);
+  // Mask collection is now PRESS-TO-COLLECT (G, shared with outpost capture — see the
+  // keydown handler's CAPTURE section) via claimMask/claimMaskRef above, not auto.
 
   // Apply a story choice: effects route through the systems that already exist
   // (reputation/victory via recordPlaystyle, FP, shards, XP), then persist the arc.
@@ -4189,23 +4394,34 @@ export default function SoloMissionMap3D({
   // seed-fixed, so reloading after the wipe yields a clean campaign.
   const campaignResettingRef = React.useRef(false);
   const [campaignResetting, setCampaignResetting] = useState(false);
-  const resetCampaign = React.useCallback(() => {
+  // `full=true` ALSO wipes the hero back to Level 1 (xp, skill tree, pet bond/level) —
+  // asked for explicitly at the New Campaign prompt (2026-07-19: "ask the player if
+  // they want to reset and start from lv1"); the default (full=false) keeps hero/skills
+  // /pet/shards/items and only wipes the WORLD, same as before.
+  const resetCampaign = React.useCallback((full: boolean = false) => {
     if (campaignResettingRef.current) return;
     campaignResettingRef.current = true; // blocks the debounced auto-save from re-writing old state
     setCampaignResetting(true);
+    if (full) { try { useSkillStore.getState().reset(); } catch {} }
     // { immediate: true } bypasses the throttle and is awaited, so the reload below only
     // happens once the wipe has actually landed on Firestore (previously this guessed a
     // fixed 1800ms delay, which could reload before the write actually completed).
     saveProgress({
       explored: [],
       heroPosition: { q: 0, r: 0 },
+      ...(full ? {
+        hero: { level: 1, xp: 0, traits: [], unlockedSkillIds: ['root'], unlockOrder: [] },
+        pet: { level: 1, xp: 0, bond: 0 },
+      } : {}),
       solo: {
         outpostsOwned: [], rivalOutposts: {}, storyBeat: 0, terraformProgress: 0, refugeeCampsDone: [],
         victory: emptyVictory(), victoryResult: null, victorySeen: false, explorationRewarded: false,
-        maskHeld: false, maskIntroSeen: false,
+        maskHeld: false, maskIntroSeen: false, outpostUpgrades: {}, campUpgrades: {},
       },
     } as any, { immediate: true }).finally(() => window.location.reload());
   }, [saveProgress]);
+  // Shows the "keep hero or reset to Lv 1?" choice before actually resetting.
+  const [newCampaignChoice, setNewCampaignChoice] = useState(false);
   // Ref always holding the latest "build the solo snapshot" closure so the debounced
   // autosave, the manual Save Game button, and the tab-hide/close flush all persist
   // identical, fresh data (fixes the Save Game button previously omitting several fields).
@@ -4228,6 +4444,8 @@ export default function SoloMissionMap3D({
     resourcesCollected: resourcesCollectedRef.current,
     maskHeld: maskHeldRef.current,
     maskIntroSeen: maskIntroSeenRef.current,
+    outpostUpgrades: Object.fromEntries(outpostUpgradesRef.current),
+    campUpgrades: Object.fromEntries(campUpgradesRef.current),
   });
   // Debounced auto-save of the solo world state whenever it changes (solo only, post-hydration).
   React.useEffect(() => {
@@ -5548,10 +5766,13 @@ export default function SoloMissionMap3D({
         investTerraformRef.current();
         return;
       }
-      // ─── CAPTURE OUTPOST (G) ───────────────────────────────────────────
+      // ─── CAPTURE OUTPOST / CLAIM MASK (G) ───────────────────────────────
       if (k === 'g') {
         if (e.repeat) return;
-        // G = quick assault; the on-screen buttons offer infiltrate / negotiate.
+        // A nearby mask shrine takes priority (shrines are spaced away from outposts,
+        // so this is mostly for determinism) — G = quick assault; the on-screen buttons
+        // offer infiltrate / negotiate for outposts.
+        if (nearbyMaskRef.current) { claimMaskRef.current(); return; }
         captureOutpostWithRef.current('assault');
         return;
       }
@@ -6005,7 +6226,13 @@ export default function SoloMissionMap3D({
                     district pad every 5th, all inside a stroked home-zone border */}
                 {(() => { const bw = axialToWorld(baseAxial, hexSize); return (
                   <group key="base" position={[bw.x, tileTopAt(baseAxial.q, baseAxial.r), bw.z]} frustumCulled={false}>
-                    <CommandCenter size={hexSize} color={heroColors.primary} tier={baseTier} stage={baseCityStage} playstyle={dominantStyle} hqUrl={baseTier <= 1 && baseHqUrl ? baseHqUrl : hqHouseForTier(houseVariants, baseTier, BASE_TIER_NAMES.length)} />
+                    {/* Fixed HQ model at every tier (user directive 2026-07-19: "keep the
+                        same fixed base, only make it bigger") — CommandCenter's own
+                        tier/stage scale coefficients carry all the growth now; the
+                        sprawl/districts around it are what grows with more buildings
+                        per level. Falls back to the general house pool only if the
+                        dedicated base model hasn't loaded/isn't in the manifest yet. */}
+                    <CommandCenter size={hexSize} color={heroColors.primary} tier={baseTier} stage={baseCityStage} playstyle={dominantStyle} hqUrl={baseHqUrl ?? houseVariants[0] ?? null} />
                     {/* Faction mask, once claimed — additional to the base (GDD "collect and
                         defend your mask"); also a rival raid target while it's here. */}
                     {maskHeld && (
@@ -6024,13 +6251,19 @@ export default function SoloMissionMap3D({
                     {terraformDone && <GrassCluster size={hexSize} seed={terraformAxial.q * 7 + terraformAxial.r} />}
                   </group>
                 ); })()}
-                {/* Faction mask field shrine — the "collect" half of the mask objective;
-                    disappears once claimed (see the mask pedestal in the base group). */}
-                {!maskHeld && (() => { const mw = axialToWorld(maskFieldAxial, hexSize); return (
-                  <group key="mask-shrine" position={[mw.x, tileTopAt(maskFieldAxial.q, maskFieldAxial.r), mw.z]} frustumCulled={false}>
-                    <MaskShrine faction={playerFactionKey} size={hexSize} />
-                  </group>
-                ); })()}
+                {/* Faction mask field shrines — one per faction. My own disappears once
+                    claimed (see the mask pedestal in the base group); rival shrines stay
+                    up until the campaign resolves (capturing one is an instant win, so
+                    there's no need to hide it after — the campaign is over by then). */}
+                {(['PAA', 'ASF', 'WC'] as const).filter(f => f !== playerFactionKey || !maskHeld).map(f => {
+                  const ax = maskAxialFor(f);
+                  const mw = axialToWorld(ax, hexSize);
+                  return (
+                    <group key={`mask-shrine-${f}`} position={[mw.x, tileTopAt(ax.q, ax.r), mw.z]} frustumCulled={false}>
+                      <MaskShrine faction={f} size={hexSize} />
+                    </group>
+                  );
+                })}
                 {/* Outposts (fog-gated) */}
                 {outpostField}
                 {/* Region name + control labels (revealed with the 'O' territory overlay). */}
@@ -6143,21 +6376,37 @@ export default function SoloMissionMap3D({
               )}
               {nearbyOutpost && (
                 <div className="fixed top-32 sm:top-28 left-1/2 -translate-x-1/2 z-40 max-w-[94vw] pointer-events-auto">
-                  <div className="px-4 py-2.5 rounded-xl bg-[#0c1219]/90 border border-white/15 text-xs sm:text-sm backdrop-blur-sm shadow-lg text-center space-y-2">
-                    <div className="font-bold">🚩 Neutral Outpost, choose your approach</div>
-                    {/* GDD: outposts are taken via stealth, combat, or tactical diplomacy */}
-                    <div className="flex flex-wrap items-center justify-center gap-2">
-                      <button onClick={() => captureOutpostWithRef.current('assault')} title="Take it by force, fast, but rival defenders respond."
-                        className="px-3 py-1.5 rounded-lg font-bold bg-rose-700/80 hover:bg-rose-600 ring-1 ring-rose-400/40">⚔️ Assault</button>
-                      <button onClick={() => captureOutpostWithRef.current('infiltrate')} disabled={!canInfiltrate}
-                        title={canInfiltrate ? 'Slip in quietly, no reprisal (best with a Stealth build).' : `Locked, unlock ${APPROACH_SKILL.infiltrate.label} in the skill tree.`}
-                        className={`px-3 py-1.5 rounded-lg font-bold ring-1 ${canInfiltrate ? 'bg-violet-700/80 hover:bg-violet-600 ring-violet-400/40' : 'bg-gray-800/70 ring-white/10 opacity-50 cursor-not-allowed'}`}>{canInfiltrate ? '🥷' : '🔒'} Infiltrate</button>
-                      <button onClick={() => captureOutpostWithRef.current('negotiate')} disabled={!canNegotiate}
-                        title={canNegotiate ? 'Tactical diplomacy, peaceful, earns extra faction standing.' : `Locked, unlock ${APPROACH_SKILL.negotiate.label} in the skill tree.`}
-                        className={`px-3 py-1.5 rounded-lg font-bold ring-1 ${canNegotiate ? 'bg-sky-700/80 hover:bg-sky-600 ring-sky-400/40' : 'bg-gray-800/70 ring-white/10 opacity-50 cursor-not-allowed'}`}>{canNegotiate ? '🕊️' : '🔒'} Negotiate</button>
+                  {nearbyOutpost.owner === 'player' ? (
+                    <UpgradePanelContent title="Your Outpost" icon="🚩"
+                      current={outpostUpgrades.get(nearbyOutpost.key) ?? { tier: 0, spec: null }}
+                      heroInventory={localHeroInventory}
+                      onUpgrade={(spec) => upgradeLocationRef.current('outpost', nearbyOutpost.key, nearbyOutpost.q, nearbyOutpost.r, spec)} />
+                  ) : (
+                    <div className="px-4 py-2.5 rounded-xl bg-[#0c1219]/90 border border-white/15 text-xs sm:text-sm backdrop-blur-sm shadow-lg text-center space-y-2">
+                      <div className="font-bold">🚩 Neutral Outpost, choose your approach</div>
+                      {/* GDD: outposts are taken via stealth, combat, or tactical diplomacy */}
+                      <div className="flex flex-wrap items-center justify-center gap-2">
+                        <button onClick={() => captureOutpostWithRef.current('assault')} title="Take it by force, fast, but rival defenders respond."
+                          className="px-3 py-1.5 rounded-lg font-bold bg-rose-700/80 hover:bg-rose-600 ring-1 ring-rose-400/40">⚔️ Assault</button>
+                        <button onClick={() => captureOutpostWithRef.current('infiltrate')} disabled={!canInfiltrate}
+                          title={canInfiltrate ? 'Slip in quietly, no reprisal (best with a Stealth build).' : `Locked, unlock ${APPROACH_SKILL.infiltrate.label} in the skill tree.`}
+                          className={`px-3 py-1.5 rounded-lg font-bold ring-1 ${canInfiltrate ? 'bg-violet-700/80 hover:bg-violet-600 ring-violet-400/40' : 'bg-gray-800/70 ring-white/10 opacity-50 cursor-not-allowed'}`}>{canInfiltrate ? '🥷' : '🔒'} Infiltrate</button>
+                        <button onClick={() => captureOutpostWithRef.current('negotiate')} disabled={!canNegotiate}
+                          title={canNegotiate ? 'Tactical diplomacy, peaceful, earns extra faction standing.' : `Locked, unlock ${APPROACH_SKILL.negotiate.label} in the skill tree.`}
+                          className={`px-3 py-1.5 rounded-lg font-bold ring-1 ${canNegotiate ? 'bg-sky-700/80 hover:bg-sky-600 ring-sky-400/40' : 'bg-gray-800/70 ring-white/10 opacity-50 cursor-not-allowed'}`}>{canNegotiate ? '🕊️' : '🔒'} Negotiate</button>
+                      </div>
+                      <div className="text-[10px] opacity-50"><span className="px-1 rounded bg-white/10 font-bold">G</span> = quick assault</div>
                     </div>
-                    <div className="text-[10px] opacity-50"><span className="px-1 rounded bg-white/10 font-bold">G</span> = quick assault</div>
-                  </div>
+                  )}
+                </div>
+              )}
+              {/* Cleared fortify camp — same 5-tier upgrade panel as owned outposts. */}
+              {!nearbyOutpost && nearbyFortifiedCamp && (
+                <div className="fixed top-32 sm:top-28 left-1/2 -translate-x-1/2 z-40 max-w-[94vw] pointer-events-auto">
+                  <UpgradePanelContent title="Fortified Camp" icon="🏰"
+                    current={campUpgrades.get(nearbyFortifiedCamp.key) ?? { tier: 0, spec: null }}
+                    heroInventory={localHeroInventory}
+                    onUpgrade={(spec) => upgradeLocationRef.current('camp', nearbyFortifiedCamp.key, nearbyFortifiedCamp.q, nearbyFortifiedCamp.r, spec)} />
                 </div>
               )}
               {nearbyRefugeeCamp && (() => {
@@ -6194,6 +6443,25 @@ export default function SoloMissionMap3D({
                   </div>
                 );
               })()}
+              {/* Nearby mask shrine — press-to-collect (G). Own mask = main objective;
+                  a rival's = instant Domination victory. */}
+              {nearbyMask && (
+                <div className="fixed top-56 sm:top-52 left-1/2 -translate-x-1/2 z-40 max-w-[94vw] pointer-events-auto">
+                  <div className={`px-4 py-2.5 rounded-xl border text-xs sm:text-sm backdrop-blur-sm shadow-lg text-center space-y-1.5 ${nearbyMask === playerFactionKey ? 'bg-[#0c1219]/90 border-white/15' : 'bg-amber-950/85 border-amber-400/50'}`}>
+                    <div className="font-bold">
+                      {nearbyMask === playerFactionKey
+                        ? `🎭 ${MASK_LORE[nearbyMask].title}, reclaim it`
+                        : `🎭 ${MASK_LORE[nearbyMask].title}, an enemy relic!`}
+                    </div>
+                    {nearbyMask !== playerFactionKey && <div className="text-[11px] text-amber-200">Capturing it wins the campaign by Domination.</div>}
+                    <button onClick={() => claimMaskRef.current()}
+                      className={`px-4 py-1.5 rounded-lg font-bold ring-1 ${nearbyMask === playerFactionKey ? 'bg-emerald-700/80 hover:bg-emerald-600 ring-emerald-400/40' : 'bg-amber-600 hover:bg-amber-500 ring-amber-300/60 text-black'}`}>
+                      {nearbyMask === playerFactionKey ? '🎭 Claim' : '⚔️ Capture'}
+                    </button>
+                    <div className="text-[10px] opacity-50"><span className="px-1 rounded bg-white/10 font-bold">G</span> = claim</div>
+                  </div>
+                </div>
+              )}
 
               {/* ── Civ-style top yield bar — full width, yields left, identity right ────── */}
               <div className="fixed top-0 left-0 right-0 z-30 pointer-events-none">
@@ -6426,6 +6694,58 @@ export default function SoloMissionMap3D({
                 </div>
               )}
 
+              {/* ── Mask claim/capture/loss storyline beat — fires the moment a mask
+                  changes hands (press-G collect, or a rival raid stealing your own). */}
+              {soloEnabled && maskClaimEvent && (() => {
+                const ev = maskClaimEvent;
+                const npc = storyNpc(playerFactionKey, heroGender ?? 'FEMALE');
+                if (ev.kind === 'own') {
+                  return (
+                    <div className="fixed inset-0 z-50 flex items-end justify-center pb-64 sm:pb-24 bg-black/45 backdrop-blur-[2px] pointer-events-auto">
+                      <div className="relative w-[min(34rem,94vw)] p-5 rounded-2xl bg-[#0c1219]/97 ring-1 ring-white/15 shadow-2xl text-gray-100">
+                        <div className="flex items-center gap-2 mb-1">
+                          <span className="w-2.5 h-2.5 rounded-full shrink-0" style={{ background: FACTION_COLORS[playerFactionKey]?.primary ?? '#8a8f96' }} />
+                          <span className="text-[11px] uppercase tracking-wider opacity-60">🎭 {MASK_LORE[playerFactionKey].title}, Reclaimed</span>
+                        </div>
+                        <div className="font-bold mb-2" style={{ color: FACTION_COLORS[playerFactionKey]?.label ?? '#e5e7eb' }}>{npc}</div>
+                        <div className="text-sm leading-relaxed opacity-90 mb-4 bg-black/30 rounded-lg px-3 py-2">“{storyText(MASK_LORE[playerFactionKey].lines[1], playerFactionKey, heroGender ?? 'FEMALE')} It is home now, but not safe, they will come for it. Defend the base.”</div>
+                        <button onClick={closeMaskClaimEvent} className="w-full py-2 rounded-lg bg-emerald-700 hover:bg-emerald-600 font-bold">Continue</button>
+                      </div>
+                    </div>
+                  );
+                }
+                if (ev.kind === 'rival') {
+                  return (
+                    <div className="fixed inset-0 z-50 flex items-end justify-center pb-64 sm:pb-24 bg-black/55 backdrop-blur-[2px] pointer-events-auto">
+                      <div className="relative w-[min(34rem,94vw)] p-5 rounded-2xl bg-[#160e05]/97 ring-1 ring-amber-400/40 shadow-2xl text-gray-100">
+                        <div className="flex items-center gap-2 mb-1">
+                          <span className="w-2.5 h-2.5 rounded-full shrink-0 bg-amber-400" />
+                          <span className="text-[11px] uppercase tracking-wider text-amber-300">🎭 {MASK_LORE[ev.faction].title}, Captured</span>
+                        </div>
+                        <div className="font-bold mb-2 text-amber-300 text-lg">Domination Victory</div>
+                        <div className="text-sm leading-relaxed opacity-90 mb-2 bg-black/30 rounded-lg px-3 py-2">You have taken the {FACTION_LABEL[ev.faction] ?? ev.faction} mask from its shrine, a blow against their sovereignty no combat could deliver.</div>
+                        <div className="text-sm leading-relaxed opacity-90 mb-4 bg-black/30 rounded-lg px-3 py-2 italic">“{npc}: Let them feel it.”</div>
+                        <button onClick={closeMaskClaimEvent} className="w-full py-2 rounded-lg bg-amber-600 hover:bg-amber-500 text-black font-bold">Continue</button>
+                      </div>
+                    </div>
+                  );
+                }
+                // 'lost' — a rival stole the player's own mask: Domination LOSS.
+                return (
+                  <div className="fixed inset-0 z-50 flex items-end justify-center pb-64 sm:pb-24 bg-black/55 backdrop-blur-[2px] pointer-events-auto">
+                    <div className="relative w-[min(34rem,94vw)] p-5 rounded-2xl bg-[#1a0a0a]/97 ring-1 ring-rose-500/40 shadow-2xl text-gray-100">
+                      <div className="flex items-center gap-2 mb-1">
+                        <span className="w-2.5 h-2.5 rounded-full shrink-0 bg-rose-500" />
+                        <span className="text-[11px] uppercase tracking-wider text-rose-300">🎭 {MASK_LORE[playerFactionKey].title}, Stolen</span>
+                      </div>
+                      <div className="font-bold mb-2 text-rose-400 text-lg">Domination Loss</div>
+                      <div className="text-sm leading-relaxed opacity-90 mb-4 bg-black/30 rounded-lg px-3 py-2">{FACTION_LABEL[ev.faction] ?? ev.faction} raiders broke the vault and carried the mask off before the defense could form. Domination is theirs.</div>
+                      <button onClick={closeMaskClaimEvent} className="w-full py-2 rounded-lg bg-rose-700 hover:bg-rose-600 font-bold">Continue</button>
+                    </div>
+                  </div>
+                );
+              })()}
+
               {/* ── 1v1 PvP Duel: lobby + result (launcher lives in the top HUD bar) ─── */}
               {!mobaMode && duelLobbyOpen && (
                 <div className="fixed top-28 right-3 z-40 w-[min(18rem,92vw)] p-4 rounded-xl bg-[#0c1219]/95 ring-1 ring-white/12 shadow-2xl text-sm text-gray-100 space-y-3">
@@ -6614,7 +6934,7 @@ export default function SoloMissionMap3D({
 
               {/* Solo victory-track result — a faction filled a track first. Win (you) or loss (AI).
                   The campaign stays decided (tracks frozen) until the player starts a new one. */}
-              {soloEnabled && soloVictoryResult && !soloResultDismissed && (() => {
+              {soloEnabled && soloVictoryResult && !soloResultDismissed && !maskClaimEvent && (() => {
                 const won = soloVictoryResult.faction === playerFactionKey;
                 const def = VICTORY_TRACK_DEFS[soloVictoryResult.track];
                 return (
@@ -6629,16 +6949,35 @@ export default function SoloMissionMap3D({
                         <span className="font-bold">{def.icon} {def.label}</span>
                       </div>
                       <div className="opacity-70 text-sm mb-4">{won ? `You reached the ${def.label} threshold first. +60 shards.` : `${soloVictoryResult.faction} filled the ${def.label} track before you.`}</div>
-                      <div className="flex items-center justify-center gap-3">
-                        <button disabled={campaignResetting} onClick={resetCampaign} title="Reset the world, territory, terraforming, camps and the victory race start over. Your hero, skills, pet, shards and items carry over."
-                          className="px-6 py-2 rounded-lg font-bold bg-emerald-700 hover:bg-emerald-600 disabled:opacity-60">
-                          {campaignResetting ? 'Resetting…' : '🔁 New Campaign'}
-                        </button>
-                        <button disabled={campaignResetting} onClick={() => { victorySeenRef.current = true; setSoloResultDismissed(true); }}
-                          className="px-6 py-2 rounded-lg font-bold bg-white/10 hover:bg-white/20 ring-1 ring-white/20">
-                          Keep Playing
-                        </button>
-                      </div>
+                      {newCampaignChoice ? (
+                        <div>
+                          <div className="text-sm font-semibold mb-3">Start the new campaign at Level 1 too?</div>
+                          <div className="flex items-center justify-center gap-3">
+                            <button disabled={campaignResetting} onClick={() => resetCampaign(true)} title="Wipe hero level, XP, skill tree and pet bond back to the start — shards and items are untouched."
+                              className="px-5 py-2 rounded-lg font-bold bg-rose-700 hover:bg-rose-600 disabled:opacity-60">
+                              {campaignResetting ? 'Resetting…' : '🔄 Reset to Lv 1'}
+                            </button>
+                            <button disabled={campaignResetting} onClick={() => resetCampaign(false)} title="Reset the world, territory, terraforming and camps — your hero, skills, pet, shards and items carry over."
+                              className="px-5 py-2 rounded-lg font-bold bg-emerald-700 hover:bg-emerald-600 disabled:opacity-60">
+                              {campaignResetting ? 'Resetting…' : '📈 Keep My Hero'}
+                            </button>
+                          </div>
+                          {!campaignResetting && (
+                            <button onClick={() => setNewCampaignChoice(false)} className="mt-3 text-xs opacity-60 hover:opacity-90 underline">‹ Back</button>
+                          )}
+                        </div>
+                      ) : (
+                        <div className="flex items-center justify-center gap-3">
+                          <button onClick={() => setNewCampaignChoice(true)} title="Start a new campaign"
+                            className="px-6 py-2 rounded-lg font-bold bg-emerald-700 hover:bg-emerald-600">
+                            🔁 New Campaign
+                          </button>
+                          <button disabled={campaignResetting} onClick={() => { victorySeenRef.current = true; setSoloResultDismissed(true); }}
+                            className="px-6 py-2 rounded-lg font-bold bg-white/10 hover:bg-white/20 ring-1 ring-white/20">
+                            Keep Playing
+                          </button>
+                        </div>
+                      )}
                     </div>
                   </div>
                 );

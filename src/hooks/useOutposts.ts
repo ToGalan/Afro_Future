@@ -87,7 +87,7 @@ export function useOutposts({ tiles, heroQ, heroR, centerQ, centerR, avoid, onCa
     for (const t of tiles) {
       if (t.type === 'water' || t.type === 'mountain') continue;
       if (axialDist(t.q, t.r, centerQ, centerR) < 6) continue;
-      if (hash(t.q, t.r) >= 0.007) continue;
+      if (hash(t.q, t.r) >= 0.0035) continue; // halved 2026-07-19 per user
       if (avoid?.some(a => axialDist(t.q, t.r, a.q, a.r) < MIN_SPACING)) continue;
       if (coords.some(c => axialDist(t.q, t.r, c.q, c.r) < MIN_SPACING)) continue;
       coords.push({ q: t.q, r: t.r });

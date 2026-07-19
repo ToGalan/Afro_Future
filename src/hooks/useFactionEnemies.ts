@@ -138,7 +138,11 @@ interface UseFactionEnemiesOptions {
    * with current ownership. Rival roamers/champions march on the player's captured outposts
    * and RAID them (flip back to neutral) at a doctrine-paced rate, so the player must defend.
    */
-  strategicTargets?: Array<{ key: string; q: number; r: number; owner: string }>;
+  /** `weight` (default 1) skews target PRIORITY, not just distance: >1 makes a target
+   *  feel closer (more attractive, e.g. a food-specialized outpost/camp — "attracts
+   *  looters"), <1 makes it feel farther (less attractive, e.g. a medicine-specialized
+   *  one — "invites negotiation" instead of raids). See campUpgrades.raidWeight. */
+  strategicTargets?: Array<{ key: string; q: number; r: number; owner: string; weight?: number }>;
   /** Called when a rival unit raids a player-owned outpost (map flips it to neutral). */
   onRaidOutpost?: (key: string, faction: FactionKey) => void;
 }
@@ -389,7 +393,13 @@ export function useFactionEnemies({
             for (const o of pOuts) {
               if (o.owner !== 'player') continue;
               const d = axialDist(en.q, en.r, o.q, o.r);
-              if (d < td && d <= STRATEGIC_RANGE) { td = d; tgt = o; }
+              if (d > STRATEGIC_RANGE) continue;
+              // Weighted effective distance — a food-specialized target (weight > 1)
+              // reads as CLOSER (more attractive to raid); a medicine-specialized one
+              // (weight < 1) reads as FARTHER (deprioritized). Real distance still gates
+              // via STRATEGIC_RANGE above so weighting can't pull in an out-of-range target.
+              const effD = d / (o.weight ?? 1);
+              if (effD < td) { td = effD; tgt = o; }
             }
             if (tgt) {
               if (td <= 1) {
