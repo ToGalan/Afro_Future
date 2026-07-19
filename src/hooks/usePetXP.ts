@@ -32,6 +32,8 @@ export interface UsePetXPReturn {
    * @param heroLevel      current hero.level from profile
    */
   gainXPOnCollect: (currentHeroXp: number, heroLevel: number) => void;
+  /** Award raw pet XP directly (no bond/hero-xp side effects) — e.g. auto-gather fetch tallies. */
+  addPetXp: (amount: number) => void;
 }
 
 /** Bond climbs slowly toward Soulbound (120); clamp so it never overflows. */
@@ -144,6 +146,26 @@ export function usePetXP({
     [saveProgress],
   );
 
+  const addPetXp = useCallback(
+    (amount: number) => {
+      if (amount <= 0) return;
+      setPetXp(prev => {
+        const { xp, level } = applyLevelUps(prev + amount, petLevelRef.current);
+        if (level !== petLevelRef.current) {
+          petLevelRef.current = level;
+          setPetLevel(level);
+          console.log(`[PetXP] Level up → ${level}`);
+        }
+        petXpRef.current = xp;
+        saveProgress({ pet: { xp, level, bond: petBondRef.current, type: petTypeRef.current } });
+        return xp;
+      });
+    },
+    // saveProgress is stable (useCallback in usePlayerProfile); applyLevelUps is a closure
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [saveProgress],
+  );
+
   return {
     petXp,
     petLevel,
@@ -151,5 +173,6 @@ export function usePetXP({
     xpToNext: getXpForNextPetLevel(petLevel),
     gainXPOnMove,
     gainXPOnCollect,
+    addPetXp,
   };
 }

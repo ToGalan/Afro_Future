@@ -146,7 +146,16 @@
       "PowerShell(node \"C:\\\\Users\\\\brian\\\\AppData\\\\Local\\\\Temp\\\\claude\\\\d--Afro-Future--Dev-Backup-New-Dev-2025-v3\\\\84b4b9d8-d8bf-418e-8078-1420d2408561\\\\scratchpad\\\\verify_terraform_fix2.cjs\")",
       "PowerShell(Start-Process -FilePath \"cmd.exe\" -ArgumentList \"/c npx vite --port 5199 --strictPort > `\"$env:TEMP\\\\vite-verify3.log`\" 2>&1\" -WindowStyle Hidden; Start-Sleep -Seconds 6; \\(Invoke-WebRequest -Uri \"http://localhost:5199\" -UseBasicParsing -TimeoutSec 10\\).StatusCode)",
       "PowerShell(node \"C:\\\\Users\\\\brian\\\\AppData\\\\Local\\\\Temp\\\\claude\\\\d--Afro-Future--Dev-Backup-New-Dev-2025-v3\\\\84b4b9d8-d8bf-418e-8078-1420d2408561\\\\scratchpad\\\\verify_sprawl.cjs\")",
-      "PowerShell(node \"C:\\\\Users\\\\brian\\\\AppData\\\\Local\\\\Temp\\\\claude\\\\d--Afro-Future--Dev-Backup-New-Dev-2025-v3\\\\84b4b9d8-d8bf-418e-8078-1420d2408561\\\\scratchpad\\\\verify_sprawl2.cjs\")"
+      "PowerShell(node \"C:\\\\Users\\\\brian\\\\AppData\\\\Local\\\\Temp\\\\claude\\\\d--Afro-Future--Dev-Backup-New-Dev-2025-v3\\\\84b4b9d8-d8bf-418e-8078-1420d2408561\\\\scratchpad\\\\verify_sprawl2.cjs\")",
+      "PowerShell(Start-Process -FilePath \"cmd.exe\" -ArgumentList \"/c npx vite --port 5199 --strictPort > `\"$env:TEMP\\\\vite-debug.log`\" 2>&1\" -WindowStyle Hidden; Start-Sleep -Seconds 6; \\(Invoke-WebRequest -Uri \"http://localhost:5199\" -UseBasicParsing -TimeoutSec 10\\).StatusCode)",
+      "PowerShell(node \"C:\\\\Users\\\\brian\\\\AppData\\\\Local\\\\Temp\\\\claude\\\\d--Afro-Future--Dev-Backup-New-Dev-2025-v3\\\\84b4b9d8-d8bf-418e-8078-1420d2408561\\\\scratchpad\\\\debug_story.cjs\")",
+      "PowerShell(node \"C:\\\\Users\\\\brian\\\\AppData\\\\Local\\\\Temp\\\\claude\\\\d--Afro-Future--Dev-Backup-New-Dev-2025-v3\\\\84b4b9d8-d8bf-418e-8078-1420d2408561\\\\scratchpad\\\\debug_story2.cjs\")",
+      "PowerShell(node \"C:\\\\Users\\\\brian\\\\AppData\\\\Local\\\\Temp\\\\claude\\\\d--Afro-Future--Dev-Backup-New-Dev-2025-v3\\\\84b4b9d8-d8bf-418e-8078-1420d2408561\\\\scratchpad\\\\debug_story3.cjs\")",
+      "Bash(node \"C:/Users/brian/AppData/Local/Temp/claude/d--Afro-Future--Dev-Backup-New-Dev-2025-v3/84b4b9d8-d8bf-418e-8078-1420d2408561/scratchpad/debug_story4_network.cjs\")",
+      "Bash(node \"C:/Users/brian/AppData/Local/Temp/claude/d--Afro-Future--Dev-Backup-New-Dev-2025-v3/84b4b9d8-d8bf-418e-8078-1420d2408561/scratchpad/debug_story5_instrumented.cjs\")",
+      "Bash(pkill -f \"vite --port 5199\")",
+      "Bash(xargs -I{} stat -c \"%Y %n\" {})",
+      "Bash(node \"C:/Users/brian/AppData/Local/Temp/claude/d--Afro-Future--Dev-Backup-New-Dev-2025-v3/84b4b9d8-d8bf-418e-8078-1420d2408561/scratchpad/mobile_audit.cjs\")"
     ]
   }
 }

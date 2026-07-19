@@ -749,22 +749,23 @@ function SkillsModal({ loadout, onClose }: { loadout: CharacterLoadout; onClose:
   return (
     <div className="fixed inset-0 z-[99] flex items-center justify-center">
       <div className="absolute inset-0 bg-black/75 backdrop-blur-sm" onClick={onClose} />
-      <div className="relative w-[97vw] h-[95vh] bg-[#0f1218] rounded-2xl border border-white/10 shadow-2xl overflow-hidden flex text-gray-100">
+      <div className="relative w-[97vw] h-[95vh] bg-[#0f1218] rounded-2xl border border-white/10 shadow-2xl overflow-hidden flex flex-col md:flex-row text-gray-100">
         <button
           onClick={onClose}
           className="absolute top-3 right-3 z-50 w-8 h-8 rounded-lg bg-white/5 hover:bg-white/15 border border-white/10 flex items-center justify-center text-sm leading-none transition"
           title="Close (Esc)"
         >✕</button>
 
-        {/* Left: Skill Tree (circular web) */}
-        <div className="flex-1 min-w-0 overflow-hidden">
+        {/* Left (top on mobile): Skill Tree (circular web) — fixed height on mobile
+            (stacked column layout) since flex-1 can't infer height without a row context. */}
+        <div className="h-[55vh] shrink-0 overflow-hidden md:h-auto md:flex-1 md:min-w-0 md:shrink">
           <Suspense fallback={<div className="w-full h-full flex items-center justify-center text-gray-400 text-sm">Loading skill tree…</div>}>
             <SnowflakeSkillTree initialLevel={loadout.level} />
           </Suspense>
         </div>
 
-        {/* Right: Ability Assignment Panel */}
-        <div className="w-72 shrink-0 border-l border-white/10 bg-[#0b0f16] flex flex-col overflow-hidden">
+        {/* Right (bottom on mobile): Ability Assignment Panel */}
+        <div className="flex-1 min-h-0 border-t md:border-t-0 md:border-l border-white/10 bg-[#0b0f16] flex flex-col overflow-hidden md:w-72 md:shrink-0 md:flex-none md:h-full">
           <header className="px-4 pt-4 pb-3 border-b border-white/10 shrink-0">
             <h2 className="text-sm font-semibold tracking-wide">Ability Loadout</h2>
             <p className="text-[10px] opacity-50 mt-0.5">Select a skill below, then click a slot to assign it</p>

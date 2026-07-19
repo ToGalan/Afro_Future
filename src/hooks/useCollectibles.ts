@@ -18,6 +18,7 @@ import { useState, useEffect, useRef, useCallback } from 'react';
 import type { PlayerProfile } from '../types/player';
 import type { ProgressPatch } from './usePlayerProfile';
 import { getLevelFromXp } from '../services/playerExpEconomy';
+import { playSfx } from '../services/sound';
 
 // ── Shared tile shape (subset of SoloMissionMap3D's Tile) ───────────────────
 type TileType = 'water' | 'desert' | 'plains' | 'forest' | 'jungle' | 'hills' | 'mountain';
@@ -383,6 +384,7 @@ export function useCollectibles({
         }
 
         awardXpAndSave(xpGain);
+        playSfx('collect');
         setCollectingProgress(0);
       };
 

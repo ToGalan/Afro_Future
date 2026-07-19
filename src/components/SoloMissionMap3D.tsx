@@ -12,6 +12,7 @@ import { ImprovedNoise } from 'three/examples/jsm/math/ImprovedNoise.js';
 import { FbxProp, FbxPbrProp, FbxRawProp, GltfRawProp, FbxAnimatedProp, FbxAnimatedTexturedProp, NATURE_ASSETS, NATURE_TEX, MILITARY_ASSETS, MILITARY_TEX, PBR_PROP_ASSETS, PBR_PROP_TEX, MUSHROOM_ASSET, MUSHROOM_TEX, MINING_ASSETS, PET_ASSETS, WC_NPC_ASSET, WC_NPC_TEX, CREEP_ASSETS, CREEP_TEX, ELEPHANT_ASSET, CAMEL_ASSET, RHINO_ASSET, HOUSE_MANIFEST_URL, DESERT_OUTPOST_ASSET, MASK_ASSETS } from './FbxProps';
 import { EffectComposer, Bloom, Vignette } from '@react-three/postprocessing';
 import { arcFor, beatReady, storyNpc, storyText, MASK_LORE, MAIN_MISSIONS, FACTION_MOTIVATION, type StoryBeat, type StoryChoice, type StoryWorldState } from '../services/storyline';
+import { playSfx, isSfxMuted, setSfxMuted } from '../services/sound';
 import { nextUpgradeCost, militaryDefendChance, raidWeight, passiveIncome, SPEC_INFO, CAMP_UPGRADE_MAX_TIER, type CampSpecialization, type CampUpgradeState } from '../services/campUpgrades';
 import { GameAvatar, type AvatarColors } from './GameAvatarMesh';
 import { resolveHeroModel } from '../config/heroModels';
@@ -936,8 +937,15 @@ const DISTRICT_ICON: Record<BaseDistrictKind, string> = { habitat: '🏠', agro:
 // through these 4 kinds; a 5th district (stage 25) repeats 'habitat' at a bigger size.
 const DISTRICT_KIND_CYCLE: BaseDistrictKind[] = ['habitat', 'agro', 'industry', 'energy'];
 /** Model-only district pads — no procedural three.js geometry (per design direction,
- *  the base builds out of real asset-pack models only): habitat = army tent, agro =
- *  bushes + flowers, industry = crate + barrel, energy = generator. Icon label on top. */
+ *  the base builds out of real asset-pack models only), themed with 5-6 assets each so
+ *  a district reads instantly at a glance (2026-07-19, user: "speciality districts...
+ *  need to have relevant assets from the files per level (military, medical, resources,
+ *  etc), at least 4-6 assets per district"): habitat = domestic/civilian comfort (tent,
+ *  crate, carpet, campfire, x-brace crate), agro = food & herbs/medical (bushes, flowers,
+ *  mushroom), industry = military/manufacturing (crates, barrel, tires, machine gun,
+ *  barrier), energy = power + raw resources (generator, barrel, radio, gem crystal,
+ *  lantern). Icon label on top. All items sit within the pad footprint, clear of the
+ *  house-model anchor placed alongside each district stage. */
 function BaseDistrictMesh({ size, kind, color }: { size: number; kind: BaseDistrictKind; color: string }) {
   const S = size;
   return (
@@ -946,7 +954,10 @@ function BaseDistrictMesh({ size, kind, color }: { size: number; kind: BaseDistr
         {kind === 'habitat' && (
           <>
             <group position={[-S * 0.12, 0, S * 0.04]}><FbxProp url={MILITARY_ASSETS.tents[0]} tex={MILITARY_TEX} size={S * 0.85} rotation={0.5} tint="#c8a878" /></group>
-            <group position={[S * 0.3, 0, -S * 0.26]}><FbxProp url={MILITARY_ASSETS.boxes[0]} tex={MILITARY_TEX} size={S * 0.24} rotation={1.1} /></group>
+            <group position={[S * 0.34, 0, -S * 0.22]}><FbxProp url={MILITARY_ASSETS.boxes[0]} tex={MILITARY_TEX} size={S * 0.24} rotation={1.1} /></group>
+            <group position={[S * 0.1, 0, S * 0.34]} rotation={[0, 0.2, 0]}><FbxPbrProp url={PBR_PROP_ASSETS.carpet} tex={PBR_PROP_TEX.carpet} size={S * 0.4} /></group>
+            <group position={[-S * 0.36, 0, -S * 0.14]}><FbxPbrProp url={PBR_PROP_ASSETS.campfire} tex={PBR_PROP_TEX.campfire} size={S * 0.32} /></group>
+            <group position={[-S * 0.32, 0, S * 0.3]} rotation={[0, -0.4, 0]}><FbxPbrProp url={PBR_PROP_ASSETS.crateXBrace} tex={PBR_PROP_TEX.crateXBrace} size={S * 0.26} /></group>
           </>
         )}
         {kind === 'agro' && (
@@ -954,6 +965,9 @@ function BaseDistrictMesh({ size, kind, color }: { size: number; kind: BaseDistr
             <group position={[-S * 0.24, 0, S * 0.02]}><FbxProp url={NATURE_ASSETS.bushes[0]} tex={NATURE_TEX} size={S * 0.42} rotation={0.3} /></group>
             <group position={[S * 0.24, 0, S * 0.26]}><FbxProp url={NATURE_ASSETS.flowers[0]} tex={NATURE_TEX} size={S * 0.34} rotation={1.8} /></group>
             <group position={[S * 0.18, 0, -S * 0.3]}><FbxProp url={NATURE_ASSETS.bushes[2]} tex={NATURE_TEX} size={S * 0.3} rotation={2.6} /></group>
+            <group position={[-S * 0.34, 0, -S * 0.28]}><FbxProp url={NATURE_ASSETS.bushes[1]} tex={NATURE_TEX} size={S * 0.28} rotation={1.4} /></group>
+            <group position={[S * 0.36, 0, S * 0.02]}><FbxProp url={NATURE_ASSETS.flowers[1]} tex={NATURE_TEX} size={S * 0.26} rotation={3.4} /></group>
+            <group position={[-S * 0.06, 0, S * 0.36]}><FbxProp url={MUSHROOM_ASSET} tex={MUSHROOM_TEX} size={S * 0.22} rotation={2.0} /></group>
           </>
         )}
         {kind === 'industry' && (
@@ -961,12 +975,18 @@ function BaseDistrictMesh({ size, kind, color }: { size: number; kind: BaseDistr
             <group position={[-S * 0.2, 0, S * 0.12]}><FbxProp url={MILITARY_ASSETS.boxes[1]} tex={MILITARY_TEX} size={S * 0.42} rotation={0.5} /></group>
             <group position={[-S * 0.02, 0, -S * 0.28]}><FbxProp url={MILITARY_ASSETS.barrel} tex={MILITARY_TEX} size={S * 0.3} rotation={1.2} /></group>
             <group position={[S * 0.3, 0, S * 0.02]}><FbxProp url={MILITARY_ASSETS.tires} tex={MILITARY_TEX} size={S * 0.28} rotation={2.1} /></group>
+            <group position={[S * 0.34, 0, -S * 0.3]}><FbxProp url={MILITARY_ASSETS.machineGuns[0]} tex={MILITARY_TEX} size={S * 0.3} rotation={-0.7} /></group>
+            <group position={[-S * 0.36, 0, -S * 0.06]}><FbxProp url={MILITARY_ASSETS.barriers[0]} tex={MILITARY_TEX} size={S * 0.36} rotation={0.9} /></group>
+            <group position={[-S * 0.14, 0, S * 0.36]}><FbxProp url={MILITARY_ASSETS.hedgehog} tex={MILITARY_TEX} size={S * 0.24} rotation={2.5} /></group>
           </>
         )}
         {kind === 'energy' && (
           <>
             <group position={[S * 0.12, 0, S * 0.08]}><FbxProp url={MILITARY_ASSETS.generator} tex={MILITARY_TEX} size={S * 0.46} rotation={-0.6} /></group>
             <group position={[-S * 0.26, 0, -S * 0.18]}><FbxProp url={MILITARY_ASSETS.barrel} tex={MILITARY_TEX} size={S * 0.26} rotation={0.8} /></group>
+            <group position={[S * 0.3, 0, -S * 0.3]}><FbxProp url={MILITARY_ASSETS.radio} tex={MILITARY_TEX} size={S * 0.34} rotation={1.6} /></group>
+            <group position={[-S * 0.34, 0, S * 0.22]}><FbxRawProp url={MINING_ASSETS.crystalRed} tint="#e0483c" size={S * 0.26} rotation={2.2} /></group>
+            <group position={[S * 0.1, 0, S * 0.36]}><FbxRawProp url={MINING_ASSETS.lantern} tint="#e8c04a" size={S * 0.22} rotation={0.4} /></group>
           </>
         )}
       </Suspense>
@@ -3360,6 +3380,7 @@ export default function SoloMissionMap3D({
       setLevelUpBanner(lvl);
       const hw = axialToWorld({ q: heroPosRef.current.q, r: heroPosRef.current.r }, hexSize);
       spawnCombatText(hw.x, hw.z, `⭐ LEVEL ${lvl}`, '#8fe38f');
+      playSfx('level_up');
     } else if (lvl < prevHeroLevelRef.current) {
       prevHeroLevelRef.current = lvl;
     }
@@ -3462,7 +3483,7 @@ export default function SoloMissionMap3D({
       if (toHero > 0) { const hw = axialToWorld({ q: hero.pos.q, r: hero.pos.r }, hexSize); spawnCombatText(hw.x, hw.z, `-${toHero}`, '#ff5555'); }
       // Creep kills shape Conqueror reputation but do NOT feed the Domination victory
       // track — Domination is earned against rival FACTIONS, not neutral camps.
-      if (killed > 0) recordPlaystyleRef.current('dominate', { victory: false }); },
+      if (killed > 0) { recordPlaystyleRef.current('dominate', { victory: false }); playSfx('enemy_defeated'); } },
   });
   // Stable ref so the keydown 'F' handler always calls the current attack action.
   const attackNearbyRef = React.useRef(attackNearbyCamp);
@@ -3587,6 +3608,7 @@ export default function SoloMissionMap3D({
       spawnCombatText(hw.x, hw.z, regionCleared ? '🚩 Region controlled!' : '🚩 Outpost taken', regionCleared ? '#ffd24a' : '#a7d8ff');
       if (regionCleared) awardShardsRef.current(15); // controlling a full region → shards
       captureApproachRef.current = 'assault'; // reset default for the next capture
+      playSfx('outpost_capture');
     },
   });
   // Refs so the passive income/respawn loops read live control state without re-subscribing.
@@ -3739,9 +3761,11 @@ export default function SoloMissionMap3D({
       awardFactionPoints(10);
       awardShardsRef.current(10);
       setMaskClaimEvent({ kind: 'own', faction: target });
+      playSfx('mask_claim');
     } else {
       // Capturing a RIVAL faction's mask — instant Domination victory, no threshold needed.
       setMaskClaimEvent({ kind: 'rival', faction: target });
+      playSfx('mask_claim');
       resolveSoloRef.current({ faction: playerFactionKey as Faction, track: 'domination' });
     }
   }, [playerFactionKey, saveProgress, awardHeroXp, awardFactionPoints]);
@@ -3937,6 +3961,7 @@ export default function SoloMissionMap3D({
       if (!raidOutpost(key, ascendant ? (fk as Faction) : undefined)) return;
       const o = outposts.get(key);
       if (o) { const w = axialToWorld({ q: o.q, r: o.r }, hexSize); spawnCombatText(w.x, w.z, ascendant ? `⚑ ${fk} banner raised` : '⚑ raided', '#ff5555'); }
+      playSfx('outpost_lost');
       // A successful raid advances that faction's Domination track (aggressive expansion).
       bumpSoloVictoryRef.current?.(fk as Faction, 'domination', VICTORY_POINTS.raid);
       markRivalPressure();
@@ -3961,6 +3986,7 @@ export default function SoloMissionMap3D({
         spawnCombatText(w.x, w.z, `${verb} +${ev.xp} XP`, ev.boss ? '#ffd24a' : '#8fe38f');
         // Defeating a rival unit is a "dominate" (or, for PAA, a "negotiate"/pacify) act.
         recordPlaystyleRef.current(paaPlayer ? 'negotiate' : 'dominate');
+        playSfx('enemy_defeated');
       }
     },
   });
@@ -4016,7 +4042,7 @@ export default function SoloMissionMap3D({
       heroShieldRef.current -= absorbed; dmg -= absorbed;
       if (absorbed > 0) { const hw = axialToWorld({ q: heroPosRef.current.q, r: heroPosRef.current.r }, hexSize); spawnCombatText(hw.x, hw.z, `🛡️ -${Math.round(absorbed)}`, '#7aa2ff'); }
     }
-    if (dmg > 0) onDamageHP?.(Math.round(dmg));
+    if (dmg > 0) { onDamageHP?.(Math.round(dmg)); playSfx('hero_hurt'); }
   }, [hexSize, onDamageHP, combatStats?.def]);
   const applyIncomingDamageRef = React.useRef(applyIncomingDamage); applyIncomingDamageRef.current = applyIncomingDamage;
 
@@ -4259,7 +4285,12 @@ export default function SoloMissionMap3D({
   const resolveSolo = (vr: { faction: Faction; track: VictoryTrack }) => {
     soloResolvedRef.current = true;
     setSoloVictoryResult(vr);
-    if (vr.faction === playerFactionKey && !soloWinRewardedRef.current) { soloWinRewardedRef.current = true; awardShardsRef.current(60); }
+    if (vr.faction === playerFactionKey) {
+      playSfx('victory');
+      if (!soloWinRewardedRef.current) { soloWinRewardedRef.current = true; awardShardsRef.current(60); }
+    } else {
+      playSfx('defeat');
+    }
   };
   const resolveSoloRef = React.useRef(resolveSolo); resolveSoloRef.current = resolveSolo;
 
@@ -4499,6 +4530,10 @@ export default function SoloMissionMap3D({
       ...(full ? {
         hero: { level: 1, xp: 0, traits: [], unlockedSkillIds: ['root'], unlockOrder: [] },
         pet: { level: 1, xp: 0, bond: 0 },
+        // "Reset to Lv 1" clears carried supplies too (2026-07-19 user report) — a
+        // fresh-start hero shouldn't keep a stash of ore/energy/bio or gathered items.
+        heroInventory: [],
+        petInventory: [],
       } : {}),
       solo: {
         outpostsOwned: [], rivalOutposts: {}, storyBeat: 0, terraformProgress: 0, refugeeCampsDone: [],
@@ -4789,6 +4824,10 @@ export default function SoloMissionMap3D({
   // wider search range. Cyber-Dog is slow/heavy (quantity) — fetches less often but
   // hauls up to two items per trip. Numbers are tuned for near-parity total yield
   // (~5 items/min either way) so neither pet is strictly better, just different pacing.
+  // Pet levels from fetching too — 1 pet XP per 10 items brought back (GDD: hauling
+  // supplies strengthens the companion, not just fighting/moving). Tally persists across
+  // fetch ticks in a ref so partial counts (e.g. 7/10) aren't lost between trips.
+  const petFetchItemTallyRef = React.useRef(0);
   React.useEffect(() => {
     const radius = isDog ? 4 : 6;
     const maxPicks = isDog ? 2 : 1;
@@ -4802,9 +4841,14 @@ export default function SoloMissionMap3D({
         const w = axialToWorld({ q: g.q, r: g.r }, hexSize);
         spawnCombatText(w.x, w.z, `${icon} fetched`, isDog ? '#ffb454' : '#c084fc');
       }
+      petFetchItemTallyRef.current += got.length;
+      while (petFetchItemTallyRef.current >= 10) {
+        petFetchItemTallyRef.current -= 10;
+        petXPSystem.addPetXp(1);
+      }
     }, intervalMs);
     return () => clearInterval(iv);
-  }, [isDog, hexSize, spawnCombatText, petFetch]);
+  }, [isDog, hexSize, spawnCombatText, petFetch, petXPSystem.addPetXp]);
 
   // Pet-pack supplies are used via the number-key hotbar (1–8), which merges the
   // hero and pet inventories so each carried item gets its own key (see
@@ -4842,8 +4886,9 @@ export default function SoloMissionMap3D({
     const hw = axialToWorld({ q: hero.pos.q, r: hero.pos.r }, hexSize);
     // ── Energy gate ──
     const curEp = heroVitals?.ep?.current ?? 0;
-    if (curEp < ABILITY_EP_COST) { spawnCombatText(hw.x, hw.z, '⚡ No energy', '#7aa2ff'); return; }
+    if (curEp < ABILITY_EP_COST) { spawnCombatText(hw.x, hw.z, '⚡ No energy', '#7aa2ff'); playSfx('ui_deny'); return; }
     onDrainEP?.(ABILITY_EP_COST);
+    playSfx('ability_cast');
 
     const icon = ability.icon ?? '✨';
     // Drive the cast from the skill's GDD effect (store/skillData). Passives with no
@@ -5538,6 +5583,16 @@ export default function SoloMissionMap3D({
   }), []);
   // Rendered-frame counter feeding the dev FPS chip (single meter, StrictMode-safe).
   const fpsCounterRef = React.useRef(0);
+
+  // SFX mute — mirrors the ✨/🎞 pattern above; the actual mute flag lives in
+  // services/sound.ts (module-level, read by every playSfx call), this is just the
+  // React state driving the button's icon/label.
+  const [sfxMuted, setSfxMutedState] = useState<boolean>(() => isSfxMuted());
+  const toggleSfx = React.useCallback(() => setSfxMutedState(v => {
+    const n = !v;
+    setSfxMuted(n);
+    return n;
+  }), []);
 
   // ── Tutorial card: centered, pageable (prev/next), closable. Auto-opens on a
   // player's first campaign (persisted per browser); reopenable via the ❓ button.
@@ -6665,6 +6720,13 @@ export default function SoloMissionMap3D({
                           fpsCap >= 120 ? 'bg-[#141b26]/90 ring-emerald-400/50 text-emerald-200 hover:ring-emerald-300' : 'bg-[#141b26]/90 ring-white/15 text-gray-300 hover:ring-white/40'
                         }`}
                       ><span>🎞</span><span className="hidden sm:inline tabular-nums">{fpsCap}</span></button>
+                      <button
+                        onClick={toggleSfx}
+                        title={sfxMuted ? 'Sound: Off, click to unmute' : 'Sound: On, click to mute'}
+                        className={`flex items-center gap-1 px-2.5 py-1 rounded-md text-[12px] font-bold ring-1 shadow transition ${
+                          sfxMuted ? 'bg-[#141b26]/90 ring-white/15 text-gray-400 hover:ring-white/40' : 'bg-[#141b26]/90 ring-sky-400/50 text-sky-200 hover:ring-sky-300'
+                        }`}
+                      ><span>{sfxMuted ? '🔇' : '🔊'}</span></button>
                       {soloEnabled && (
                         <button
                           onClick={() => setMissionsOpen(o => !o)}
@@ -6744,14 +6806,21 @@ export default function SoloMissionMap3D({
                         const def = VICTORY_TRACK_DEFS[m.track];
                         const value = soloVictory[playerFactionKey]?.[m.track] ?? 0;
                         const pct = Math.max(0, Math.min(100, Math.round((value / def.threshold) * 100)));
-                        const won = soloVictoryResult?.track === m.track;
+                        const trackDecided = soloVictoryResult?.track === m.track;
+                        // BUG FIX (2026-07-19): this used to just check the TRACK, so if a
+                        // RIVAL filled it first the panel still showed "WON ✓" for the
+                        // player — soloVictoryResult.faction was never compared.
+                        const won = trackDecided && soloVictoryResult?.faction === playerFactionKey;
+                        const lost = trackDecided && !won;
                         return (
-                          <div key={m.track} className={`rounded-lg ring-1 p-3 ${won ? 'ring-amber-400/50 bg-amber-950/30' : 'ring-white/10 bg-white/5'}`}>
+                          <div key={m.track} className={`rounded-lg ring-1 p-3 ${won ? 'ring-amber-400/50 bg-amber-950/30' : lost ? 'ring-rose-500/40 bg-rose-950/20' : 'ring-white/10 bg-white/5'}`}>
                             <div className="flex items-center gap-2 mb-1">
                               <span>{def.icon}</span>
                               <span className="font-bold text-sm">{m.title}</span>
                               {won ? (
                                 <span className="ml-auto text-[11px] font-bold text-amber-300">WON ✓</span>
+                              ) : lost ? (
+                                <span className="ml-auto text-[11px] font-bold text-rose-300">{soloVictoryResult?.faction} WON</span>
                               ) : def.natural === playerFactionKey ? (
                                 <span className="ml-auto text-[10px] opacity-60">Your faction's lean</span>
                               ) : null}

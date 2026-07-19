@@ -186,9 +186,9 @@ export default function SnowflakeSkillTree({ initialLevel = 1 }: SnowflakeSkillT
 
   return (
     <div className="w-full h-full bg-[#0f1218] text-gray-100 p-4 overflow-hidden relative flex flex-col">
-      <div className="flex items-center justify-between mb-3 shrink-0">
-        <div className="text-xl font-semibold">Skills &amp; Traits Map</div>
-        <div className="text-sm opacity-80">Spent: {spent} • Points Left: {ptsLeft}</div>
+      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-0.5 mb-3 shrink-0">
+        <div className="text-lg sm:text-xl font-semibold">Skills &amp; Traits Map</div>
+        <div className="text-xs sm:text-sm opacity-80 whitespace-nowrap">Spent: {spent} • Points Left: {ptsLeft}</div>
       </div>
       {/* Mobile: tree and side panel STACK (the 12-col grid squeezed the tree into a
           sliver on phones); the whole view scrolls. Desktop keeps the side-by-side grid. */}
