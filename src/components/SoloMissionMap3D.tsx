@@ -975,15 +975,23 @@ function BaseDistrictMesh({ size, kind, color }: { size: number; kind: BaseDistr
   );
 }
 
-/** One sprawl building per city growth stage (per level to 10, per 5 levels to 100).
- *  Spots are precomputed by the parent (deterministic spiral inside the home zone);
- *  kind 0 = hut, 1 = house with faction roof, 2 = lit tower block. */
+/** City sprawl spot, one per growth stage (2026-07-19 user directive: "1 house item per
+ *  new district only, add elements from the assets folder for each level"). A stage is
+ *  EITHER a district (every 5th — gets its themed BaseDistrictMesh dressing PLUS a house
+ *  anchor building, the only stages that place a full house model now) OR a plain level
+ *  (the other 4 of 5 — gets one small decorative ELEMENT from the wider asset pool
+ *  instead, so growth still reads every level without a full building each time). */
 interface CitySpot {
-  x: number; y: number; z: number; kind: number; rot: number; h: number; v: number;
-  /** Set when this spot is a district pad (every 5th stage) instead of a house. */
+  x: number; y: number; z: number; rot: number;
+  /** Set when this spot is a district (every 5th stage) — gets BaseDistrictMesh + a house. */
   districtKind?: BaseDistrictKind;
   /** How many times this district kind has repeated (0 = first) — grows its footprint. */
   districtRepeat?: number;
+  /** House model selection — district stages only. kind 0=hut/1=house/2=tower (tracks
+   *  the city's overall growth at the stage it unlocked, GDD "appropriate assets"). */
+  kind?: number; h?: number; v?: number;
+  /** Non-district stage — index into LEVEL_ELEMENTS + a size jitter. */
+  elementIdx?: number; elementScale?: number;
 }
 /** A single house model variant, routed by file extension (.fbx vs .glb/.gltf). */
 function HouseVariantModel({ url, size, rotation }: { url: string; size: number; rotation: number }) {
@@ -1005,22 +1013,68 @@ function houseForSpot(houses: string[], kind: number, v: number): string {
   return houses[start + Math.floor(v * len) % len];
 }
 
-/** MODEL-ONLY sprawl: every building is a house model from the manifest pool, or a
- *  district pad on its every-5th stage — no procedural three.js fallback geometry, at
- *  any level (per design direction). While a model streams (or if the manifest is
- *  empty) the slot simply stays empty. */
+// ── Per-level decorative elements (2026-07-19: "add elements from the assets folder
+// for each level") — the smaller scattered props that mark a plain (non-district) level
+// now that full houses are reserved for district-unlock stages only. Pulled from the
+// SAME staged asset packs already used elsewhere (nature/military/mining), each tagged
+// with which loader it needs (shared-atlas vs. own-material vs. full PBR map set).
+type LevelElementSpec =
+  | { loader: 'atlas'; url: string; tex: string }
+  | { loader: 'raw'; url: string; tint?: string }
+  | { loader: 'pbr'; url: string; tex: { diffuse: string; normal: string; roughness: string; metallic: string } };
+const LEVEL_ELEMENTS: LevelElementSpec[] = [
+  { loader: 'atlas', url: NATURE_ASSETS.trees[0], tex: NATURE_TEX },
+  { loader: 'atlas', url: NATURE_ASSETS.trees[2], tex: NATURE_TEX },
+  { loader: 'atlas', url: NATURE_ASSETS.trees[4], tex: NATURE_TEX },
+  { loader: 'atlas', url: NATURE_ASSETS.bushes[0], tex: NATURE_TEX },
+  { loader: 'atlas', url: NATURE_ASSETS.bushes[2], tex: NATURE_TEX },
+  { loader: 'atlas', url: NATURE_ASSETS.rocks[1], tex: NATURE_TEX },
+  { loader: 'atlas', url: NATURE_ASSETS.rocks[4], tex: NATURE_TEX },
+  { loader: 'atlas', url: NATURE_ASSETS.flowers[0], tex: NATURE_TEX },
+  { loader: 'atlas', url: NATURE_ASSETS.flowers[1], tex: NATURE_TEX },
+  { loader: 'atlas', url: MILITARY_ASSETS.boxes[0], tex: MILITARY_TEX },
+  { loader: 'atlas', url: MILITARY_ASSETS.boxes[1], tex: MILITARY_TEX },
+  { loader: 'atlas', url: MILITARY_ASSETS.barrel, tex: MILITARY_TEX },
+  { loader: 'atlas', url: MILITARY_ASSETS.tires, tex: MILITARY_TEX },
+  { loader: 'atlas', url: MILITARY_ASSETS.cacti[0], tex: MILITARY_TEX },
+  { loader: 'raw', url: MINING_ASSETS.rockMoss, tint: '#5b5f6b' },
+  { loader: 'raw', url: MINING_ASSETS.crateWooden, tint: '#7a5a34' },
+  { loader: 'raw', url: MINING_ASSETS.gemGreen, tint: '#4ade80' },
+  { loader: 'raw', url: MINING_ASSETS.gemGold, tint: '#e8c04a' },
+  { loader: 'raw', url: MINING_ASSETS.lantern, tint: '#e8c04a' },
+  { loader: 'pbr', url: PBR_PROP_ASSETS.crateXBrace, tex: PBR_PROP_TEX.crateXBrace },
+];
+function LevelElementProp({ spec, size, rotation }: { spec: LevelElementSpec; size: number; rotation: number }) {
+  if (spec.loader === 'atlas') return <FbxProp url={spec.url} tex={spec.tex} size={size} rotation={rotation} />;
+  if (spec.loader === 'raw') return <FbxRawProp url={spec.url} size={size} rotation={rotation} tint={spec.tint} />;
+  return <FbxPbrProp url={spec.url} tex={spec.tex} size={size} rotation={rotation} />;
+}
+
+/** MODEL-ONLY sprawl — no procedural three.js fallback geometry, at any level (per
+ *  design direction). Every district stage (every 5th level) gets its themed
+ *  BaseDistrictMesh dressing PLUS a house-model anchor building — the ONLY stages that
+ *  place a full house now. Every other level gets one small LEVEL_ELEMENTS prop instead,
+ *  so growth still reads every level without a full building each time. */
 function CityBuildingsMesh({ spots, size, tier, color, houses }: { spots: CitySpot[]; size: number; tier: number; color?: string; houses?: string[] }) {
   const S = size * (0.92 + tier * 0.04); // the whole city's scale creeps up with tier
-  if (!houses || houses.length === 0) return null;
   return (
     <group>
       {spots.map((s, i) => (
         <group key={i} position={[s.x, s.y, s.z]} rotation={[0, s.rot, 0]}>
           {s.districtKind ? (
-            <BaseDistrictMesh size={size * (0.85 + 0.08 * Math.min(3, s.districtRepeat ?? 0))} kind={s.districtKind} color={color ?? '#e5e7eb'} />
+            <>
+              <BaseDistrictMesh size={size * (0.85 + 0.08 * Math.min(3, s.districtRepeat ?? 0))} kind={s.districtKind} color={color ?? '#e5e7eb'} />
+              {houses && houses.length > 0 && (
+                <group position={[size * 0.6, 0, size * 0.45]}>
+                  <Suspense fallback={null}>
+                    <HouseVariantModel url={houseForSpot(houses, s.kind ?? 0, s.v ?? 0)} size={S * (0.5 + 0.24 * (s.h ?? 1))} rotation={0} />
+                  </Suspense>
+                </group>
+              )}
+            </>
           ) : (
             <Suspense fallback={null}>
-              <HouseVariantModel url={houseForSpot(houses, s.kind, s.v)} size={S * (0.5 + 0.24 * s.h)} rotation={0} />
+              <LevelElementProp spec={LEVEL_ELEMENTS[(s.elementIdx ?? 0) % LEVEL_ELEMENTS.length]} size={size * (s.elementScale ?? 0.4)} rotation={s.rot} />
             </Suspense>
           )}
         </group>
@@ -1108,7 +1162,12 @@ function MaskProp({ faction, size }: { faction: 'PAA' | 'ASF' | 'WC'; size: numb
   const asset = MASK_ASSETS[faction];
   return (
     <group ref={ref}>
-      <FbxProp url={asset.url} tex={asset.tex} size={size} />
+      {/* Source FBX exports sit face-down by default (2026-07-19 user report) — a fixed
+          90° Z-axis correction stands the mask upright, facing outward. Applied on an
+          inner group so it doesn't fight the outer idle Y-axis spin above. */}
+      <group rotation={[0, 0, Math.PI / 2]}>
+        <FbxProp url={asset.url} tex={asset.tex} size={size} />
+      </group>
     </group>
   );
 }
@@ -5350,17 +5409,18 @@ export default function SoloMissionMap3D({
     const progress = Math.min(1, (heroLevelLive - start) / (next - start));
     return progress * 0.4;
   })();
-  // City sprawl: one building per growth stage (= player level, 1:1). Every 5th stage
-  // is a DISTRICT pad instead (see DISTRICT_KIND_CYCLE) — so districts unlock inline
-  // with the sprawl at the same every-5-levels cadence, sharing its placement/collision
-  // logic instead of needing a separate fixed-tile pool. Each stage builds inside the
-  // ring the TERRITORY STROKE had when that stage unlocked (ring 1 until L10, 2 until
-  // L25, 3 until L50, then 4) — so every border expansion opens fresh tiles and the
-  // buildings that follow visibly settle them. Placement is append-only stable: a
-  // spot's ring/kind/district-ness is a function of its stage number (never the
-  // current level), the PRNG is consumed per-attempt, and world landmarks
-  // (outposts/camps/terraformer) are excluded by fixed tile key, so old buildings
-  // never move as the city grows.
+  // City sprawl: one spot per growth stage (= player level, 1:1). Every 5th stage is a
+  // DISTRICT (see DISTRICT_KIND_CYCLE) — the ONLY stages that place a full house model,
+  // alongside the district's themed BaseDistrictMesh dressing (2026-07-19: "1 house item
+  // per new district only"). Every other stage places one small LEVEL_ELEMENTS prop
+  // instead ("add elements from the assets folder for each level") — so growth still
+  // reads every level, just lighter-weight than a full building. Each stage builds
+  // inside the ring the TERRITORY STROKE had when that stage unlocked (ring 1 until L10,
+  // 2 until L25, 3 until L50, then 4) — so every border expansion opens fresh tiles and
+  // what follows visibly settles them. Placement is append-only stable: a spot's ring/
+  // kind/district-ness is a function of its stage number (never the current level), the
+  // PRNG is consumed per-attempt, and world landmarks (outposts/camps/terraformer) are
+  // excluded by fixed tile key, so old placements never move as the city grows.
   const cityBuildingSpots = useMemo(() => {
     const bw = axialToWorld(baseAxial, hexSize);
     const blocked = new Set<string>([`${baseAxial.q},${baseAxial.r}`, `${terraformAxial.q},${terraformAxial.r}`]);
@@ -5379,14 +5439,15 @@ export default function SoloMissionMap3D({
       const districtIdx = isDistrict ? stage / 5 - 1 : -1;
       const districtKind = isDistrict ? DISTRICT_KIND_CYCLE[districtIdx % DISTRICT_KIND_CYCLE.length] : undefined;
       const districtRepeat = isDistrict ? Math.floor(districtIdx / DISTRICT_KIND_CYCLE.length) : 0;
-      // Building "kind" (hut/house/tower, non-district spots only) tracks the city's
-      // overall growth at the stage it unlocked — early sprawl reads as humble huts,
-      // late sprawl (Metropolis-tier) as towers.
+      // House model "kind" (hut/house/tower, DISTRICT stages only now — 2026-07-19:
+      // "1 house item per new district only") tracks the city's overall growth at the
+      // stage it unlocked — early districts read as humble, late ones (Metropolis-tier)
+      // as grand.
       const kind = stage < 34 ? 0 : stage < 67 ? 1 : 2;
       const ring = baseZoneRadiusFor(stage);
       const [rMin, rMax] = BANDS[ring - 1];
       for (let a = 0; a < 24; a++) {
-        const jr = rand(), ja = rand(), jrot = rand(), jh = rand(), jv = rand();
+        const jr = rand(), ja = rand(), jrot = rand(), jh = rand(), jv = rand(), je = rand(), jes = rand();
         const ang = k * GA + a * 0.73 + ja * 0.4;
         const rad = hexSize * (rMin + (rMax - rMin) * jr);
         const x = bw.x + Math.cos(ang) * rad, z = bw.z + Math.sin(ang) * rad;
@@ -5397,14 +5458,19 @@ export default function SoloMissionMap3D({
         if (axialDistance(t, baseAxial) > ring) continue; // inside the stroke as of unlock
         if (blocked.has(key)) continue;                    // never on outposts/camps/objectives
         // Districts are bigger footprints, so keep extra clearance around them (in
-        // EITHER direction — a plain house shouldn't crowd a neighboring district either).
+        // EITHER direction — a plain element shouldn't crowd a neighboring district either).
         if (spots.some(s => {
           const minD = hexSize * ((isDistrict || s.districtKind) ? 0.75 : 0.55);
           return (x - s.x) ** 2 + (z - s.z) ** 2 < minD ** 2;
         })) continue;
-        // `v` picks a RANDOM house variant per building (seeded, so the pick is
-        // stable across reloads but doesn't cycle the pool in order).
-        spots.push({ x, y: tileTopAt(t.q, t.r), z, kind, rot: jrot * Math.PI * 2, h: 0.8 + jh * 0.5, v: jv, districtKind, districtRepeat });
+        if (isDistrict) {
+          // `v` picks a RANDOM house variant per district (seeded, so the pick is
+          // stable across reloads but doesn't cycle the pool in order).
+          spots.push({ x, y: tileTopAt(t.q, t.r), z, rot: jrot * Math.PI * 2, kind, h: 0.8 + jh * 0.5, v: jv, districtKind, districtRepeat });
+        } else {
+          // Plain level — a small decorative element instead of a full house.
+          spots.push({ x, y: tileTopAt(t.q, t.r), z, rot: jrot * Math.PI * 2, elementIdx: Math.floor(je * LEVEL_ELEMENTS.length), elementScale: 0.32 + jes * 0.24 });
+        }
         break;
       }
     }
