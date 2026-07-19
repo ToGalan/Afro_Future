@@ -35,7 +35,15 @@ export interface PlayerProgress {
     /** Faction mask questline (GDD "collect and defend your mask"): true once claimed
      *  from its field shrine and displayed at the base; false if never claimed OR
      *  stolen back by a rival raid (see 'mask-vault' strategic target). */
+    /** Field-shrine positions for the 3 faction masks — rolled randomly once per
+     *  campaign (well clear of the base) and persisted so they don't shift on reload.
+     *  Faction key → axial offset from the map center. */
+    maskPositions?: Record<string, { dq: number; dr: number }>;
     maskHeld?: boolean;
+    /** Rival faction masks captured and brought home (2026-07-19: Domination now needs
+     *  BOTH your own mask held AND at least one enemy mask — capturing one is no longer
+     *  an instant win). Faction keys of the rivals whose mask the player currently holds. */
+    enemyMasksHeld?: string[];
     /** One-time mask-lore dialog already shown this campaign. */
     maskIntroSeen?: boolean;
     /** 5-tier outpost/fortify-camp specialization system — "q,r" key → { tier: 0..5,

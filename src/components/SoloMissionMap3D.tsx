@@ -1164,15 +1164,39 @@ function OutpostMarker({ size, owned, color, desert }: { size: number; owned: bo
   );
 }
 
-// Fixed field-shrine offset (from map center) per faction — the SAME three offsets
-// regardless of which faction the player picked, so "mine" vs "rival" is purely which
-// offset matches playerFactionKey. Spaced well apart so a hero near one is never also
-// near another.
-const MASK_OFFSETS: Record<'PAA' | 'ASF' | 'WC', { dq: number; dr: number }> = {
+// Field-shrine offsets (from map center) per faction — used ONLY until the real
+// (randomly rolled + persisted) positions hydrate from profile.progress.solo
+// .maskPositions, see generateMaskPositions below. Kept as a same-shape fallback so
+// nothing crashes/flashes empty for the one render before hydration lands.
+const MASK_OFFSETS_FALLBACK: Record<'PAA' | 'ASF' | 'WC', { dq: number; dr: number }> = {
   PAA: { dq: -7, dr: 5 },
   ASF: { dq: 9, dr: -6 },
   WC:  { dq: -3, dr: -10 },
 };
+const MASK_MIN_DIST_FROM_BASE = 12; // tiles — clear of the base's growth radius
+const MASK_MAX_DIST_FROM_BASE = 22; // tiles — stays well inside the 240x240 map
+const MASK_MIN_SEPARATION = 9;      // tiles between any two mask shrines
+/** Roll random-but-spaced-out shrine positions, well clear of the base at the map
+ *  center (2026-07-19 user: "all masks position should be random but away from the
+ *  initial base hq"). Called ONCE per campaign (see the solo-hydrate effect) and the
+ *  result persisted to solo.maskPositions so shrines never shift under the player. */
+function generateMaskPositions(): Record<'PAA' | 'ASF' | 'WC', { dq: number; dr: number }> {
+  const factions: Array<'PAA' | 'ASF' | 'WC'> = ['PAA', 'ASF', 'WC'];
+  const placed: Array<{ q: number; r: number }> = [];
+  const out = {} as Record<'PAA' | 'ASF' | 'WC', { dq: number; dr: number }>;
+  for (const f of factions) {
+    let pos = { q: 0, r: 0 };
+    for (let attempt = 0; attempt < 40; attempt++) {
+      const angle = Math.random() * Math.PI * 2;
+      const dist = MASK_MIN_DIST_FROM_BASE + Math.random() * (MASK_MAX_DIST_FROM_BASE - MASK_MIN_DIST_FROM_BASE);
+      pos = { q: Math.round(Math.cos(angle) * dist), r: Math.round(Math.sin(angle) * dist) };
+      if (placed.every(p => axialDistance(p, pos) >= MASK_MIN_SEPARATION)) break;
+    }
+    placed.push(pos);
+    out[f] = { dq: pos.q, dr: pos.r };
+  }
+  return out;
+}
 
 /** The faction relic mask itself — a slow idle spin so it reads as a display piece,
  *  not scenery, at both the field shrine and the base pedestal. */
@@ -1182,10 +1206,15 @@ function MaskProp({ faction, size }: { faction: 'PAA' | 'ASF' | 'WC'; size: numb
   const asset = MASK_ASSETS[faction];
   return (
     <group ref={ref}>
-      {/* Source FBX exports sit face-down by default (2026-07-19 user report) — a fixed
-          90° Z-axis correction stands the mask upright, facing outward. Applied on an
-          inner group so it doesn't fight the outer idle Y-axis spin above. */}
-      <group rotation={[0, 0, Math.PI / 2]}>
+      {/* Source FBX exports sit face-down by default. A Z-axis correction (first attempt,
+          2026-07-19) only spun the mask flat-on-its-side instead of standing it up — a
+          Z rotation can't fix a Y-normal (face-down) surface, it just changes which
+          horizontal direction the flat face points. Standing the mask upright (face
+          normal moved from Y to Z, so it reads correctly through the outer Y-axis idle
+          spin above) needs an X-axis rotation instead (2026-07-19 follow-up: "rotate
+          90d clockwise, right now its on the side and should be standing"). Applied on
+          an inner group so it doesn't fight that outer spin. */}
+      <group rotation={[Math.PI / 2, 0, 0]}>
         <FbxProp url={asset.url} tex={asset.tex} size={size} />
       </group>
     </group>
@@ -1242,19 +1271,33 @@ function UpgradePanelContent({ title, icon, current, heroInventory, petInventory
     );
   }
   const specs: CampSpecialization[] = current.spec ? [current.spec] : ['military', 'food', 'medicine'];
+  // Resource "slot" readout — have/need per type, always visible (was hover-tooltip-only,
+  // easy to miss and invisible on touch — 2026-07-19 user: "add whats needed as slots to
+  // be filled"). Green once that slot is filled, rose while short.
+  const slot = (resIcon: string, haveN: number, needN: number) => needN > 0 && (
+    <span key={resIcon} className={`tabular-nums ${haveN >= needN ? 'text-emerald-300' : 'text-rose-300'}`}>{resIcon} {haveN}/{needN}</span>
+  );
   return (
     <div className="px-4 py-2.5 rounded-xl bg-[#0c1219]/90 border border-white/15 text-xs sm:text-sm backdrop-blur-sm shadow-lg text-center space-y-2">
       <div className="font-bold">{icon} {title}{current.spec ? ` · ${SPEC_INFO[current.spec].icon} ${SPEC_INFO[current.spec].label} Tier ${current.tier}` : ' · Undeveloped'}</div>
-      <div className="flex flex-wrap items-center justify-center gap-2">
+      <div className="flex flex-wrap items-start justify-center gap-3">
         {specs.map(s => {
           const cost = nextUpgradeCost(current, s);
-          const afford = have('ore') >= cost.ore && have('energy') >= cost.energy && have('bio') >= cost.bio;
+          const haveOre = have('ore'), haveEnergy = have('energy'), haveBio = have('bio');
+          const afford = haveOre >= cost.ore && haveEnergy >= cost.energy && haveBio >= cost.bio;
           return (
-            <button key={s} onClick={() => onUpgrade(s)} disabled={!afford}
-              title={`${SPEC_INFO[s].desc} Costs ⬢${cost.ore} ⚡${cost.energy} 🌿${cost.bio}.`}
-              className={`px-3 py-1.5 rounded-lg font-bold ring-1 ${afford ? 'bg-emerald-700/80 hover:bg-emerald-600 ring-emerald-400/40' : 'bg-gray-800/70 ring-white/10 opacity-50 cursor-not-allowed'}`}>
-              {SPEC_INFO[s].icon} {current.spec ? `Tier ${current.tier + 1}` : SPEC_INFO[s].label}
-            </button>
+            <div key={s} className="flex flex-col items-center gap-1">
+              <button onClick={() => onUpgrade(s)} disabled={!afford}
+                title={SPEC_INFO[s].desc}
+                className={`px-3 py-1.5 rounded-lg font-bold ring-1 ${afford ? 'bg-emerald-700/80 hover:bg-emerald-600 ring-emerald-400/40' : 'bg-gray-800/70 ring-white/10 opacity-50 cursor-not-allowed'}`}>
+                {SPEC_INFO[s].icon} {current.spec ? `Tier ${current.tier + 1}` : SPEC_INFO[s].label}
+              </button>
+              <div className="flex items-center gap-1.5 text-[10px] font-semibold">
+                {slot('⬢', haveOre, cost.ore)}
+                {slot('⚡', haveEnergy, cost.energy)}
+                {slot('🌿', haveBio, cost.bio)}
+              </div>
+            </div>
           );
         })}
       </div>
@@ -3719,15 +3762,24 @@ export default function SoloMissionMap3D({
   // it at base (a main objective, additional to the base) and makes it a strategic raid
   // target for rival AI (reuses the outpost-raid machinery via a synthetic 'mask-vault'
   // target). 2026-07-19 user directive: "domination victory should be by capturing
-  // another faction's mask (same for domination loss)" — claiming a RIVAL's mask is an
-  // instant Domination win; a rival stealing yours is an instant Domination loss (no more
-  // "recoverable" theft).
+  // another faction's mask (same for domination loss)" — a rival stealing your own mask
+  // is still an instant Domination loss. UPDATED 2026-07-19: capturing a rival's mask is
+  // no longer an instant win by itself — Domination now needs BOTH your own mask held
+  // AND at least one captured enemy mask (see enemyMasksHeld below).
+  // Random-but-persisted shrine offsets (2026-07-19: "all masks position should be
+  // random but away from the initial base hq") — rolled once by generateMaskPositions
+  // in the solo-hydrate effect and restored from there after; MASK_OFFSETS_FALLBACK
+  // covers the single render before hydration lands.
+  const [maskPositions, setMaskPositions] = useState<Record<'PAA' | 'ASF' | 'WC', { dq: number; dr: number }>>(MASK_OFFSETS_FALLBACK);
   const maskAxialFor = React.useCallback((f: 'PAA' | 'ASF' | 'WC') => {
-    const o = MASK_OFFSETS[f];
+    const o = maskPositions[f];
     return { q: centerAxial.q + o.dq, r: centerAxial.r + o.dr };
-  }, [centerAxial]);
+  }, [centerAxial, maskPositions]);
   const [maskHeld, setMaskHeld] = useState(false); // MY OWN mask is home at base
   const maskHeldRef = React.useRef(false); maskHeldRef.current = maskHeld;
+  // Rival masks captured and brought home — a Set of the OTHER two faction keys.
+  const [enemyMasksHeld, setEnemyMasksHeld] = useState<Set<'PAA' | 'ASF' | 'WC'>>(new Set());
+  const enemyMasksHeldRef = React.useRef(enemyMasksHeld); enemyMasksHeldRef.current = enemyMasksHeld;
   const maskIntroSeenRef = React.useRef(false);
   const [maskDialogOpen, setMaskDialogOpen] = useState(false);
   const closeMaskDialog = React.useCallback(() => {
@@ -3738,17 +3790,19 @@ export default function SoloMissionMap3D({
   // The "you just claimed/captured/lost a mask" storyline beat — kind drives which
   // flavor renders; text is resolved AT RENDER (heroGender-dependent, see storyText),
   // never inside a callback (heroGender is declared later in this component — TDZ).
-  const [maskClaimEvent, setMaskClaimEvent] = useState<{ kind: 'own' | 'rival' | 'lost'; faction: 'PAA' | 'ASF' | 'WC' } | null>(null);
+  // `decisive` (rival kind only) says whether THIS capture completed Domination — safe
+  // to compute inside the callback since it only reads mask-held refs, no TDZ risk.
+  const [maskClaimEvent, setMaskClaimEvent] = useState<{ kind: 'own' | 'rival' | 'lost'; faction: 'PAA' | 'ASF' | 'WC'; decisive?: boolean } | null>(null);
   const closeMaskClaimEvent = React.useCallback(() => setMaskClaimEvent(null), []);
   // Which shrine (if any) the hero is standing adjacent to right now — drives the
-  // "Press G to claim" prompt. My own shrine only counts while still unclaimed.
+  // "Press G to claim" prompt. A shrine drops out once its mask is already secured
+  // (own mask home, or that rival's mask already captured).
   const nearbyMask = useMemo(() => {
-    const candidates: Array<'PAA' | 'ASF' | 'WC'> = maskHeld
-      ? (['PAA', 'ASF', 'WC'] as const).filter(f => f !== playerFactionKey)
-      : (['PAA', 'ASF', 'WC'] as const);
+    const candidates = (['PAA', 'ASF', 'WC'] as const).filter(f =>
+      f === playerFactionKey ? !maskHeld : !enemyMasksHeld.has(f));
     for (const f of candidates) { if (axialDistance(hero.pos, maskAxialFor(f)) <= 1) return f; }
     return null;
-  }, [hero.pos.q, hero.pos.r, maskHeld, maskAxialFor, playerFactionKey]);
+  }, [hero.pos.q, hero.pos.r, maskHeld, enemyMasksHeld, maskAxialFor, playerFactionKey]);
   const nearbyMaskRef = React.useRef<typeof nearbyMask>(null); nearbyMaskRef.current = nearbyMask;
   const claimMask = React.useCallback(() => {
     const target = nearbyMaskRef.current;
@@ -3760,13 +3814,25 @@ export default function SoloMissionMap3D({
       awardHeroXp(40);
       awardFactionPoints(10);
       awardShardsRef.current(10);
-      setMaskClaimEvent({ kind: 'own', faction: target });
+      // 2026-07-19: Domination needs BOTH your own mask home AND an enemy one — if a
+      // rival mask is already banked, bringing your own home NOW completes it.
+      const decisive = enemyMasksHeldRef.current.size > 0;
+      setMaskClaimEvent({ kind: 'own', faction: target, decisive });
       playSfx('mask_claim');
+      if (decisive) {
+        resolveSoloRef.current({ faction: playerFactionKey as Faction, track: 'domination' });
+      }
     } else {
-      // Capturing a RIVAL faction's mask — instant Domination victory, no threshold needed.
-      setMaskClaimEvent({ kind: 'rival', faction: target });
+      // Capturing a RIVAL faction's mask — banked, not an instant win by itself anymore.
+      const next = new Set(enemyMasksHeldRef.current); next.add(target);
+      enemyMasksHeldRef.current = next; setEnemyMasksHeld(next);
+      saveProgress({ solo: { enemyMasksHeld: Array.from(next) } } as any);
+      const decisive = maskHeldRef.current; // own mask already home → this completes it
+      setMaskClaimEvent({ kind: 'rival', faction: target, decisive });
       playSfx('mask_claim');
-      resolveSoloRef.current({ faction: playerFactionKey as Faction, track: 'domination' });
+      if (decisive) {
+        resolveSoloRef.current({ faction: playerFactionKey as Faction, track: 'domination' });
+      }
     }
   }, [playerFactionKey, saveProgress, awardHeroXp, awardFactionPoints]);
   const claimMaskRef = React.useRef(claimMask); claimMaskRef.current = claimMask;
@@ -4275,6 +4341,13 @@ export default function SoloMissionMap3D({
   const soloVictoryRef = React.useRef(soloVictory); soloVictoryRef.current = soloVictory;
   // Which victory track's detail popover is open in the top HUD (null = collapsed).
   const [expandedTrack, setExpandedTrack] = useState<VictoryTrack | null>(null);
+  // Top-bar ⚙️ Settings dropdown (Graphics/FPS/Sound/Help) — consolidates 4 always-on
+  // buttons into one, so the bar reads Skills · Duel/MOBA · Missions · ⚙️ · Menu.
+  const [topSettingsOpen, setTopSettingsOpen] = useState(false);
+  // Top-bar 📊 Stats dropdown (Regions/Territory/Refugee/Pet pack) — secondary yields
+  // that don't need to be glanceable every second; keeps the always-visible row down
+  // to Score/FP/Explore/Terraform/Outposts/Mask so it fits without horizontal scroll.
+  const [topStatsOpen, setTopStatsOpen] = useState(false);
   // The decided result persists (campaign stays decided until a reset); dismissing the
   // overlay only hides it — it does NOT un-decide the campaign.
   const [soloVictoryResult, setSoloVictoryResult] = useState<{ faction: Faction; track: VictoryTrack } | null>(null);
@@ -4395,6 +4468,17 @@ export default function SoloMissionMap3D({
     soloHydratedRef.current = true;
     setSoloHydrated(true);
     const solo = (profile.progress as any)?.solo as NonNullable<import('../types/player').PlayerProgress['solo']> | undefined;
+    // Mask shrine positions: restore if this campaign already rolled them, otherwise
+    // roll fresh ones now and persist immediately (covers brand-new campaigns AND
+    // older saves from before this field existed) — outside the `if (!solo) return`
+    // below since this must run even when there's no solo save yet at all.
+    if (solo?.maskPositions && Object.keys(solo.maskPositions).length === 3) {
+      setMaskPositions(solo.maskPositions as Record<'PAA' | 'ASF' | 'WC', { dq: number; dr: number }>);
+    } else {
+      const rolled = generateMaskPositions();
+      setMaskPositions(rolled);
+      saveProgress({ solo: { maskPositions: rolled } } as any);
+    }
     if (!solo) return;
     if (solo.outpostsOwned?.length) applyOutpostOwnership(solo.outpostsOwned);
     if (solo.rivalOutposts && Object.keys(solo.rivalOutposts).length) {
@@ -4411,6 +4495,10 @@ export default function SoloMissionMap3D({
     }
     explorationRewardedRef.current = !!solo.explorationRewarded;
     maskHeldRef.current = !!solo.maskHeld; setMaskHeld(!!solo.maskHeld);
+    if (solo.enemyMasksHeld?.length) {
+      const s = new Set(solo.enemyMasksHeld as Array<'PAA' | 'ASF' | 'WC'>);
+      enemyMasksHeldRef.current = s; setEnemyMasksHeld(s);
+    }
     maskIntroSeenRef.current = !!solo.maskIntroSeen;
     if (solo.outpostUpgrades) {
       const m = new Map<string, CampUpgradeState>();
@@ -4538,7 +4626,7 @@ export default function SoloMissionMap3D({
       solo: {
         outpostsOwned: [], rivalOutposts: {}, storyBeat: 0, terraformProgress: 0, refugeeCampsDone: [],
         victory: emptyVictory(), victoryResult: null, victorySeen: false, explorationRewarded: false,
-        maskHeld: false, maskIntroSeen: false, outpostUpgrades: {}, campUpgrades: {},
+        maskHeld: false, enemyMasksHeld: [], maskPositions: generateMaskPositions(), maskIntroSeen: false, outpostUpgrades: {}, campUpgrades: {},
       },
     } as any, { immediate: true }).finally(() => window.location.reload());
   }, [saveProgress]);
@@ -4565,6 +4653,7 @@ export default function SoloMissionMap3D({
     explorationRewarded: explorationRewardedRef.current,
     resourcesCollected: resourcesCollectedRef.current,
     maskHeld: maskHeldRef.current,
+    enemyMasksHeld: Array.from(enemyMasksHeldRef.current),
     maskIntroSeen: maskIntroSeenRef.current,
     outpostUpgrades: Object.fromEntries(outpostUpgradesRef.current),
     campUpgrades: Object.fromEntries(campUpgradesRef.current),
@@ -6389,6 +6478,14 @@ export default function SoloMissionMap3D({
                         <MaskPedestal faction={playerFactionKey} size={hexSize} />
                       </group>
                     )}
+                    {/* Captured rival masks — trophy pedestals beside your own (2026-07-19:
+                        Domination now needs both, so a captured enemy mask lives at the
+                        base too, not just an instant-win flash). */}
+                    {Array.from(enemyMasksHeld).map((f, i) => (
+                      <group key={`trophy-${f}`} position={[hexSize * (1.35 + (i + 1) * 0.9), 0, hexSize * 0.75]}>
+                        <MaskPedestal faction={f} size={hexSize * 0.85} />
+                      </group>
+                    ))}
                   </group>
                 ); })()}
                 <CityBuildingsMesh spots={cityBuildingSpots} size={hexSize} tier={baseTier} color={heroColors.primary} houses={houseVariants} />
@@ -6400,11 +6497,10 @@ export default function SoloMissionMap3D({
                     {terraformDone && <GrassCluster size={hexSize} seed={terraformAxial.q * 7 + terraformAxial.r} />}
                   </group>
                 ); })()}
-                {/* Faction mask field shrines — one per faction. My own disappears once
-                    claimed (see the mask pedestal in the base group); rival shrines stay
-                    up until the campaign resolves (capturing one is an instant win, so
-                    there's no need to hide it after — the campaign is over by then). */}
-                {(['PAA', 'ASF', 'WC'] as const).filter(f => f !== playerFactionKey || !maskHeld).map(f => {
+                {/* Faction mask field shrines — one per faction. Each disappears once its
+                    mask is secured (own mask home, or that rival's mask captured — see
+                    the base group's pedestal/trophies above); Domination needs both. */}
+                {(['PAA', 'ASF', 'WC'] as const).filter(f => f === playerFactionKey ? !maskHeld : !enemyMasksHeld.has(f)).map(f => {
                   const ax = maskAxialFor(f);
                   const mw = axialToWorld(ax, hexSize);
                   return (
@@ -6592,8 +6688,8 @@ export default function SoloMissionMap3D({
                   </div>
                 );
               })()}
-              {/* Nearby mask shrine — press-to-collect (G). Own mask = main objective;
-                  a rival's = instant Domination victory. */}
+              {/* Nearby mask shrine — press-to-collect (G). Domination needs BOTH your own
+                  mask held AND at least one enemy mask (2026-07-19) — neither alone wins. */}
               {nearbyMask && (
                 <div className="fixed top-56 sm:top-52 left-1/2 -translate-x-1/2 z-40 max-w-[94vw] pointer-events-auto">
                   <div className={`px-4 py-2.5 rounded-xl border text-xs sm:text-sm backdrop-blur-sm shadow-lg text-center space-y-1.5 ${nearbyMask === playerFactionKey ? 'bg-[#0c1219]/90 border-white/15' : 'bg-amber-950/85 border-amber-400/50'}`}>
@@ -6602,7 +6698,14 @@ export default function SoloMissionMap3D({
                         ? `🎭 ${MASK_LORE[nearbyMask].title}, reclaim it`
                         : `🎭 ${MASK_LORE[nearbyMask].title}, an enemy relic!`}
                     </div>
-                    {nearbyMask !== playerFactionKey && <div className="text-[11px] text-amber-200">Capturing it wins the campaign by Domination.</div>}
+                    {nearbyMask !== playerFactionKey && (
+                      <div className="text-[11px] text-amber-200">
+                        {maskHeld ? 'Your mask is already home — capturing this completes Domination!' : 'Domination needs this AND your own mask brought home.'}
+                      </div>
+                    )}
+                    {nearbyMask === playerFactionKey && enemyMasksHeld.size > 0 && (
+                      <div className="text-[11px] text-emerald-300">An enemy mask is already banked — this completes Domination!</div>
+                    )}
                     <button onClick={() => claimMaskRef.current()}
                       className={`px-4 py-1.5 rounded-lg font-bold ring-1 ${nearbyMask === playerFactionKey ? 'bg-emerald-700/80 hover:bg-emerald-600 ring-emerald-400/40' : 'bg-amber-600 hover:bg-amber-500 ring-amber-300/60 text-black'}`}>
                       {nearbyMask === playerFactionKey ? '🎭 Claim' : '⚔️ Capture'}
@@ -6618,7 +6721,7 @@ export default function SoloMissionMap3D({
                     off or needs an unscrollable overflow); desktop keeps the single row. */}
                 <div className="flex flex-wrap md:flex-nowrap items-center justify-between gap-x-2 gap-y-1 px-2 sm:px-3 py-1.5 sm:py-2.5 min-h-[2.75rem] sm:min-h-[3rem] bg-gradient-to-b from-[#0a0f16]/95 to-[#0a0f16]/75 border-b border-white/10 shadow-lg text-[11px] sm:text-[13px] text-gray-100 md:overflow-x-auto no-scrollbar">
                   {/* Left cluster: yields */}
-                  <div className="flex items-center gap-x-2 sm:gap-x-3 gap-y-0.5 flex-wrap sm:flex-nowrap">
+                  <div className="flex items-center gap-x-1.5 sm:gap-x-2 gap-y-0.5 flex-wrap sm:flex-nowrap">
                     <div className="flex items-center gap-1.5" title="4X campaign score, outposts, regions, terraforming & refugee camps">
                       <span>🏆</span><span className="opacity-50 hidden md:inline">Score</span><span className="font-extrabold tabular-nums text-amber-300">{fourXScore}</span>
                     </div>
@@ -6628,19 +6731,34 @@ export default function SoloMissionMap3D({
                     </div>
                     <span className="w-px h-4 bg-white/15" />
                     <div className="flex items-center gap-1" title="Tiles explored"><span>🧭</span><span className="opacity-50 hidden md:inline">Explore</span><span className={`font-semibold tabular-nums ${explorationComplete ? 'text-emerald-300' : ''}`}>{exploredCount}/{explorationGoal}{explorationComplete ? ' ✓' : ''}</span></div>
-                    <div className="flex items-center gap-1" title="Terraform progress"><span>🌱</span><span className="font-semibold tabular-nums">{terraformDone ? '✓' : `${terraformProgress}%`}</span></div>
+                    <div className="flex items-center gap-1" title="Terraform progress"><span>🏗️</span><span className="font-semibold tabular-nums">{terraformDone ? '✓' : `${terraformProgress}%`}</span></div>
                     <div className="flex items-center gap-1" title="Outposts owned"><span>🚩</span><span className="font-semibold tabular-nums">{outpostControl.owned}/{outpostControl.total}</span></div>
-                    <div className="hidden sm:flex items-center gap-1" title="Regions controlled"><span>🗺️</span><span className="font-semibold tabular-nums">{outpostControl.regionsControlled}/{outpostControl.regionCount}</span></div>
-                    <div className="hidden sm:flex items-center gap-1" title="Territory held"><span>🟩</span><span className="font-semibold tabular-nums">{outpostControl.tilePct}%</span></div>
-                    <div className="hidden sm:flex items-center gap-1" title="Refugee camps completed"><span>⛺</span><span className="font-semibold tabular-nums">{refugeeProgress.done}/{refugeeProgress.total}</span></div>
                     <div className="flex items-center gap-1" title={maskHeld ? 'Your faction mask is held at the base — defend it from raiders' : 'Your faction mask awaits at the old shrine — go claim it'}>
                       <span>🎭</span><span className={`font-semibold ${maskHeld ? 'text-emerald-300' : 'text-amber-300'}`}>{maskHeld ? 'Held' : 'Field'}</span>
                     </div>
-                    {localPetInventory.length > 0 && (
-                      <div className="hidden sm:flex items-center gap-1" title="Pet pack supplies (hotkeys 1–8)"><span>🐾</span><span className="font-semibold tabular-nums">{localPetInventory.reduce((s, i) => s + (i.quantity || 0), 0)}</span></div>
-                    )}
+                    {/* 📊 Stats dropdown — Regions/Territory/Refugee/Pet pack, glanced at
+                        occasionally rather than every second; keeps the row from overflowing. */}
+                    <div className="relative pointer-events-auto">
+                      <button
+                        onClick={() => setTopStatsOpen(o => !o)}
+                        title="More stats: regions, territory, refugee camps, pet pack"
+                        className={`flex items-center gap-1 px-2 py-0.5 rounded-md ring-1 shadow transition ${
+                          topStatsOpen ? 'bg-[#1b2636]/90 ring-white/40 text-white' : 'bg-[#141b26]/70 ring-white/15 text-gray-300 hover:ring-white/40'
+                        }`}
+                      ><span>📊</span></button>
+                      {topStatsOpen && (
+                        <div className="absolute left-0 top-full mt-1 z-40 w-52 rounded-xl bg-[#0c1219]/95 ring-1 ring-white/15 shadow-2xl text-gray-100 p-2 space-y-1 text-[12px]">
+                          <div className="flex items-center justify-between gap-2 px-2 py-1"><span className="flex items-center gap-1.5">🌐 Regions</span><span className="font-semibold tabular-nums">{outpostControl.regionsControlled}/{outpostControl.regionCount}</span></div>
+                          <div className="flex items-center justify-between gap-2 px-2 py-1"><span className="flex items-center gap-1.5">🟩 Territory</span><span className="font-semibold tabular-nums">{outpostControl.tilePct}%</span></div>
+                          <div className="flex items-center justify-between gap-2 px-2 py-1"><span className="flex items-center gap-1.5">⛺ Refugee camps</span><span className="font-semibold tabular-nums">{refugeeProgress.done}/{refugeeProgress.total}</span></div>
+                          {localPetInventory.length > 0 && (
+                            <div className="flex items-center justify-between gap-2 px-2 py-1"><span className="flex items-center gap-1.5">🐾 Pet pack</span><span className="font-semibold tabular-nums">{localPetInventory.reduce((s, i) => s + (i.quantity || 0), 0)}</span></div>
+                          )}
+                        </div>
+                      )}
+                    </div>
                     {duelActive && (
-                      <><span className="w-px h-4 bg-white/15" /><div className="flex items-center gap-1" title="Duel score"><span>⚔️</span><span className="font-semibold tabular-nums">{duel.status === 'connected' ? `${duel.myScore}–${duel.oppScore}` : duel.status}</span></div></>
+                      <><span className="w-px h-4 bg-white/15" /><div className="flex items-center gap-1" title="Duel score"><span>🤺</span><span className="font-semibold tabular-nums">{duel.status === 'connected' ? `${duel.myScore}–${duel.oppScore}` : duel.status}</span></div></>
                     )}
                   </div>
 
@@ -6675,11 +6793,11 @@ export default function SoloMissionMap3D({
                         overlap the bar). `pointer-events-auto` re-enables clicks inside the
                         otherwise click-through bar. ─────────────────────────────────────── */}
                     <span className="w-px h-4 bg-white/15" />
-                    <div className="flex items-center gap-1.5 pointer-events-auto">
+                    <div className="flex items-center gap-1 pointer-events-auto">
                       <button
                         onClick={openSkillTree}
                         title="Skill tree, spend points on combat & utility perks"
-                        className={`flex items-center gap-1 px-2.5 py-1 rounded-md text-[12px] font-bold ring-1 shadow transition ${
+                        className={`flex items-center gap-1 px-2 py-1 rounded-md text-[12px] font-bold ring-1 shadow transition ${
                           (skillPoints ?? 0) > 0
                             ? 'bg-emerald-800/80 ring-emerald-400/70 text-emerald-50 hover:bg-emerald-700/80'
                             : 'bg-[#141b26]/90 ring-white/15 text-gray-200 hover:ring-emerald-400/60'
@@ -6692,57 +6810,63 @@ export default function SoloMissionMap3D({
                         <button
                           onClick={() => setDuelLobbyOpen(o => !o)}
                           title="1v1 PvP duel"
-                          className={`flex items-center gap-1 px-2.5 py-1 rounded-md text-[12px] font-bold ring-1 shadow transition ${
+                          className={`flex items-center gap-1 px-2 py-1 rounded-md text-[12px] font-bold ring-1 shadow transition ${
                             duelActive ? 'bg-rose-800/90 ring-rose-400 text-rose-50' : 'bg-[#141b26]/90 ring-white/15 text-gray-200 hover:ring-rose-400/60'
                           }`}
-                        ><span>⚔️</span><span className="hidden sm:inline">Duel</span>{duelActive && duel.status === 'connected' ? ' •' : ''}</button>
+                        ><span>🤺</span><span className="hidden sm:inline">Duel</span>{duelActive && duel.status === 'connected' ? ' •' : ''}</button>
                       )}
                       {mobaMode && (
                         <button
                           onClick={() => setMobaLobbyOpen(o => !o)}
                           title="1v1v1 MOBA"
-                          className={`flex items-center gap-1 px-2.5 py-1 rounded-md text-[12px] font-bold ring-1 shadow transition ${
+                          className={`flex items-center gap-1 px-2 py-1 rounded-md text-[12px] font-bold ring-1 shadow transition ${
                             mobaActive ? 'bg-emerald-800/90 ring-emerald-400 text-emerald-50' : 'bg-[#141b26]/90 ring-white/15 text-gray-200 hover:ring-emerald-400/60'
                           }`}
                         ><span>🌍</span><span className="hidden sm:inline">MOBA</span>{mobaActive ? ' •' : ''}</button>
                       )}
-                      <button
-                        onClick={toggleGfx}
-                        title={gfxHigh ? 'Graphics: High (bloom + sharp shadows), click for Low' : 'Graphics: Low (max FPS), click for High'}
-                        className={`flex items-center gap-1 px-2.5 py-1 rounded-md text-[12px] font-bold ring-1 shadow transition ${
-                          gfxHigh ? 'bg-[#141b26]/90 ring-amber-400/50 text-amber-200 hover:ring-amber-300' : 'bg-[#141b26]/90 ring-white/15 text-gray-400 hover:ring-white/40'
-                        }`}
-                      ><span>✨</span><span className="hidden sm:inline">{gfxHigh ? 'Hi' : 'Lo'}</span></button>
-                      <button
-                        onClick={cycleFpsCap}
-                        title={`Framerate cap: ${fpsCap}fps, click to cycle 30 / 60 / 120`}
-                        className={`flex items-center gap-1 px-2.5 py-1 rounded-md text-[12px] font-bold ring-1 shadow transition ${
-                          fpsCap >= 120 ? 'bg-[#141b26]/90 ring-emerald-400/50 text-emerald-200 hover:ring-emerald-300' : 'bg-[#141b26]/90 ring-white/15 text-gray-300 hover:ring-white/40'
-                        }`}
-                      ><span>🎞</span><span className="hidden sm:inline tabular-nums">{fpsCap}</span></button>
-                      <button
-                        onClick={toggleSfx}
-                        title={sfxMuted ? 'Sound: Off, click to unmute' : 'Sound: On, click to mute'}
-                        className={`flex items-center gap-1 px-2.5 py-1 rounded-md text-[12px] font-bold ring-1 shadow transition ${
-                          sfxMuted ? 'bg-[#141b26]/90 ring-white/15 text-gray-400 hover:ring-white/40' : 'bg-[#141b26]/90 ring-sky-400/50 text-sky-200 hover:ring-sky-300'
-                        }`}
-                      ><span>{sfxMuted ? '🔇' : '🔊'}</span></button>
                       {soloEnabled && (
                         <button
                           onClick={() => setMissionsOpen(o => !o)}
                           title="Main missions, the four winning paths"
-                          className="flex items-center gap-1 px-2.5 py-1 rounded-md text-[12px] font-bold ring-1 ring-white/15 bg-[#141b26]/90 text-gray-300 hover:ring-amber-400/60 shadow transition"
+                          className="flex items-center gap-1 px-2 py-1 rounded-md text-[12px] font-bold ring-1 ring-white/15 bg-[#141b26]/90 text-gray-300 hover:ring-amber-400/60 shadow transition"
                         ><span>🎖️</span><span className="hidden sm:inline">Missions</span></button>
                       )}
-                      <button
-                        onClick={openTutorial}
-                        title="How to play + current objective"
-                        className="flex items-center gap-1 px-2.5 py-1 rounded-md text-[12px] font-bold ring-1 ring-white/15 bg-[#141b26]/90 text-gray-300 hover:ring-white/40 shadow transition"
-                      ><span>❓</span></button>
+                      {/* ⚙️ Settings dropdown — replaces 4 separate always-on buttons
+                          (Graphics/FPS/Sound/Help) with one, popover below on click. */}
+                      <div className="relative">
+                        <button
+                          onClick={() => setTopSettingsOpen(o => !o)}
+                          title="Settings: graphics, framerate, sound, help"
+                          className={`flex items-center gap-1 px-2 py-1 rounded-md text-[12px] font-bold ring-1 shadow transition ${
+                            topSettingsOpen ? 'bg-[#1b2636]/90 ring-white/40 text-white' : 'bg-[#141b26]/90 ring-white/15 text-gray-200 hover:ring-white/40'
+                          }`}
+                        ><span>⚙️</span><span className="hidden sm:inline">Settings</span></button>
+                        {topSettingsOpen && (
+                          <div className="absolute right-0 top-full mt-1 z-40 w-56 rounded-xl bg-[#0c1219]/95 ring-1 ring-white/15 shadow-2xl text-gray-100 p-2 space-y-1">
+                            <button
+                              onClick={toggleGfx}
+                              className="w-full flex items-center justify-between gap-2 px-2.5 py-1.5 rounded-lg text-[12px] font-semibold hover:bg-white/10 transition"
+                            ><span className="flex items-center gap-1.5">✨ Graphics</span><span className={gfxHigh ? 'text-amber-300' : 'text-gray-400'}>{gfxHigh ? 'High' : 'Low'}</span></button>
+                            <button
+                              onClick={cycleFpsCap}
+                              className="w-full flex items-center justify-between gap-2 px-2.5 py-1.5 rounded-lg text-[12px] font-semibold hover:bg-white/10 transition"
+                            ><span className="flex items-center gap-1.5">🎞 Framerate cap</span><span className={`tabular-nums ${fpsCap >= 120 ? 'text-emerald-300' : 'text-gray-300'}`}>{fpsCap}</span></button>
+                            <button
+                              onClick={toggleSfx}
+                              className="w-full flex items-center justify-between gap-2 px-2.5 py-1.5 rounded-lg text-[12px] font-semibold hover:bg-white/10 transition"
+                            ><span className="flex items-center gap-1.5">{sfxMuted ? '🔇' : '🔊'} Sound</span><span className={sfxMuted ? 'text-gray-400' : 'text-sky-300'}>{sfxMuted ? 'Off' : 'On'}</span></button>
+                            <span className="block h-px bg-white/10 my-1" />
+                            <button
+                              onClick={() => { openTutorial(); setTopSettingsOpen(false); }}
+                              className="w-full flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-[12px] font-semibold hover:bg-white/10 transition"
+                            >❓ How to play</button>
+                          </div>
+                        )}
+                      </div>
                       <button
                         onClick={() => setHudMenuOpen(o => !o)}
                         title="Menu (Esc)"
-                        className="flex items-center gap-1 px-2.5 py-1 rounded-md text-[12px] font-bold ring-1 ring-white/15 bg-[#141b26]/90 text-gray-200 hover:bg-[#1b2636]/90 shadow transition"
+                        className="flex items-center gap-1 px-2 py-1 rounded-md text-[12px] font-bold ring-1 ring-white/15 bg-[#141b26]/90 text-gray-200 hover:bg-[#1b2636]/90 shadow transition"
                       ><span>☰</span><span className="hidden sm:inline">Menu</span></button>
                     </div>
                   </div>
@@ -6871,7 +6995,10 @@ export default function SoloMissionMap3D({
                           <span className="text-[11px] uppercase tracking-wider opacity-60">🎭 {MASK_LORE[playerFactionKey].title}, Reclaimed</span>
                         </div>
                         <div className="font-bold mb-2" style={{ color: FACTION_COLORS[playerFactionKey]?.label ?? '#e5e7eb' }}>{npc}</div>
-                        <div className="text-sm leading-relaxed opacity-90 mb-4 bg-black/30 rounded-lg px-3 py-2">“{storyText(MASK_LORE[playerFactionKey].lines[1], playerFactionKey, heroGender ?? 'FEMALE')} It is home now, but not safe, they will come for it. Defend the base.”</div>
+                        <div className="text-sm leading-relaxed opacity-90 mb-4 bg-black/30 rounded-lg px-3 py-2">
+                          “{storyText(MASK_LORE[playerFactionKey].lines[1], playerFactionKey, heroGender ?? 'FEMALE')} {ev.decisive ? 'With an enemy relic already in hand, Domination is yours.' : 'It is home now, but not safe, they will come for it. Defend the base.'}”
+                        </div>
+                        {ev.decisive && <div className="font-bold mb-2 text-amber-300 text-lg">Domination Victory</div>}
                         <button onClick={closeMaskClaimEvent} className="w-full py-2 rounded-lg bg-emerald-700 hover:bg-emerald-600 font-bold">Continue</button>
                       </div>
                     </div>
@@ -6885,9 +7012,16 @@ export default function SoloMissionMap3D({
                           <span className="w-2.5 h-2.5 rounded-full shrink-0 bg-amber-400" />
                           <span className="text-[11px] uppercase tracking-wider text-amber-300">🎭 {MASK_LORE[ev.faction].title}, Captured</span>
                         </div>
-                        <div className="font-bold mb-2 text-amber-300 text-lg">Domination Victory</div>
-                        <div className="text-sm leading-relaxed opacity-90 mb-2 bg-black/30 rounded-lg px-3 py-2">You have taken the {FACTION_LABEL[ev.faction] ?? ev.faction} mask from its shrine, a blow against their sovereignty no combat could deliver.</div>
-                        <div className="text-sm leading-relaxed opacity-90 mb-4 bg-black/30 rounded-lg px-3 py-2 italic">“{npc}: Let them feel it.”</div>
+                        {ev.decisive ? (
+                          <div className="font-bold mb-2 text-amber-300 text-lg">Domination Victory</div>
+                        ) : (
+                          <div className="font-bold mb-2 text-amber-200">Relic Banked</div>
+                        )}
+                        <div className="text-sm leading-relaxed opacity-90 mb-2 bg-black/30 rounded-lg px-3 py-2">
+                          You have taken the {FACTION_LABEL[ev.faction] ?? ev.faction} mask from its shrine, a blow against their sovereignty no combat could deliver.
+                          {!ev.decisive && ' Bring your own faction’s mask home too, Domination needs both.'}
+                        </div>
+                        <div className="text-sm leading-relaxed opacity-90 mb-4 bg-black/30 rounded-lg px-3 py-2 italic">“{npc}: {ev.decisive ? 'Let them feel it.' : 'One relic. Now ours.'}”</div>
                         <button onClick={closeMaskClaimEvent} className="w-full py-2 rounded-lg bg-amber-600 hover:bg-amber-500 text-black font-bold">Continue</button>
                       </div>
                     </div>
