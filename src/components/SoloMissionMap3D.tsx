@@ -1143,12 +1143,17 @@ function MaskShrine({ faction, size }: { faction: 'PAA' | 'ASF' | 'WC'; size: nu
  *  and affordability against the hero's current ore/energy/bio. Shared by both prompt
  *  sites (nearbyOutpost when owned, nearbyFortifiedCamp) so the two 5-tier systems stay
  *  visually and mechanically identical. */
-function UpgradePanelContent({ title, icon, current, heroInventory, onUpgrade }: {
+function UpgradePanelContent({ title, icon, current, heroInventory, petInventory, onUpgrade }: {
   title: string; icon: string; current: CampUpgradeState;
   heroInventory: Array<{ type: string; quantity: number }>;
+  /** Combined with heroInventory for affordability — the pet's auto-fetch deposits into
+   *  its OWN pack, but the item bar shows both merged, so the buttons must judge
+   *  affordability the same way spending actually works (upgradeLocation). */
+  petInventory: Array<{ type: string; quantity: number }>;
   onUpgrade: (spec: CampSpecialization) => void;
 }) {
-  const have = (type: 'ore' | 'energy' | 'bio') => heroInventory.find(i => i.type === type)?.quantity ?? 0;
+  const have = (type: 'ore' | 'energy' | 'bio') =>
+    (heroInventory.find(i => i.type === type)?.quantity ?? 0) + (petInventory.find(i => i.type === type)?.quantity ?? 0);
   if (current.tier >= CAMP_UPGRADE_MAX_TIER && current.spec) {
     return (
       <div className="px-4 py-2.5 rounded-xl bg-[#0c1219]/90 border border-emerald-400/40 text-xs sm:text-sm backdrop-blur-sm shadow-lg text-center space-y-1">
@@ -3448,12 +3453,24 @@ export default function SoloMissionMap3D({
   const investTerraform = () => {
     if (!nearTerraformer) return;
     let consumed = false;
+    // Hero's own carry first, then the pet's pack — the pet's auto-fetch (petFetch)
+    // deposits into ITS OWN inventory, but the item bar shows hero+pet merged, so
+    // terraforming looked broken whenever the player's visible resources happened to
+    // be pet-carried (2026-07-19 bug report: "can't terraform either").
     setLocalHeroInventory(prev => {
       const idx = prev.findIndex(i => (i.type === 'ore' || i.type === 'energy' || i.type === 'bio') && i.quantity > 0);
       if (idx < 0) return prev;
       consumed = true;
       return prev.map((i, k) => (k === idx ? { ...i, quantity: i.quantity - 1 } : i)).filter(i => i.quantity > 0);
     });
+    if (!consumed) {
+      setLocalPetInventory(prev => {
+        const idx = prev.findIndex(i => (i.type === 'ore' || i.type === 'energy' || i.type === 'bio') && i.quantity > 0);
+        if (idx < 0) return prev;
+        consumed = true;
+        return prev.map((i, k) => (k === idx ? { ...i, quantity: i.quantity - 1 } : i)).filter(i => i.quantity > 0);
+      });
+    }
     if (consumed) {
       setTerraformProgress(p => {
         const np = Math.min(100, p + 12);
@@ -3688,18 +3705,29 @@ export default function SoloMissionMap3D({
     if (cur.tier >= CAMP_UPGRADE_MAX_TIER) return;
     if (cur.spec && cur.spec !== spec) return; // locked to its first-chosen specialization
     const cost = nextUpgradeCost(cur, spec);
-    const have = (type: 'ore' | 'energy' | 'bio') => localHeroInventory.find(i => i.type === type)?.quantity ?? 0;
+    // Combined hero+pet supply — same fix/rationale as investTerraform above: the pet's
+    // auto-fetch deposits into ITS OWN pack, but the item bar shows both merged, so
+    // upgrades looked broken ("Not enough resources") whenever any of the visible total
+    // was pet-carried (2026-07-19 bug report: "the fortify with resources has a bug").
+    const have = (type: 'ore' | 'energy' | 'bio') =>
+      (localHeroInventory.find(i => i.type === type)?.quantity ?? 0) + (localPetInventory.find(i => i.type === type)?.quantity ?? 0);
     const w = axialToWorld({ q, r }, hexSize);
     if (have('ore') < cost.ore || have('energy') < cost.energy || have('bio') < cost.bio) {
       spawnCombatText(w.x, w.z, '⚠️ Not enough resources', '#ff8888');
       return;
     }
-    setLocalHeroInventory(prev => prev.map(i => {
-      if (i.type === 'ore') return { ...i, quantity: i.quantity - cost.ore };
-      if (i.type === 'energy') return { ...i, quantity: i.quantity - cost.energy };
-      if (i.type === 'bio') return { ...i, quantity: i.quantity - cost.bio };
-      return i;
-    }).filter(i => i.quantity > 0));
+    // Spend hero's stack first, then top up from the pet's — computed from the current
+    // known quantities up front (not inside the updater) so the split doesn't depend on
+    // React's setState-updater execution order.
+    const spend = (type: 'ore' | 'energy' | 'bio', amount: number) => {
+      if (amount <= 0) return;
+      const heroHave = localHeroInventory.find(i => i.type === type)?.quantity ?? 0;
+      const fromHero = Math.min(heroHave, amount);
+      const fromPet = amount - fromHero;
+      if (fromHero > 0) setLocalHeroInventory(prev => prev.map(i => (i.type === type ? { ...i, quantity: i.quantity - fromHero } : i)).filter(i => i.quantity > 0));
+      if (fromPet > 0) setLocalPetInventory(prev => prev.map(i => (i.type === type ? { ...i, quantity: i.quantity - fromPet } : i)).filter(i => i.quantity > 0));
+    };
+    spend('ore', cost.ore); spend('energy', cost.energy); spend('bio', cost.bio);
     const next: CampUpgradeState = { tier: cur.tier + 1, spec };
     if (kind === 'outpost') setOutpostUpgrades(prevMap => { const n = new Map(prevMap); n.set(key, next); return n; });
     else setCampUpgrades(prevMap => { const n = new Map(prevMap); n.set(key, next); return n; });
@@ -3709,7 +3737,7 @@ export default function SoloMissionMap3D({
     // the victory tracks ("as per playstyle" per the user's ask): military ~ dominate,
     // food ~ loot, medicine ~ negotiate.
     recordPlaystyleRef.current(spec === 'military' ? 'dominate' : spec === 'food' ? 'loot' : 'negotiate', { victory: false });
-  }, [localHeroInventory, setLocalHeroInventory, hexSize, spawnCombatText]);
+  }, [localHeroInventory, localPetInventory, setLocalHeroInventory, setLocalPetInventory, hexSize, spawnCombatText]);
   const upgradeLocationRef = React.useRef(upgradeLocation); upgradeLocationRef.current = upgradeLocation;
   // Passive income from food/medicine-specialized holdings (food → bio trickle,
   // medicine → Faction Point trickle) — military's payoff is defensive, see
@@ -6379,7 +6407,7 @@ export default function SoloMissionMap3D({
                   {nearbyOutpost.owner === 'player' ? (
                     <UpgradePanelContent title="Your Outpost" icon="🚩"
                       current={outpostUpgrades.get(nearbyOutpost.key) ?? { tier: 0, spec: null }}
-                      heroInventory={localHeroInventory}
+                      heroInventory={localHeroInventory} petInventory={localPetInventory}
                       onUpgrade={(spec) => upgradeLocationRef.current('outpost', nearbyOutpost.key, nearbyOutpost.q, nearbyOutpost.r, spec)} />
                   ) : (
                     <div className="px-4 py-2.5 rounded-xl bg-[#0c1219]/90 border border-white/15 text-xs sm:text-sm backdrop-blur-sm shadow-lg text-center space-y-2">
@@ -6405,7 +6433,7 @@ export default function SoloMissionMap3D({
                 <div className="fixed top-32 sm:top-28 left-1/2 -translate-x-1/2 z-40 max-w-[94vw] pointer-events-auto">
                   <UpgradePanelContent title="Fortified Camp" icon="🏰"
                     current={campUpgrades.get(nearbyFortifiedCamp.key) ?? { tier: 0, spec: null }}
-                    heroInventory={localHeroInventory}
+                    heroInventory={localHeroInventory} petInventory={localPetInventory}
                     onUpgrade={(spec) => upgradeLocationRef.current('camp', nearbyFortifiedCamp.key, nearbyFortifiedCamp.q, nearbyFortifiedCamp.r, spec)} />
                 </div>
               )}
