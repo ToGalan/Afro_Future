@@ -2,6 +2,7 @@ import React, { createContext, useContext, useEffect, useMemo, useRef, useState 
 import { Group, AnimationMixer, type AnimationAction, type AnimationClip } from 'three';
 import { useFBX, useGLTF } from '@react-three/drei';
 import { useFrame } from '@react-three/fiber';
+import { ATTACK_DURATION, attackSwingCurve } from './IsometricCharacter';
 
 /**
  * AvatarAnimator
@@ -15,6 +16,9 @@ export interface AvatarAnimatorProps {
   paused?: boolean;          // externally paused
   clip?: string;             // current clip name
   moving?: boolean;          // when true, play the walk clip instead of idle
+  /** Increment to fire a one-shot attack swing on the RightArm bone(s) — mirrors
+   *  IsometricCharacter's attackTrigger. Only the delta between renders matters. */
+  attackTrigger?: number;
   onState?:(state:{current?:string;paused:boolean;speed:number})=>void; // callback when state changes
 }
 
@@ -45,7 +49,7 @@ const RIG_PATH = '/assets/3d/FullBody.fbx';
 const IDLE_PATH = '/assets/3d/Idle.fbx';
 const WALK_PATH = '/assets/3d/Armature.glb'; // contains a full-body Mixamo locomotion clip
 
-export const AvatarAnimator: React.FC<AvatarAnimatorProps> = React.memo(({ children, speed = 1, paused = false, clip, moving = false, onState }) => {
+export const AvatarAnimator: React.FC<AvatarAnimatorProps> = React.memo(({ children, speed = 1, paused = false, clip, moving = false, attackTrigger, onState }) => {
   // Attempt to load rig & idle; if fail, Drei will error to console. We keep try/catch nuance by conditional flags.
   // (Optional) If a separate rig FBX is needed later, load it similarly to Idle and parent children appropriately.
   const groupRef = useRef<Group | null>(null);
@@ -75,10 +79,23 @@ export const AvatarAnimator: React.FC<AvatarAnimatorProps> = React.memo(({ child
   // skinned mesh its own mixer playing the same clips, in sync.
   const rigsRef = useRef<Array<{ mixer: AnimationMixer; idle?: AnimationAction; walk?: AnimationAction }>>([]);
   const setupRef = useRef(false);
+  // 0 = fully idle, 1 = fully walk — eased toward the target each frame so switching
+  // gaits cross-fades instead of popping the clip weights instantly.
+  const blendRef = useRef(0);
   const movingRef = useRef(moving); movingRef.current = moving;
   const pausedRef = useRef(isPaused); pausedRef.current = isPaused;
   const speedRef = useRef(playSpeed); speedRef.current = playSpeed;
   const clipRef = useRef(clip); clipRef.current = clip;
+
+  // One-shot attack swing — RightArm bone(s) across every rig's skeleton, posed
+  // directly (AFTER mixer.update below) with the SAME curve IsometricCharacter uses,
+  // so the procedural and assembled-GLB avatars read as the same attack. There's no
+  // "attack" clip asset for this rig (Idle.fbx / Armature.glb are the only clips
+  // loaded), so this overrides the bone imperatively instead of blending a 3rd action.
+  const rightArmBonesRef = useRef<any[]>([]);
+  const attackClockRef = useRef(0);
+  const lastAttackTriggerRef = useRef(attackTrigger);
+  const attackStartRef = useRef<number | null>(null);
 
   // Rebuild mixers if the clips change (rare) — clear the setup flag.
   useEffect(() => { setupRef.current = false; rigsRef.current.forEach(r => r.mixer.stopAllAction()); rigsRef.current = []; }, [idleClip, walkClip]);
@@ -100,17 +117,48 @@ export const AvatarAnimator: React.FC<AvatarAnimatorProps> = React.memo(({ child
         idle?.play();
         walk?.play();
         rigsRef.current.push({ mixer, idle, walk });
+        // Same naming convention as the Mixamo rig's other bones (colon-prefixed on
+        // some exports, bare on others) — cache each skeleton's OWN RightArm bone and
+        // its bind-pose rotation so the swing below has a stable base to offset from.
+        const rightArm = mesh.skeleton.bones.find((b: any) => /(^|:)RightArm$/i.test(b.name || ''));
+        if (rightArm) {
+          if (!rightArm.userData.__baseRot) rightArm.userData.__baseRot = rightArm.rotation.clone();
+          rightArmBonesRef.current.push(rightArm);
+        }
       });
       setupRef.current = true;
     }
     const desired = clipRef.current || (movingRef.current ? 'walk' : 'idle');
     const ts = pausedRef.current ? 0 : speedRef.current;
+    const targetBlend = desired === 'walk' ? 1 : 0;
+    const blendK = 1 - Math.exp(-10 * Math.min(0.05, dt));
+    blendRef.current += (targetBlend - blendRef.current) * blendK;
+    const walkWeight = blendRef.current;
     rigsRef.current.forEach(({ mixer, idle, walk }) => {
-      const walkOn = desired === 'walk' && !!walk;
-      if (idle) { idle.setEffectiveWeight(walkOn ? 0 : 1); idle.setEffectiveTimeScale(ts); }
-      if (walk) { walk.setEffectiveWeight(walkOn ? 1 : 0); walk.setEffectiveTimeScale(ts); }
+      if (idle) { idle.setEffectiveWeight(walk ? 1 - walkWeight : 1); idle.setEffectiveTimeScale(ts); }
+      if (walk) { walk.setEffectiveWeight(walkWeight); walk.setEffectiveTimeScale(ts); }
       mixer.update(dt);
     });
+
+    // Attack swing — runs AFTER mixer.update above so it overrides whatever the idle/
+    // walk clips just wrote to the RightArm bone(s) for this frame only.
+    attackClockRef.current += dt;
+    if (attackTrigger !== undefined && attackTrigger !== lastAttackTriggerRef.current) {
+      lastAttackTriggerRef.current = attackTrigger;
+      attackStartRef.current = attackClockRef.current;
+    }
+    if (attackStartRef.current !== null) {
+      const ap = (attackClockRef.current - attackStartRef.current) / ATTACK_DURATION;
+      if (ap < 1) {
+        const swing = attackSwingCurve(ap);
+        rightArmBonesRef.current.forEach((bone) => {
+          const base = bone.userData.__baseRot;
+          if (base) bone.rotation.set(base.x + swing, base.y, base.z);
+        });
+      } else {
+        attackStartRef.current = null;
+      }
+    }
   });
 
   useEffect(() => () => { rigsRef.current.forEach(r => r.mixer.stopAllAction()); rigsRef.current = []; }, []);

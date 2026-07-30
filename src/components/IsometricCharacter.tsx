@@ -30,6 +30,28 @@ interface IsometricCharacterProps {
   /** Walk-cycle playback-rate multiplier — driven by the SPD stat so faster heroes
    *  visibly move their legs/arms quicker (1 = baseline cadence). */
   speedMult?:   number;
+  /** Increment to fire a one-shot attack swing (right-arm wind-up → strike → recovery).
+   *  Only the delta between renders matters — the actual number is meaningless. */
+  attackTrigger?: number;
+  /** Increment to fire a one-shot hit-reaction flinch (brief backward recoil). */
+  hitTrigger?:    number;
+}
+
+// ── One-shot attack swing (right arm) — normalized progress p ∈ [0,1] over ATTACK_DURATION.
+// Wind-up (pull back) → fast strike snap → eased recovery to rest. Exported so the GLB/
+// assembled-parts avatar paths (GameAvatarMesh.tsx) can reuse the identical shape.
+export const ATTACK_DURATION = 0.42;
+export function attackSwingCurve(p: number): number {
+  if (p < 0.3) { const w = p / 0.3; return -0.5 * (1 - Math.cos(w * Math.PI / 2)); }
+  if (p < 0.55) { const s = (p - 0.3) / 0.25; return -0.5 + 1.9 * (1 - Math.pow(1 - s, 3)); }
+  const r = Math.min(1, (p - 0.55) / 0.45);
+  return 1.4 * (1 - (1 - Math.pow(1 - r, 2)));
+}
+
+// ── One-shot hit-reaction flinch (whole body) — quick recoil in, slower settle out.
+export const HIT_DURATION = 0.24;
+export function hitFlinchCurve(p: number): number {
+  return p < 0.35 ? p / 0.35 : 1 - (p - 0.35) / 0.65;
 }
 
 function darken(hex: string, amount: number): string {
@@ -402,12 +424,21 @@ export function IsometricCharacter({
   facingAngle,
   animated    = true,
   speedMult   = 1,
+  attackTrigger,
+  hitTrigger,
 }: IsometricCharacterProps) {
   const groupRef    = useRef<THREE.Group>(null);
   const leftLegRef  = useRef<THREE.Group>(null);
   const rightLegRef = useRef<THREE.Group>(null);
   const leftArmRef  = useRef<THREE.Group>(null);
   const rightArmRef = useRef<THREE.Group>(null);
+
+  // One-shot triggers: only the DELTA matters, so a ref remembers the last seen value
+  // and a fresh "start time" (timeRef.current at the moment it changed) drives the curve.
+  const lastAttackTriggerRef = useRef(attackTrigger);
+  const attackStartRef = useRef<number | null>(null);
+  const lastHitTriggerRef = useRef(hitTrigger);
+  const hitStartRef = useRef<number | null>(null);
 
   // ── Proportions ───────────────────────────────────────────────────────
   const s         = hexSize * 0.38;   // slightly larger than 0.32 for visibility
@@ -462,10 +493,20 @@ export function IsometricCharacter({
     timeRef.current += delta;
     const t = timeRef.current;
 
-    // Snap Y-axis rotation to movement direction instantly
+    // Turn toward the movement direction via shortest-path angle easing instead of
+    // snapping instantly, so direction changes read as a turn rather than a hard flip.
     if (facingAngle !== undefined) {
-      groupRef.current.rotation.y = facingAngle;
+      const g = groupRef.current;
+      let d = ((facingAngle - g.rotation.y + Math.PI) % (Math.PI * 2)) - Math.PI;
+      if (d < -Math.PI) d += Math.PI * 2;
+      const rotK = 1 - Math.exp(-18 * Math.min(0.05, delta));
+      g.rotation.y += d * rotK;
     }
+
+    // Frame-rate-independent easing for limb transitions (walk↔idle) — same decay
+    // curve used for position/rotation smoothing elsewhere, so stopping/starting
+    // reads as a blend rather than a pop.
+    const limbK = 1 - Math.exp(-14 * Math.min(0.05, delta));
 
     if (isMoving && animated) {
       // Fluid walk cycle — arms and legs swing naturally; cadence scales with SPD.
@@ -474,22 +515,56 @@ export function IsometricCharacter({
       const leg   =  Math.sin(phase) * 0.55;
       const arm   = -Math.sin(phase) * 0.42;
 
-      if (leftLegRef.current)  leftLegRef.current.rotation.x  =  leg;
-      if (rightLegRef.current) rightLegRef.current.rotation.x = -leg;
-      if (leftArmRef.current)  leftArmRef.current.rotation.set(arm,   0,  armTilt);
-      if (rightArmRef.current) rightArmRef.current.rotation.set(-arm,  0, -armTilt);
+      if (leftLegRef.current)  leftLegRef.current.rotation.x  += (leg - leftLegRef.current.rotation.x) * limbK;
+      if (rightLegRef.current) rightLegRef.current.rotation.x += (-leg - rightLegRef.current.rotation.x) * limbK;
+      if (leftArmRef.current)  { leftArmRef.current.rotation.x += (arm - leftArmRef.current.rotation.x) * limbK; leftArmRef.current.rotation.z = armTilt; }
+      if (rightArmRef.current) { rightArmRef.current.rotation.x += (-arm - rightArmRef.current.rotation.x) * limbK; rightArmRef.current.rotation.z = -armTilt; }
 
       // No Y bounce or Z sway — clean movement
       groupRef.current.position.y = 0;
       groupRef.current.rotation.z = 0;
     } else {
-      // Idle: snap limbs to rest instantly (no easing)
-      if (leftLegRef.current)  leftLegRef.current.rotation.x = 0;
-      if (rightLegRef.current) rightLegRef.current.rotation.x = 0;
-      if (leftArmRef.current)  { leftArmRef.current.rotation.x = 0; leftArmRef.current.rotation.z = armTilt; }
-      if (rightArmRef.current) { rightArmRef.current.rotation.x = 0; rightArmRef.current.rotation.z = -armTilt; }
+      // Idle: ease limbs back to rest instead of popping instantly.
+      if (leftLegRef.current)  leftLegRef.current.rotation.x  *= (1 - limbK);
+      if (rightLegRef.current) rightLegRef.current.rotation.x *= (1 - limbK);
+      if (leftArmRef.current)  { leftArmRef.current.rotation.x *= (1 - limbK); leftArmRef.current.rotation.z = armTilt; }
+      if (rightArmRef.current) { rightArmRef.current.rotation.x *= (1 - limbK); rightArmRef.current.rotation.z = -armTilt; }
       groupRef.current.position.y = 0;
       groupRef.current.rotation.z = 0;
+    }
+
+    // ── One-shot attack swing — overrides the right arm + adds a torso twist while
+    // active; once it ends, the walk/idle easing above naturally blends the arm back
+    // to rest from wherever the swing left it (no pop, no explicit reset needed).
+    if (attackTrigger !== undefined && attackTrigger !== lastAttackTriggerRef.current) {
+      lastAttackTriggerRef.current = attackTrigger;
+      attackStartRef.current = t;
+    }
+    if (attackStartRef.current !== null) {
+      const ap = (t - attackStartRef.current) / ATTACK_DURATION;
+      if (ap < 1) {
+        const swing = attackSwingCurve(ap);
+        if (rightArmRef.current) rightArmRef.current.rotation.set(swing, 0, -armTilt * 0.4);
+        groupRef.current.rotation.z = Math.sin(Math.min(1, ap) * Math.PI) * 0.1;
+      } else {
+        attackStartRef.current = null;
+      }
+    }
+
+    // ── One-shot hit-reaction flinch — brief whole-body recoil (rotation.x is otherwise
+    // untouched by walk/idle/facing, so it's free to use here without conflicts).
+    if (hitTrigger !== undefined && hitTrigger !== lastHitTriggerRef.current) {
+      lastHitTriggerRef.current = hitTrigger;
+      hitStartRef.current = t;
+    }
+    if (hitStartRef.current !== null) {
+      const hp = (t - hitStartRef.current) / HIT_DURATION;
+      if (hp < 1) {
+        groupRef.current.rotation.x = -hitFlinchCurve(hp) * 0.22;
+      } else {
+        groupRef.current.rotation.x = 0;
+        hitStartRef.current = null;
+      }
     }
   });
 

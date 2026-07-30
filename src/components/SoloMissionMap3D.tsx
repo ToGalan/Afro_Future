@@ -657,6 +657,53 @@ function enemyHash(id: string): number {
 }
 
 /**
+ * HeroPositionFollower — carries the hero avatar's world position across each hex tile
+ * step at a CONSTANT velocity (linear, not eased), so held-WASD movement reads as one
+ * continuous walk instead of a series of hops. An exponential ease-out here (as used
+ * for AI units below, where individual steps aren't the focus) decelerates into every
+ * tile center then has to re-accelerate for the next one — repeated every ~100-300ms
+ * that reads exactly as tile-hopping (2026-07-30 user report: "we need it to be moving
+ * from tile to tile but not hopping"). Instead, each time the logical target tile
+ * changes, this starts a fresh straight-line glide from wherever the avatar CURRENTLY
+ * is (not necessarily the last tile's exact center, so back-to-back steps stay seamless
+ * if one arrives slightly early) toward the new target, timed to finish in exactly
+ * `stepMs` — the same interval new steps arrive at while a key is held — so consecutive
+ * tiles chain into one steady walking pace with no slow-down at the boundary.
+ * Must live inside the Canvas tree (unlike the parent component) since useFrame
+ * requires the R3F context.
+ */
+function HeroPositionFollower({ groupRef, target, stepMs }: { groupRef: React.RefObject<THREE.Group>; target: [number, number, number]; stepMs: number }) {
+  const inited = React.useRef(false);
+  const prevTarget = React.useRef<[number, number, number] | null>(null);
+  const startPos = React.useRef(new THREE.Vector3());
+  const elapsed = React.useRef(0);
+  const duration = React.useRef(0.15);
+  useFrame((_, delta) => {
+    const g = groupRef.current;
+    if (!g) return;
+    if (!inited.current) {
+      g.position.set(target[0], target[1], target[2]);
+      inited.current = true;
+      prevTarget.current = target;
+      return;
+    }
+    const pt = prevTarget.current;
+    if (!pt || pt[0] !== target[0] || pt[1] !== target[1] || pt[2] !== target[2]) {
+      prevTarget.current = target;
+      startPos.current.copy(g.position);
+      elapsed.current = 0;
+      duration.current = Math.max(0.05, stepMs / 1000);
+    }
+    elapsed.current += delta;
+    const t = Math.min(1, elapsed.current / duration.current);
+    g.position.x = startPos.current.x + (target[0] - startPos.current.x) * t;
+    g.position.y = startPos.current.y + (target[1] - startPos.current.y) * t;
+    g.position.z = startPos.current.z + (target[2] - startPos.current.z) * t;
+  });
+  return null;
+}
+
+/**
  * EnemyUnitMesh — a single mobile faction enemy. Owns its world position and smoothly
  * lerps toward the target tile each frame so the discrete AI steps read as walking.
  *
@@ -672,6 +719,14 @@ const EnemyUnitMesh = React.memo(function EnemyUnitMesh({ enemy, size, target }:
   // travel direction while idling/guarding between discrete AI ticks, instead of
   // reverting to a default +Z facing the moment it stops moving.
   const facingRef = React.useRef(0);
+  // Hit-reaction flinch — the memo comparator bails out unless the AI tick actually
+  // changed this unit (see below), so an hp drop here is always a genuine hit taken.
+  const [hitTrigger, setHitTrigger] = React.useState(0);
+  const prevHpRef = React.useRef(enemy.hp);
+  React.useEffect(() => {
+    if (enemy.hp < prevHpRef.current) setHitTrigger(v => v + 1);
+    prevHpRef.current = enemy.hp;
+  }, [enemy.hp]);
   useFrame((_, delta) => {
     const g = ref.current; if (!g) return;
     if (!snapped.current) { g.position.set(target[0], target[1], target[2]); snapped.current = true; return; }
@@ -722,7 +777,7 @@ const EnemyUnitMesh = React.memo(function EnemyUnitMesh({ enemy, size, target }:
       {enemy.faction === 'WC' ? (
         <Suspense fallback={
           <group scale={charScale} frustumCulled={false}>
-            <IsometricCharacter gender={gender} colors={ENEMY_FACTION_COLORS[enemy.faction]} hexSize={size} faction={enemy.faction} isMoving={moving} speedMult={speedMult} />
+            <IsometricCharacter gender={gender} colors={ENEMY_FACTION_COLORS[enemy.faction]} hexSize={size} faction={enemy.faction} isMoving={moving} speedMult={speedMult} hitTrigger={hitTrigger} />
           </group>
         }>
           <FbxAnimatedTexturedProp url={WC_NPC_ASSET} tex={WC_NPC_TEX} size={targetH} playing={moving} tint={hunting ? '#ff8a6a' : undefined} />
@@ -738,6 +793,7 @@ const EnemyUnitMesh = React.memo(function EnemyUnitMesh({ enemy, size, target }:
             faction={enemy.faction}
             isMoving={moving}
             speedMult={speedMult}
+            hitTrigger={hitTrigger}
           />
         </group>
       )}
@@ -2445,15 +2501,14 @@ function CollectibleMushroom({ size }: { size: number }) {
 
 function WaterRipple({ radius }: { radius: number }) {
   const ref = React.useRef<Mesh>(null);
-  React.useEffect(() => {
-    let raf: number;
-    const loop = () => {
-      if (ref.current) ref.current.position.y = 0.05 * Math.sin(performance.now() / 600);
-      raf = requestAnimationFrame(loop);
-    };
-    loop();
-    return () => cancelAnimationFrame(raf);
-  }, []);
+  // Was its own raw requestAnimationFrame loop per instance — bypassed both the demand-
+  // mode Canvas and the player's fpsCap entirely, running every water tile at uncapped
+  // native refresh rate forever regardless of settings (2026-07-30 perf investigation,
+  // "how are we getting 4fps"). useFrame integrates with the same invalidate/cap system
+  // every other animated piece in this file already uses.
+  useFrame(({ clock }) => {
+    if (ref.current) ref.current.position.y = 0.05 * Math.sin(clock.getElapsedTime() * 1.667);
+  });
   return (
   <mesh ref={ref} rotation={[-Math.PI / 2, 0, 0]} position={[0, heightFor({ q: 0, r: 0, type: 'water', char: 'L', resource: null }) + 0.06, 0]}>
       <ringGeometry args={[radius * 0.5, radius * 0.92, 32]} />
@@ -3837,6 +3892,20 @@ export default function SoloMissionMap3D({
   }, [playerFactionKey, saveProgress, awardHeroXp, awardFactionPoints]);
   const claimMaskRef = React.useRef(claimMask); claimMaskRef.current = claimMask;
   const [missionsOpen, setMissionsOpen] = useState(false);
+  // Popup/menu open-flags that should freeze the world (moved up from their original
+  // declaration sites so `anyMenuOpen` below can gate BOTH the enemy-AI hook, called
+  // further down, and the keyboard-input effect, which runs even later) — 2026-07-30
+  // user: "pause gameplay when popup/menu is open" (previously only the skill tree did).
+  const [hudMenuOpen, setHudMenuOpen] = useState(false);
+  const [duelLobbyOpen, setDuelLobbyOpen] = useState(false);
+  const [mobaLobbyOpen, setMobaLobbyOpen] = useState(false);
+  const [topSettingsOpen, setTopSettingsOpen] = useState(false);
+  const [topStatsOpen, setTopStatsOpen] = useState(false);
+  // Single source of truth for "the player is looking at a menu, not the map" — freezes
+  // rival-faction AI (below) and all keyboard shortcuts (movement/attack/terraform/etc.,
+  // in the WASD effect further down) while any of these is open.
+  const anyMenuOpen = !!inputPaused || !!activeStoryBeat || maskDialogOpen || !!maskClaimEvent
+    || missionsOpen || hudMenuOpen || duelLobbyOpen || mobaLobbyOpen || topSettingsOpen || topStatsOpen;
 
   // ── Camp/outpost 5-tier specialization system (2026-07-19 user directive) ──────────
   // Player-secured ground (captured outposts + cleared FORTIFY creep camps) develops
@@ -3970,7 +4039,7 @@ export default function SoloMissionMap3D({
     heroHpFrac,
     incomingDamageScale: combatIncomingScale * petIncomingDamageMult,
     enabled: !autoMultiplayer, // solo PvE only — duels are handled by useDuel
-    paused: !!inputPaused || !!activeStoryBeat || maskDialogOpen || !!maskClaimEvent, // freeze combat during skill tree AND story/mask dialogs
+    paused: anyMenuOpen, // freeze combat while ANY popup/menu is open, not just the skill tree
     getHeroStealthed: () => heroStealthRef.current, // Stealth branch shrinks enemy detection
     getDetectionScale: () => petDetectionScaleRef.current, // Cyber-Cat Sneak / Ghost Protocol
     // Objective awareness: rival factions march on & raid the player's outposts AND
@@ -4232,10 +4301,10 @@ export default function SoloMissionMap3D({
   }, [outpostTerritory]);
 
   // Game menu (rendered by GameHUD) is controlled here so its trigger can live inside the
-  // shared top HUD bar instead of floating over it.
-  const [hudMenuOpen, setHudMenuOpen] = useState(false);
+  // shared top HUD bar instead of floating over it. (hudMenuOpen declared above with the
+  // other menu-open flags, so anyMenuOpen can see it.)
   // ── 1v1 PvP duel (WebRTC data channel, Firestore-signaled) ───────────────────
-  const [duelLobbyOpen, setDuelLobbyOpen] = useState(false);
+  // (duelLobbyOpen declared above with the other menu-open flags.)
   const [duelJoinCode, setDuelJoinCode] = useState('');
   const [duelDeathReported, setDuelDeathReported] = useState(false);
   const [duelWaiting, setDuelWaiting] = useState(0); // players in the matchmaking queue
@@ -4288,7 +4357,7 @@ export default function SoloMissionMap3D({
   } = duel;
 
   // ── 1v1v1 MOBA (host-authoritative, Firestore-signaled WebRTC) ───────────────
-  const [mobaLobbyOpen, setMobaLobbyOpen] = useState(false);
+  // (mobaLobbyOpen declared above with the other menu-open flags.)
   const [mobaJoinCode, setMobaJoinCode] = useState('');
   // Default the lobby pick to the faction the player chose at onboarding (still changeable).
   const [mobaFactionPick, setMobaFactionPick] = useState<Faction>(playerFactionKey as Faction);
@@ -4343,11 +4412,10 @@ export default function SoloMissionMap3D({
   const [expandedTrack, setExpandedTrack] = useState<VictoryTrack | null>(null);
   // Top-bar ⚙️ Settings dropdown (Graphics/FPS/Sound/Help) — consolidates 4 always-on
   // buttons into one, so the bar reads Skills · Duel/MOBA · Missions · ⚙️ · Menu.
-  const [topSettingsOpen, setTopSettingsOpen] = useState(false);
   // Top-bar 📊 Stats dropdown (Regions/Territory/Refugee/Pet pack) — secondary yields
   // that don't need to be glanceable every second; keeps the always-visible row down
   // to Score/FP/Explore/Terraform/Outposts/Mask so it fits without horizontal scroll.
-  const [topStatsOpen, setTopStatsOpen] = useState(false);
+  // (topSettingsOpen / topStatsOpen declared above with the other menu-open flags.)
   // The decided result persists (campaign stays decided until a reset); dismissing the
   // overlay only hides it — it does NOT un-decide the campaign.
   const [soloVictoryResult, setSoloVictoryResult] = useState<{ faction: Faction; track: VictoryTrack } | null>(null);
@@ -5143,15 +5211,33 @@ export default function SoloMissionMap3D({
 
   const heroVisible = useMemo(() => computeVisibleSet(tiles, hero.pos, hero.vision + petVisionBonus), [tiles, hero.pos.q, hero.pos.r, hero.vision, petVisionBonus]);
 
-  // Primary render radius — covers active viewport around the hero.
-  // Kept at 22 (≈1520 tiles) which is well under the ~43k that caused the fiber stack overflow.
-  const RENDER_RADIUS = 22;
+  // Graphics quality — 'high' adds post-processing (bloom/vignette) + 2048 shadows;
+  // 'low' keeps the lean pipeline for weaker machines. Persisted per browser. (Moved up
+  // from its original declaration site, further down with fpsCap, so RENDER_RADIUS below
+  // can see it.)
+  const [gfxHigh, setGfxHigh] = useState<boolean>(() => {
+    try { return localStorage.getItem('afrofuture.gfxHigh') !== '0'; } catch { return true; }
+  });
+
+  // Primary render radius — covers active viewport around the hero. Each rendered tile
+  // can spawn several individually-animated pieces (SwayingCanopy per tree, camp/enemy
+  // useFrame subscriptions, FBX AnimationMixers) — tile COUNT, not shadow/bloom quality,
+  // is the dominant CPU cost of this scene. Previously gfxHigh only gated postprocessing,
+  // so toggling ✨ did nothing for CPU-bound low framerates (2026-07-30 user report: "how
+  // are we getting 4fps" — toggling graphics/FPS-cap settings had zero effect). Tying the
+  // radius to the SAME toggle gives it real teeth: Lo ≈ 631 tiles vs Hi's ≈1520.
+  // (22 was itself already dialed back from a much larger radius that caused a React
+  // Fiber stack overflow — 14 stays well under that ceiling too.)
+  const RENDER_RADIUS = gfxHigh ? 22 : 14;
   const culledTiles = useMemo(() => {
     return tiles.filter(t => axialDistance(t, hero.pos) <= RENDER_RADIUS);
-  }, [tiles, hero.pos.q, hero.pos.r]);
+  }, [tiles, hero.pos.q, hero.pos.r, RENDER_RADIUS]);
 
-  // Memory / tile count instrumentation (periodic)
+  // Memory / tile count instrumentation (periodic) — dev-only; was an unconditional
+  // uncapped rAF loop running forever in production (2026-07-30 perf pass), unlike
+  // FpsProbe/DevFpsMeter which already correctly gate on import.meta.env.DEV.
   useEffect(() => {
+    if (!import.meta.env.DEV) return;
     let lastLog = 0;
     let raf: number;
     const loop = () => {
@@ -5278,7 +5364,7 @@ export default function SoloMissionMap3D({
     });
   // exploredCount as proxy to re-run when explored set changes
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [tiles, hero.pos.q, hero.pos.r, exploredCount]);
+  }, [tiles, hero.pos.q, hero.pos.r, exploredCount, RENDER_RADIUS]);
 
   // World position of hero (for camera recentering)
   const heroWorld = useMemo(() => axialToWorld(hero.pos, hexSize), [hero.pos.q, hero.pos.r, hexSize]);
@@ -5288,6 +5374,21 @@ export default function SoloMissionMap3D({
   const [heroFacingAngle, setHeroFacingAngle] = React.useState(0);
   const [isHeroMoving, setIsHeroMoving] = React.useState(false);
   const heroMovingTimerRef = React.useRef<ReturnType<typeof setTimeout> | null>(null);
+  // One-shot animation triggers (2026-07-30, "make attack movement more fluid") —
+  // IsometricCharacter treats these as edge-triggered: bumping the counter fires the
+  // swing/flinch once, regardless of the actual number. heroAttackTrigger bumps on every
+  // non-repeat F press (attack or whiff, both read as "you attacked"); heroHitTrigger
+  // bumps whenever hero HP drops, detected below from the heroVitals prop.
+  const [heroAttackTrigger, setHeroAttackTrigger] = React.useState(0);
+  const [heroHitTrigger, setHeroHitTrigger] = React.useState(0);
+  const prevHeroHpRef = React.useRef(heroVitals?.hp.current);
+  React.useEffect(() => {
+    const cur = heroVitals?.hp.current;
+    if (cur !== undefined && prevHeroHpRef.current !== undefined && cur < prevHeroHpRef.current) {
+      setHeroHitTrigger(v => v + 1);
+    }
+    prevHeroHpRef.current = cur;
+  }, [heroVitals?.hp.current]);
 
   // Pet facing angle tracking
   const prevPetWorldRef = React.useRef<{ x: number; z: number } | null>(null);
@@ -5325,22 +5426,6 @@ export default function SoloMissionMap3D({
     }
     prevPetWorldRef.current = { x: pw.x, z: pw.z };
   }, [pet.pos.q, pet.pos.r, hexSize]);
-
-  // Log actor positions for debugging
-  useEffect(() => {
-    const petWorld = axialToWorld(pet.pos, hexSize);
-    const petVisualHeight = 0.4 + hexSize * 0.45;
-    const heroVisualHeight = 0.4 + hexSize * 0.45; // Outer group + GameAvatar container offset
-    console.log('[SoloMissionMap3D] Actor Heights - SHOULD MATCH:', {
-      hero: { group: '0.4', container: `hexSize*0.45=${(hexSize * 0.45).toFixed(3)}`, total: heroVisualHeight.toFixed(3) },
-      pet: { group: '0.4', sphere: `hexSize*0.45=${(hexSize * 0.45).toFixed(3)}`, total: petVisualHeight.toFixed(3) }
-    });
-    if (Math.abs(heroVisualHeight - petVisualHeight) > 0.01) {
-      console.error(`❌ HEIGHT MISMATCH: Hero ${heroVisualHeight.toFixed(2)} vs Pet ${petVisualHeight.toFixed(2)}`);
-    } else {
-      console.log(`✅ Heights match perfectly: both at Y = ${heroVisualHeight.toFixed(3)}`);
-    }
-  }, [hero.pos.q, hero.pos.r, pet.pos.q, pet.pos.r, heroWorld, hexSize]);
 
   // ─── Avatar data ────────────────────────────────────────────────────────────
   // Faction-specific default colours — used when threeConfig has no explicit overrides.
@@ -5651,11 +5736,7 @@ export default function SoloMissionMap3D({
     return new Float32Array(verts);
   }, [baseAxial, baseZoneRadius, baseZoneCreep, tilesByKey, tileTopAt, hexSize]);
 
-  // Graphics quality — 'high' adds post-processing (bloom/vignette) + 2048 shadows;
-  // 'low' keeps the lean pipeline for weaker machines. Persisted per browser.
-  const [gfxHigh, setGfxHigh] = useState<boolean>(() => {
-    try { return localStorage.getItem('afrofuture.gfxHigh') !== '0'; } catch { return true; }
-  });
+  // (gfxHigh declared above with RENDER_RADIUS, since the render-radius culling needs it.)
   // Player-chosen FPS cap (30 / 60 / 120, persisted). No auto-tuning: quality and
   // framerate only change when the player asks via the ✨ and 🎞 buttons.
   const [fpsCap, setFpsCap] = useState<number>(() => {
@@ -5915,8 +5996,10 @@ export default function SoloMissionMap3D({
     }
     return a; // fallback
   }
-  const inputPausedRef = React.useRef(inputPaused);
-  inputPausedRef.current = inputPaused;
+  // Was just the `inputPaused` prop (skill tree only) — now the same anyMenuOpen flag
+  // that freezes rival-faction AI above, so every popup/menu blocks keyboard input too.
+  const inputPausedRef = React.useRef(anyMenuOpen);
+  inputPausedRef.current = anyMenuOpen;
 
   // One hex step with collision + persistence + move-XP (shared by keydown & the held-key loop).
   const stepHeroRef = React.useRef<(d: Axial) => void>(() => {});
@@ -5994,6 +6077,9 @@ export default function SoloMissionMap3D({
         if (!hitEnemy) attackNearbyRef.current();  // creep camp if adjacent
         duelFightRef.current();     // rival duelist if adjacent (1v1)
         mobaFightRef.current();     // rival hero if adjacent (MOBA)
+        // Fire the swing animation on every attack input, hit or whiff — reads as "you
+        // attacked" and is far more legible than only animating on a confirmed hit.
+        setHeroAttackTrigger(v => v + 1);
         return;
       }
       // ─── TERRAFORM — invest a resource at the terraformer ──────────────
@@ -6231,7 +6317,7 @@ export default function SoloMissionMap3D({
       })}
     </>
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  ), [creepCamps, heroVisible, hero.pos.q, hero.pos.r, hexSize, tileTopAt, tilesByKey, exploredCount]);
+  ), [creepCamps, heroVisible, hero.pos.q, hero.pos.r, hexSize, tileTopAt, tilesByKey, exploredCount, RENDER_RADIUS]);
 
   const enemyField = React.useMemo(() => (
     <>
@@ -6254,7 +6340,7 @@ export default function SoloMissionMap3D({
       })}
     </>
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  ), [factionEnemies, heroVisible, hero.pos.q, hero.pos.r, hexSize, tileTopAt, exploredCount]);
+  ), [factionEnemies, heroVisible, hero.pos.q, hero.pos.r, hexSize, tileTopAt, exploredCount, RENDER_RADIUS]);
 
   const outpostField = React.useMemo(() => (
     <>
@@ -6285,7 +6371,7 @@ export default function SoloMissionMap3D({
       })}
     </>
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  ), [outposts, mobaActive, mobaOutpostOwner, heroColors.primary, heroVisible, hero.pos.q, hero.pos.r, hexSize, tileTopAt, tilesByKey, exploredCount]);
+  ), [outposts, mobaActive, mobaOutpostOwner, heroColors.primary, heroVisible, hero.pos.q, hero.pos.r, hexSize, tileTopAt, tilesByKey, exploredCount, RENDER_RADIUS]);
 
   const regionLabelField = React.useMemo(() => (
     <>
@@ -6328,7 +6414,7 @@ export default function SoloMissionMap3D({
       })}
     </>
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  ), [refugeeCamps, heroVisible, hero.pos.q, hero.pos.r, hexSize, tileTopAt, playerFactionKey, exploredCount]);
+  ), [refugeeCamps, heroVisible, hero.pos.q, hero.pos.r, hexSize, tileTopAt, playerFactionKey, exploredCount, RENDER_RADIUS]);
 
   return (
   <div className="relative w-screen h-screen bg-[#111827] overflow-hidden">
@@ -6395,7 +6481,12 @@ export default function SoloMissionMap3D({
                     unmounts/remounts this group on parent re-renders.
                     Positioned at tile surface (y = 0.4), with avatar mesh foot-anchored
                     so feet sit exactly at the surface. */}
-                <group ref={heroAvatarRef} position={[heroWorld.x, tileTopAt(hero.pos.q, hero.pos.r) + 0.08, heroWorld.z]} name="HeroAvatar" frustumCulled={false}>
+                <group ref={heroAvatarRef} name="HeroAvatar" frustumCulled={false}>
+                  {/* Smoothly glides this group's position toward the hero's current tile
+                      each frame (matches EnemyUnitMesh's easing) instead of snapping
+                      instantly, which is what made the hero's own steps look jerky next
+                      to every other actor on the map. */}
+                  <HeroPositionFollower groupRef={heroAvatarRef} target={[heroWorld.x, tileTopAt(hero.pos.q, hero.pos.r) + 0.08, heroWorld.z]} stepMs={moveStepMs()} />
                   {/* Drop shadow — renderOrder 20 */}
                   <mesh rotation={[-Math.PI/2, 0, 0]} position={[0, 0.01, 0]} receiveShadow renderOrder={20}>
                     <circleGeometry args={[hexSize * 0.42, 24]} />
@@ -6411,11 +6502,10 @@ export default function SoloMissionMap3D({
                     <ringGeometry args={[hexSize * 0.62, hexSize * 0.78, 40]} />
                     <meshBasicMaterial color="#facc15" transparent opacity={0.85} depthWrite={false} />
                   </mesh>
-                  {/* Avatar mesh is a direct child of HeroAvatar. React updates this group's
-                      position via JSX prop each time hero moves, which triggers R3F to call
-                      group.position.set() + updateMatrix(), setting matrixWorldNeedsUpdate=true.
-                      During gl.render → scene.updateMatrixWorld(), force=true cascades through
-                      all descendants including GLB primitive nodes. */}
+                  {/* Avatar mesh is a direct child of HeroAvatar. HeroPositionFollower above
+                      drives this group's position imperatively every frame (not via a JSX
+                      prop), so descendants (including GLB primitive nodes) pick up the
+                      smoothed transform through R3F's normal updateMatrixWorld cascade. */}
                   {/* Render the real GLTF avatar (a full hero GLB, or the modular parts
                       assembled from public/assets/3d) whenever one is available. GameAvatar
                       auto-fits it to game-map scale and foot-anchors it, and falls back to the
@@ -6424,13 +6514,13 @@ export default function SoloMissionMap3D({
                   {(heroModelUrl || Object.values(heroParts).some(Boolean)) ? (
                     avatarReady && (
                       <Suspense fallback={
-                        <IsometricCharacter gender={heroGender ?? 'FEMALE'} colors={heroColors} hexSize={hexSize} faction={heroFaction} isMoving={isHeroMoving} facingAngle={heroFacingAngle} speedMult={heroAnimSpeedMult} />
+                        <IsometricCharacter gender={heroGender ?? 'FEMALE'} colors={heroColors} hexSize={hexSize} faction={heroFaction} isMoving={isHeroMoving} facingAngle={heroFacingAngle} speedMult={heroAnimSpeedMult} attackTrigger={heroAttackTrigger} hitTrigger={heroHitTrigger} />
                       }>
-                        <GameAvatar heroModelUrl={heroModelUrl} heroParts={heroParts} heroColors={heroColors} hexSize={hexSize} gender={heroGender} isMoving={isHeroMoving} facingAngle={heroFacingAngle} speedMult={heroAnimSpeedMult} />
+                        <GameAvatar heroModelUrl={heroModelUrl} heroParts={heroParts} heroColors={heroColors} hexSize={hexSize} gender={heroGender} isMoving={isHeroMoving} facingAngle={heroFacingAngle} speedMult={heroAnimSpeedMult} attackTrigger={heroAttackTrigger} />
                       </Suspense>
                     )
                   ) : (
-                    <IsometricCharacter gender={heroGender ?? 'FEMALE'} colors={heroColors} hexSize={hexSize} faction={heroFaction} isMoving={isHeroMoving} facingAngle={heroFacingAngle} speedMult={heroAnimSpeedMult} />
+                    <IsometricCharacter gender={heroGender ?? 'FEMALE'} colors={heroColors} hexSize={hexSize} faction={heroFaction} isMoving={isHeroMoving} facingAngle={heroFacingAngle} speedMult={heroAnimSpeedMult} attackTrigger={heroAttackTrigger} hitTrigger={heroHitTrigger} />
                   )}
                 </group>
                 {(() => { const world = axialToWorld(pet.pos, hexSize); const ps = hexSize * 0.32; return (
@@ -6845,6 +6935,7 @@ export default function SoloMissionMap3D({
                           <div className="absolute right-0 top-full mt-1 z-40 w-56 rounded-xl bg-[#0c1219]/95 ring-1 ring-white/15 shadow-2xl text-gray-100 p-2 space-y-1">
                             <button
                               onClick={toggleGfx}
+                              title="Also shrinks the render radius (~1520 → ~631 tiles) on Low — the biggest single lever for a low framerate, not just shadows/bloom."
                               className="w-full flex items-center justify-between gap-2 px-2.5 py-1.5 rounded-lg text-[12px] font-semibold hover:bg-white/10 transition"
                             ><span className="flex items-center gap-1.5">✨ Graphics</span><span className={gfxHigh ? 'text-amber-300' : 'text-gray-400'}>{gfxHigh ? 'High' : 'Low'}</span></button>
                             <button

@@ -158,7 +158,8 @@
       "Bash(node \"C:/Users/brian/AppData/Local/Temp/claude/d--Afro-Future--Dev-Backup-New-Dev-2025-v3/84b4b9d8-d8bf-418e-8078-1420d2408561/scratchpad/mobile_audit.cjs\")",
       "Bash(node \"C:/Users/brian/AppData/Local/Temp/claude/d--Afro-Future--Dev-Backup-New-Dev-2025-v3/84b4b9d8-d8bf-418e-8078-1420d2408561/scratchpad/top_hud_check.cjs\")",
       "Bash(node \"C:/Users/brian/AppData/Local/Temp/claude/d--Afro-Future--Dev-Backup-New-Dev-2025-v3/84b4b9d8-d8bf-418e-8078-1420d2408561/scratchpad/fortify_test.cjs\")",
-      "Bash(pkill -f \"chrome.exe\")"
+      "Bash(pkill -f \"chrome.exe\")",
+      "Bash(chromium-cli --help)"
     ]
   }
 }

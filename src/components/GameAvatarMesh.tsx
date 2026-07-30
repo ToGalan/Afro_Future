@@ -6,7 +6,7 @@ import { clone as skeletonClone } from 'three/examples/jsm/utils/SkeletonUtils.j
 import { AvatarPartsLoader, BaseBody } from './AvatarPartsLoader';
 import { AvatarAnimator } from './AvatarAnimator';
 import type { AvatarColors } from '../services/avatarConfig';
-import { IsometricCharacter, type CharacterGender } from './IsometricCharacter';
+import { IsometricCharacter, type CharacterGender, ATTACK_DURATION, attackSwingCurve } from './IsometricCharacter';
 
 export type { AvatarColors };
 
@@ -143,11 +143,18 @@ function GameAvatarFitAnchor({
     const curScale = g.scale.x || 1;
     const nativeH = h / curScale;
     g.scale.setScalar((hexSize * TARGET_HEIGHT_FACTOR) / nativeH);
-    // Foot-anchor with fresh world matrices so feet sit exactly at y=0.
+    // Foot-anchor with fresh world matrices so feet sit exactly at the tile surface.
+    // box2.min.y is measured in WORLD space, but g.position.y is LOCAL (relative to its
+    // parent) — naively assigning -box2.min.y silently cancelled out the parent chain's
+    // own world-Y offset (the hero's tile-height placement), permanently anchoring feet
+    // to world y=0 (the tile's base) instead of the tile's walkable surface (~0.4 units
+    // up). Subtracting the parent's actual world Y back out fixes it (2026-07-30 bug
+    // report: "avatar legs are below the floor").
     g.position.y = 0;
     g.updateMatrixWorld(true);
     const box2 = new THREE.Box3().setFromObject(g);
-    g.position.y = -box2.min.y;
+    const parentWorldY = g.parent ? g.parent.getWorldPosition(new THREE.Vector3()).y : 0;
+    g.position.y = parentWorldY - box2.min.y;
   });
   return null;
 }
@@ -159,7 +166,7 @@ function GameAvatarFitAnchor({
  * the GLB and the procedural fallback turn to face the movement direction.
  */
 export function GameAvatar({
-  heroModelUrl, heroParts, heroColors, hexSize, gender, isMoving = false, facingAngle, speedMult = 1,
+  heroModelUrl, heroParts, heroColors, hexSize, gender, isMoving = false, facingAngle, speedMult = 1, attackTrigger,
 }: {
   heroModelUrl?: string;
   heroParts: Record<string, string | undefined>;
@@ -170,6 +177,8 @@ export function GameAvatar({
   facingAngle?: number;
   /** Walk-cycle playback-rate multiplier, driven by the hero's SPD stat. */
   speedMult?: number;
+  /** Increment to fire a one-shot attack swing — mirrors IsometricCharacter's prop. */
+  attackTrigger?: number;
 }) {
   const avatarGroupRef = React.useRef<THREE.Group>(null);
 
@@ -186,9 +195,9 @@ export function GameAvatar({
     <group frustumCulled={false}>
       <group ref={avatarGroupRef} name={heroModelUrl ? 'glb-avatar' : 'assembled-avatar'} position={[0, 0, 0]} frustumCulled={false}>
         {heroModelUrl ? (
-          <GLBAvatarMesh url={heroModelUrl} parts={heroParts} colors={heroColors} gender={gender} hexSize={hexSize} isMoving={isMoving} speedMult={speedMult} />
+          <GLBAvatarMesh url={heroModelUrl} parts={heroParts} colors={heroColors} gender={gender} hexSize={hexSize} isMoving={isMoving} speedMult={speedMult} attackTrigger={attackTrigger} />
         ) : (
-          <AssembledAvatarMesh parts={heroParts} colors={heroColors} gender={gender} hexSize={hexSize} isMoving={isMoving} speedMult={speedMult} />
+          <AssembledAvatarMesh parts={heroParts} colors={heroColors} gender={gender} hexSize={hexSize} isMoving={isMoving} speedMult={speedMult} attackTrigger={attackTrigger} />
         )}
       </group>
       <GameAvatarFitAnchor groupRef={avatarGroupRef} hexSize={hexSize} colors={heroColors} />
@@ -211,7 +220,7 @@ export function GameAvatar({
  * the Canvas, killing the entire avatar subtree. Static bind-pose is correct for game mode.
  */
 function AssembledAvatarMesh({
-  parts, colors, gender, hexSize, isMoving, speedMult = 1,
+  parts, colors, gender, hexSize, isMoving, speedMult = 1, attackTrigger,
 }: {
   parts: Record<string, string | undefined>;
   colors: AvatarColors;
@@ -219,6 +228,7 @@ function AssembledAvatarMesh({
   hexSize?: number;
   isMoving?: boolean;
   speedMult?: number;
+  attackTrigger?: number;
 }) {
   const rootRef = React.useRef<THREE.Group>(null);
   const hasCustomParts = Object.values(parts).some(p => p);
@@ -236,7 +246,7 @@ function AssembledAvatarMesh({
   // Procedural fallback gets isMoving for the walk cycle; facing is handled by the
   // parent GameAvatar group so it isn't applied twice.
   const procFallback = (
-    <IsometricCharacter gender={gender ?? 'FEMALE'} colors={colors} hexSize={hexSize ?? 3} isMoving={isMoving} speedMult={speedMult} />
+    <IsometricCharacter gender={gender ?? 'FEMALE'} colors={colors} hexSize={hexSize ?? 3} isMoving={isMoving} speedMult={speedMult} attackTrigger={attackTrigger} />
   );
 
   if (!hasCustomParts) return procFallback;
@@ -254,7 +264,7 @@ function AssembledAvatarMesh({
               moving. Uses the same rig/clips as the character creator, so it poses
               reliably instead of the procedural bone-swing that couldn't lower arms.
               speed only applies while moving — the SPD stat shouldn't speed up idle breathing. */}
-          <AvatarAnimator moving={!!isMoving} speed={isMoving ? speedMult : 1}>
+          <AvatarAnimator moving={!!isMoving} speed={isMoving ? speedMult : 1} attackTrigger={attackTrigger}>
             <BaseBody />
             <AvatarPartsLoader parts={parts} />
           </AvatarAnimator>
@@ -285,7 +295,7 @@ class GLBErrorBoundary extends React.Component<
  * Suspense boundary never receives it and the model never loads.
  * GLBErrorBoundary above handles actual JS errors (bad URL, decode failure).
  */
-function GLBAvatarInner({ url, colors, isMoving, speedMult = 1 }: { url: string; colors: AvatarColors; isMoving?: boolean; speedMult?: number }) {
+function GLBAvatarInner({ url, colors, isMoving, speedMult = 1, attackTrigger }: { url: string; colors: AvatarColors; isMoving?: boolean; speedMult?: number; attackTrigger?: number }) {
   const { scene, animations } = useGLTF(url) as any; // unconditional — do NOT wrap in try/catch
   const groupRef = useRef<THREE.Group>(null);
   const inst = useMemo(() => {
@@ -325,6 +335,48 @@ function GLBAvatarInner({ url, colors, isMoving, speedMult = 1 }: { url: string;
     if (inst) applyGameTint(inst, colors);
   }, [inst, colors]);
 
+  // One-shot attack swing — RightArm bone override, same curve/approach AvatarAnimator
+  // uses for the assembled-parts path, so a full custom GLB gets the identical swing
+  // without needing an embedded "attack" clip (most hero GLBs here only ship idle/walk).
+  // Registered AFTER useAnimations above, so per R3F's subscription-order execution this
+  // runs after its mixer.update each frame and overrides the RightArm bone(s) on top.
+  const rightArmBonesRef = useRef<any[]>([]);
+  const bonesReadyRef = useRef(false);
+  const attackClockRef = useRef(0);
+  const lastAttackTriggerRef = useRef(attackTrigger);
+  const attackStartRef = useRef<number | null>(null);
+  useFrame((_, delta) => {
+    const g = groupRef.current;
+    if (!g) return;
+    if (!bonesReadyRef.current) {
+      const found: any[] = [];
+      g.traverse((o: any) => {
+        if (o.isBone && /(^|:)RightArm$/i.test(o.name || '')) {
+          if (!o.userData.__baseRot) o.userData.__baseRot = o.rotation.clone();
+          found.push(o);
+        }
+      });
+      if (found.length) { rightArmBonesRef.current = found; bonesReadyRef.current = true; }
+    }
+    attackClockRef.current += delta;
+    if (attackTrigger !== undefined && attackTrigger !== lastAttackTriggerRef.current) {
+      lastAttackTriggerRef.current = attackTrigger;
+      attackStartRef.current = attackClockRef.current;
+    }
+    if (attackStartRef.current !== null) {
+      const ap = (attackClockRef.current - attackStartRef.current) / ATTACK_DURATION;
+      if (ap < 1) {
+        const swing = attackSwingCurve(ap);
+        rightArmBonesRef.current.forEach((bone) => {
+          const base = bone.userData.__baseRot;
+          if (base) bone.rotation.set(base.x + swing, base.y, base.z);
+        });
+      } else {
+        attackStartRef.current = null;
+      }
+    }
+  });
+
   // Wrap in a group so R3F owns scene-graph parenting; primitive carries mesh data.
   // useAnimations binds its mixer to groupRef, so the rig must live inside it.
   return (
@@ -339,11 +391,11 @@ function GLBAvatarInner({ url, colors, isMoving, speedMult = 1 }: { url: string;
  * MUST be module-level for the same hook-stability reason as AssembledAvatarMesh.
  * Falls back to the assembled/procedural avatar if the GLB fails to load.
  */
-function GLBAvatarMesh({ url, parts, colors, gender, hexSize, isMoving, speedMult = 1 }: { url: string; parts: Record<string, string | undefined>; colors: AvatarColors; gender?: CharacterGender; hexSize?: number; isMoving?: boolean; speedMult?: number }) {
+function GLBAvatarMesh({ url, parts, colors, gender, hexSize, isMoving, speedMult = 1, attackTrigger }: { url: string; parts: Record<string, string | undefined>; colors: AvatarColors; gender?: CharacterGender; hexSize?: number; isMoving?: boolean; speedMult?: number; attackTrigger?: number }) {
   return (
-    <GLBErrorBoundary resetKey={url} fallback={<AssembledAvatarMesh parts={parts} colors={colors} gender={gender} hexSize={hexSize} isMoving={isMoving} speedMult={speedMult} />}>
+    <GLBErrorBoundary resetKey={url} fallback={<AssembledAvatarMesh parts={parts} colors={colors} gender={gender} hexSize={hexSize} isMoving={isMoving} speedMult={speedMult} attackTrigger={attackTrigger} />}>
       <React.Suspense fallback={null}>
-        <GLBAvatarInner url={url} colors={colors} isMoving={isMoving} speedMult={speedMult} />
+        <GLBAvatarInner url={url} colors={colors} isMoving={isMoving} speedMult={speedMult} attackTrigger={attackTrigger} />
       </React.Suspense>
     </GLBErrorBoundary>
   );
